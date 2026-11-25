@@ -846,79 +846,69 @@ impl NdpProcessor {
         PacketPayload::try_single(packet).ok()
     }
 
-    /// Resolve an IPv6 address to MAC address
-    ///
-    /// Returns Some(mac) if entry is in Reachable/Stale/Delay/Probe state,
-    /// None if Incomplete or not in cache.
-    pub fn resolve(&self, ip: &Ipv6Address) -> Option<[u8; 6]> {
-        // Multicast addresses map directly to MAC
+    pub(crate) fn resolve_for_send(
+        &mut self,
+        ip: Ipv6Address,
+        now: u64,
+    ) -> Result<NeighborResolution, crate::net::types::NetworkError> {
+        use crate::net::types::NetworkError;
         if ip.is_multicast() {
-            return Some(ip.multicast_mac());
+            return Ok(NeighborResolution::Resolved(ip.multicast_mac()));
+        }
+        if self.cache.trigger_delay(&ip, now) {
+            let entry = self
+                .cache
+                .lookup(&ip)
+                .expect("usable neighbor is still in cache");
+            return Ok(NeighborResolution::Resolved(entry.mac));
+        }
+        let source = self.link_local().ok_or(NetworkError::NetworkUnreachable)?;
+        if self.cache.lookup(&ip).is_some() {
+            return Ok(NeighborResolution::Pending);
         }
 
-        // Lookup in neighbor cache
-        self.cache.lookup(ip).and_then(|entry| {
-            if entry.has_mac() {
-                Some(entry.mac)
-            } else {
-                None
+        let probe = self
+            .prepare_probe(source, Solicitation::Resolve(ip))
+            .ok_or(NetworkError::ResourceExhausted)?;
+        let mut entry = NeighborEntry::new_incomplete(ip, now);
+        entry.probes_sent = 1;
+        self.cache.insert(entry);
+        Ok(NeighborResolution::Probe(probe))
+    }
+
+    fn prepare_probe(
+        &self,
+        source: Ipv6Address,
+        solicitation: Solicitation,
+    ) -> Option<NeighborProbe> {
+        let (target, destination, mac) = match solicitation {
+            Solicitation::Resolve(target) => {
+                let destination = target.solicited_node();
+                (target, destination, destination.multicast_mac())
             }
+            Solicitation::Verify { target, mac } => (target, target, mac),
+        };
+        let payload = Self::build_ns(&source, &destination, &target, &self.our_mac)?;
+        self.stats.ns_sent.fetch_add(1, Ordering::Relaxed);
+        Some(NeighborProbe {
+            source,
+            destination,
+            mac,
+            payload,
         })
     }
 
-    /// Start resolution for a neighbor (create Incomplete entry)
-    ///
-    /// Returns the NS message to send (caller sends it)
-    pub fn start_resolution(
-        &mut self,
-        target: &Ipv6Address,
-        current_time: u64,
-    ) -> Option<PacketPayload> {
-        // Create incomplete entry
-        self.cache
-            .insert(NeighborEntry::new_incomplete(*target, current_time));
-        self.stats.ns_sent.fetch_add(1, Ordering::Relaxed);
-
-        // Build NS targeting the solicited-node multicast address
-        let sn_mcast = target.solicited_node();
-        Self::build_ns(&self.link_local()?, &sn_mcast, target, &self.our_mac)
-    }
-
-    /// Run periodic maintenance (expire entries + NUD timer processing)
-    ///
-    /// Returns a list of NS probe messages to send (for NUD Probe/Incomplete states)
-    pub fn tick(&mut self, current_time: u64) -> Vec<PacketPayload> {
+    pub(crate) fn tick(&mut self, now: u64) -> Vec<NeighborProbe> {
+        self.cache.expire_reachable(now);
+        self.cache.expire_old(now);
         let Some(source) = self.link_local() else {
             return Vec::new();
         };
-        self.cache.expire_reachable(current_time);
-        self.cache.expire_old(current_time);
-
-        // Process NUD state machine timers (Delay→Probe, Probe retries)
-        let probe_targets = self.cache.process_nud_timers(current_time);
-        let mut ns_messages = Vec::new();
-
-        for target in probe_targets {
-            // Build unicast NS for Probe, or solicited-node multicast NS for Incomplete
-            let entry_state = self.cache.lookup(&target).map(|e| e.state);
-            let ns = match entry_state {
-                Some(NeighborState::Probe) => {
-                    // Unicast NS to target's last known address
-                    Self::build_ns(&source, &target, &target, &self.our_mac)
-                }
-                _ => {
-                    // Multicast NS to solicited-node address
-                    let sn_mcast = target.solicited_node();
-                    Self::build_ns(&source, &sn_mcast, &target, &self.our_mac)
-                }
-            };
-            if let Some(ns) = ns {
-                self.stats.ns_sent.fetch_add(1, Ordering::Relaxed);
-                ns_messages.push(ns);
-            }
-        }
-
-        ns_messages
+        self.cache
+            .process_nud_timers(now)
+            .into_iter()
+            .filter_map(|solicitation| self.prepare_probe(source, solicitation))
+            .collect()
     }
 }
 

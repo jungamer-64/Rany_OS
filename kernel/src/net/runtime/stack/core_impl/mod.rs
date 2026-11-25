@@ -1035,6 +1035,7 @@ impl NetworkStack {
 
         // Expire timed-out pending packets
         self.expire_arp_pending();
+        self.process_ndp_timeouts(now);
         self.expire_ndp_pending();
         self.expire_fragment_reassembly(now);
     }

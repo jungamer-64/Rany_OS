@@ -249,10 +249,13 @@ pub fn test_multicast_mac() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_resolve_multicast() {
     let mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
-    let processor = NdpProcessor::new(mac, local_addresses(Ipv6Address::LOOPBACK));
+    let mut processor = NdpProcessor::new(mac, local_addresses(Ipv6Address::LOOPBACK));
 
     let mcast = Ipv6Address::ALL_NODES_LINK_LOCAL;
-    let resolved = processor.resolve(&mcast).unwrap();
+    let NeighborResolution::Resolved(resolved) = processor.resolve_for_send(mcast, 0).unwrap()
+    else {
+        panic!("multicast resolves without a solicitation");
+    };
     assert_eq!(resolved, [0x33, 0x33, 0x00, 0x00, 0x00, 0x01]);
 }
 

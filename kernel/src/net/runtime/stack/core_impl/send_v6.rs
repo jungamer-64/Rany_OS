@@ -535,33 +535,53 @@ impl NetworkStack {
         &mut self,
         path: Ipv6Path,
     ) -> Result<Option<MacAddress>, NetworkError> {
+        use crate::net::l3::ndp::NeighborResolution;
+
         let Ipv6Path { if_id, next_hop } = path;
-        if next_hop.is_multicast() {
-            return Ok(Some(MacAddress::new(next_hop.multicast_mac())));
-        }
-        let current_time = self.current_time();
+        let now = self.current_time();
         let ndp = self
             .interfaces
             .get_mut(&if_id)
             .and_then(|state| state.ndp.as_mut())
             .ok_or(NetworkError::NetworkUnreachable)?;
-        if let Some(mac) = ndp.resolve(&next_hop) {
-            return Ok(Some(MacAddress::new(mac)));
+        match ndp.resolve_for_send(next_hop, now)? {
+            NeighborResolution::Resolved(mac) => Ok(Some(MacAddress::new(mac))),
+            NeighborResolution::Pending => Ok(None),
+            NeighborResolution::Probe(probe) => {
+                self.transmit_neighbor_probe(if_id, probe)?;
+                Ok(None)
+            }
         }
-        let ns = ndp
-            .start_resolution(&next_hop, current_time)
-            .ok_or(NetworkError::ResourceExhausted)?;
-        let source = ndp.link_local().ok_or(NetworkError::InvalidAddress)?;
-        let dst = next_hop.solicited_node();
+    }
+
+    fn transmit_neighbor_probe(
+        &mut self,
+        if_id: NetIfId,
+        probe: crate::net::l3::ndp::NeighborProbe,
+    ) -> Result<(), NetworkError> {
         self.send_ndp_probe(
             if_id,
-            source,
-            dst,
-            MacAddress::new(dst.multicast_mac()),
-            ns,
+            probe.source,
+            probe.destination,
+            MacAddress::new(probe.mac),
+            probe.payload,
             None,
-        )?;
-        Ok(None)
+        )
+    }
+
+    pub(crate) fn process_ndp_timeouts(&mut self, now: u64) {
+        let mut probes = Vec::new();
+        for (&if_id, state) in &mut self.interfaces {
+            if let Some(ndp) = &mut state.ndp {
+                probes.extend(ndp.tick(now).into_iter().map(|probe| (if_id, probe)));
+            }
+        }
+        for (if_id, probe) in probes {
+            // The NDP timer owns retries. A local TX failure only drops this attempt.
+            if self.transmit_neighbor_probe(if_id, probe).is_err() {
+                self.record_dropped_on(if_id);
+            }
+        }
     }
 
     fn defer_ipv6_packet(

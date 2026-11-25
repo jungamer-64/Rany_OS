@@ -324,6 +324,27 @@ pub fn parse_ndp_options_view(view: &PacketPayloadView<'_>, start_offset: usize)
 // Neighbor State Machine
 // =====================================================
 
+/// The requester can send now, wait for an outstanding solicitation, or
+/// submit the first solicitation of a newly admitted resolution.
+pub(crate) enum NeighborResolution {
+    Resolved([u8; 6]),
+    Pending,
+    Probe(NeighborProbe),
+}
+
+pub(crate) struct NeighborProbe {
+    pub(crate) source: Ipv6Address,
+    pub(crate) destination: Ipv6Address,
+    pub(crate) mac: [u8; 6],
+    pub(crate) payload: PacketPayload,
+}
+
+#[derive(Clone, Copy)]
+enum Solicitation {
+    Resolve(Ipv6Address),
+    Verify { target: Ipv6Address, mac: [u8; 6] },
+}
+
 /// Neighbor Cache entry state (RFC 4861 Section 7.3.2)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NeighborState {
@@ -506,8 +527,8 @@ impl NeighborCache {
 
     /// Process NUD timers — advances Delay→Probe, Probe retries, and
     /// removes entries that exceeded MAX_UNICAST_SOLICIT.
-    /// Returns a list of IPv6 addresses that need a unicast NS probe.
-    pub fn process_nud_timers(&mut self, current_time: u64) -> Vec<Ipv6Address> {
+    /// Return due solicitations with the destination selected by neighbor state.
+    fn process_nud_timers(&mut self, current_time: u64) -> Vec<Solicitation> {
         let mut probe_targets = Vec::new();
         let mut dead_keys = Vec::new();
 
@@ -519,7 +540,10 @@ impl NeighborCache {
                         entry.state = NeighborState::Probe;
                         entry.timestamp = current_time;
                         entry.probes_sent = 1;
-                        probe_targets.push(entry.ip);
+                        probe_targets.push(Solicitation::Verify {
+                            target: entry.ip,
+                            mac: entry.mac,
+                        });
                     }
                 }
                 NeighborState::Probe => {
@@ -531,7 +555,10 @@ impl NeighborCache {
                         } else {
                             entry.probes_sent += 1;
                             entry.timestamp = current_time;
-                            probe_targets.push(entry.ip);
+                            probe_targets.push(Solicitation::Verify {
+                                target: entry.ip,
+                                mac: entry.mac,
+                            });
                         }
                     }
                 }
@@ -543,7 +570,7 @@ impl NeighborCache {
                         } else {
                             entry.probes_sent += 1;
                             entry.timestamp = current_time;
-                            probe_targets.push(entry.ip);
+                            probe_targets.push(Solicitation::Resolve(entry.ip));
                         }
                     }
                 }

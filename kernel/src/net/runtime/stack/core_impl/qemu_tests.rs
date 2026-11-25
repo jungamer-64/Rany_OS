@@ -372,6 +372,7 @@ fn ipv6_udp_waits_for_the_gateway_and_preserves_the_ip_destination() {
     const DESTINATION: Ipv6Address =
         Ipv6Address::new([0x20, 1, 0x0d, 0xb8, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5]);
     static DATAGRAMS: AtomicUsize = AtomicUsize::new(0);
+    static SOLICITATIONS: AtomicUsize = AtomicUsize::new(0);
 
     fn capture(
         _: NetRuntimeHandle,
@@ -394,7 +395,10 @@ fn ipv6_udp_waits_for_the_gateway_and_preserves_the_ip_destination() {
             .expect("Ethernet and IPv6 header");
         assert_eq!(&packet[12..14], &[0x86, 0xdd]);
         match packet[20] {
-            58 => assert_eq!(&packet[38..54], ROUTER.solicited_node().as_bytes()),
+            58 => {
+                assert_eq!(&packet[38..54], ROUTER.solicited_node().as_bytes());
+                SOLICITATIONS.fetch_add(1, Ordering::Relaxed);
+            }
             17 => {
                 assert_eq!(&packet[..6], &ROUTER_MAC);
                 assert_eq!(&packet[22..38], SOURCE.as_bytes());
@@ -450,6 +454,8 @@ fn ipv6_udp_waits_for_the_gateway_and_preserves_the_ip_destination() {
             .is_some()
     );
     stack.transmit_fn = capture;
+    stack.update_time(now + 1000);
+    SOLICITATIONS.store(0, Ordering::Relaxed);
 
     let mut writer =
         GeneratedPacketWriter::new(4, kernel_api::resource::net::DEFAULT_PACKET_HEADROOM)
@@ -468,7 +474,14 @@ fn ipv6_udp_waits_for_the_gateway_and_preserves_the_ip_destination() {
         Ok(()),
     );
     assert_eq!(DATAGRAMS.load(Ordering::Relaxed), 0);
-    stack.ndp_cache_insert_on(if_id, &ROUTER, ROUTER_MAC, 1000);
+    assert_eq!(SOLICITATIONS.load(Ordering::Relaxed), 1);
+    stack.update_time(now + 1999);
+    stack.process_timeouts();
+    assert_eq!(SOLICITATIONS.load(Ordering::Relaxed), 1);
+    stack.update_time(now + 2000);
+    stack.process_timeouts();
+    assert_eq!(SOLICITATIONS.load(Ordering::Relaxed), 2);
+    stack.ndp_cache_insert_on(if_id, &ROUTER, ROUTER_MAC, now + 2000);
     stack.drain_ndp_pending_on(if_id, &ROUTER);
     stack.drain_ndp_pending_on(if_id, &ROUTER);
     assert_eq!(DATAGRAMS.load(Ordering::Relaxed), 1);
