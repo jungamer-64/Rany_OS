@@ -725,8 +725,8 @@ fn queued_lease_cannot_be_completed_before_submission(_runtime: NetRuntimeHandle
     tx.admit(TxFrame::whole(payload), NetTxMeta::default())
         .ok()
         .expect("admitted frame");
-    // The first lease of a fresh table has generation 0 and the top index.
-    let queued = TxLeaseId::new(super::tx::TX_LEASE_CAPACITY as u64).expect("lease identifier");
+    // The fresh slab admits slot zero first, with generation zero.
+    let queued = TxLeaseId::new(1).expect("lease identifier");
     assert_eq!(
         tx.complete(queued, TxDeviceOutcome::Transmitted),
         Err(TxCompletionError::NotSubmitted)
