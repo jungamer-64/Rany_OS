@@ -92,64 +92,6 @@ impl NetworkStack {
         }
     }
 
-    pub fn apply_dhcp_v4_lease_for_interface(
-        &mut self,
-        lease: &crate::net::services::dhcp::DhcpLease,
-        if_id: crate::net::runtime::manager::NetIfId,
-        dns_server: Option<crate::net::l3::ipv4::Ipv4Address>,
-    ) {
-        let runtime = self.runtime;
-        let Some(base_config) = crate::net::runtime::manager::get_interface_in(runtime, if_id)
-            .ok()
-            .flatten()
-            .and_then(|iface| iface.config)
-            .or_else(|| self.interface_config(if_id))
-        else {
-            return;
-        };
-
-        let mut iface_config = base_config;
-        iface_config.ipv4.address = lease.ip_address;
-        iface_config.ipv4.subnet_mask = lease.subnet_mask;
-        iface_config.ipv4.gateway = lease
-            .gateway
-            .unwrap_or(crate::net::l3::ipv4::Ipv4Address::ANY);
-        iface_config.ipv4.dns = dns_server;
-
-        if crate::net::runtime::manager::set_interface_config_in(runtime, if_id, iface_config)
-            .is_err()
-        {
-            return;
-        }
-    }
-
-    pub fn clear_dhcp_v4_lease_for_interface(
-        &mut self,
-        if_id: crate::net::runtime::manager::NetIfId,
-    ) {
-        let runtime = self.runtime;
-        let Some(base_config) = crate::net::runtime::manager::get_interface_in(runtime, if_id)
-            .ok()
-            .flatten()
-            .and_then(|iface| iface.config)
-            .or_else(|| self.interface_config(if_id))
-        else {
-            return;
-        };
-
-        let mut iface_config = base_config;
-        iface_config.ipv4.address = crate::net::l3::ipv4::Ipv4Address::ANY;
-        iface_config.ipv4.subnet_mask = crate::net::l3::ipv4::Ipv4Config::default().subnet_mask;
-        iface_config.ipv4.gateway = crate::net::l3::ipv4::Ipv4Address::ANY;
-        iface_config.ipv4.dns = None;
-
-        if crate::net::runtime::manager::set_interface_config_in(runtime, if_id, iface_config)
-            .is_err()
-        {
-            return;
-        }
-    }
-
     pub fn process_udp_payload(
         &mut self,
         if_id: crate::net::runtime::manager::NetIfId,

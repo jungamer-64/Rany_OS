@@ -354,13 +354,7 @@ impl RuntimeCommandHandler {
                 crate::net::runtime::command::ControlCommand::ArpProbe { .. },
             ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
             utility_event @ RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::DhcpApplyLease { .. },
-            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
-            utility_event @ RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::DhcpV6ApplyLease { .. },
-            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
-            utility_event @ RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::DhcpLeaseCleared { .. },
             ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
             utility_event @ RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::GetPrimaryInterfaceConfig { .. },

@@ -28,54 +28,6 @@ impl RuntimeCommandHandler {
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::DhcpApplyLease { if_id, config },
-            ) => {
-                let crate::net::services::dhcp::DhcpV4AppliedConfig {
-                    ip_address,
-                    subnet_mask,
-                    gateway,
-                    dns_servers,
-                    domain_name,
-                } = config;
-                let lease = crate::net::services::dhcp::DhcpLease {
-                    ip_address,
-                    subnet_mask,
-                    gateway,
-                    server_ip: crate::net::l3::ipv4::Ipv4Address::ANY,
-                    lease_time: 0,
-                    t1: 0,
-                    t2: 0,
-                    obtained_at: crate::task::current_tick(),
-                };
-                let is_primary =
-                    crate::net::runtime::manager::primary_interface_in(runtime) == Some(if_id);
-                {
-                    if is_primary {
-                        // DNSサーバーを更新
-                        if !dns_servers.is_empty() {
-                            crate::net::services::dns::set_ipv4_servers_in(runtime, &dns_servers);
-                        }
-                        if let Some(domain) = domain_name {
-                            crate::net::services::dns::set_search_domains_in(runtime, &[domain]);
-                        }
-
-                        crate::net::services::mdns::set_local_ip_in(runtime, lease.ip_address);
-                    }
-                    stack.apply_dhcp_v4_lease_for_interface(
-                        &lease,
-                        if_id,
-                        dns_servers.first().copied(),
-                    );
-                    log::info!(
-                        "[NET] DHCP lease bound: if{} primary={} ip={}",
-                        if_id.0,
-                        is_primary,
-                        lease.ip_address
-                    );
-                }
-                EventHandleResult::Success
-            }
-            RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::DhcpV6ApplyLease { if_id, config },
             ) => {
                 let crate::net::services::dhcp::DhcpV6AppliedConfig {
@@ -103,13 +55,6 @@ impl RuntimeCommandHandler {
                     if_id.0,
                     ipv6_addr
                 );
-                EventHandleResult::Success
-            }
-            RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::DhcpLeaseCleared { if_id },
-            ) => {
-                stack.clear_dhcp_v4_lease_for_interface(if_id);
-                log::info!("[NET] DHCP lease cleared: if{}", if_id.0);
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(
