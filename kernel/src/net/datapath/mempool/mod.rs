@@ -15,7 +15,6 @@
 
 use crate::sync::{PoisonLock, PoisonRwLock};
 use alloc::boxed::Box;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt;
 use core::ptr::NonNull;
@@ -323,7 +322,7 @@ impl PacketPool {
                     data,
                     capacity,
                     physical,
-                    Arc::clone(chunk) as Arc<dyn Send + Sync>,
+                    chunk.backing(),
                     owner,
                     recycle_pool_slot,
                 )

@@ -102,7 +102,11 @@ pub(crate) fn packet_fixture(cap: usize) -> PacketRef {
             data,
             capacity,
             kernel_api::resource::memory::PhysicalAddress::new(0),
-            alloc::sync::Arc::clone(&allocation.bytes) as alloc::sync::Arc<dyn Send + Sync>,
+            kernel_api::resource::net::PacketBackingLease::new(
+                kernel_api::resource::memory::PhysicalAddress::new(0),
+                capacity,
+                alloc::sync::Arc::clone(&allocation.bytes) as alloc::sync::Arc<dyn Send + Sync>,
+            ),
             owner,
             retire_fixture,
         )

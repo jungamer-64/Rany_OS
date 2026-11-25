@@ -9,7 +9,7 @@ use core::mem::MaybeUninit;
 use core::ptr::NonNull;
 use kernel_api::dma::DmaByteCount;
 use kernel_api::resource::memory::PhysicalAddress;
-use kernel_api::resource::net::{PacketBufferMemory, PacketRef};
+use kernel_api::resource::net::{PacketBackingLease, PacketBufferMemory, PacketRef};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PacketAllocationError {
@@ -38,15 +38,34 @@ impl PacketStorage {
             allocation: Some(allocation),
         };
         let pointer = storage.pointer()?;
+        let bytes = storage.capacity().get();
         // SAFETY: this fresh contiguous allocation is exclusively owned here.
         // Its permanent RAM direct map is initialized before any header, CPU
         // window, or device mapping can observe it.
-        unsafe { pointer.as_ptr().write_bytes(0, size) };
+        unsafe { pointer.as_ptr().write_bytes(0, bytes) };
         Arc::try_new(storage).map_err(|_| PacketAllocationError::Metadata)
     }
     pub(super) fn physical(&self) -> PhysicalAddress {
         PhysicalAddress::new(self.allocation.as_ref().expect("retained RAM").as_u64())
     }
+    fn capacity(&self) -> DmaByteCount {
+        let bytes = self.allocation.as_ref().expect("retained RAM").size_bytes();
+        DmaByteCount::new(usize::try_from(bytes).expect("allocation fits the address space"))
+            .expect("physical allocation contains at least one page")
+    }
+
+    pub(super) fn backing(self: &Arc<Self>) -> PacketBackingLease {
+        // SAFETY: this Arc owns the full contiguous physical allocation,
+        // including its padding. The coordinates live as long as the Arc.
+        unsafe {
+            PacketBackingLease::new(
+                self.physical(),
+                self.capacity(),
+                Arc::clone(self) as Arc<dyn Send + Sync>,
+            )
+        }
+    }
+
     pub(super) fn pointer(&self) -> Result<NonNull<u8>, PacketAllocationError> {
         let allocation = self.allocation.as_ref().expect("retained RAM");
         let base = allocation
@@ -103,7 +122,14 @@ pub(crate) fn allocate_packet(
     // access. The header retains storage until all windows/descriptor visits
     // return; mapping owners can extend RAM lifetime beyond header retirement.
     header.memory.write(unsafe {
-        PacketBufferMemory::new(data, capacity, physical, storage, owner, retire_dynamic)
+        PacketBufferMemory::new(
+            data,
+            capacity,
+            physical,
+            storage.backing(),
+            owner,
+            retire_dynamic,
+        )
     });
     let memory = NonNull::new(header.memory.as_mut_ptr()).expect("stable Box header");
     // SAFETY: this is the sole initial acquisition of an unpublished live header.

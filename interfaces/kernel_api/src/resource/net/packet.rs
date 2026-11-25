@@ -43,9 +43,9 @@ impl PacketBufferMemory {
     /// The physical address must describe that same region, with its entire
     /// range fitting in `u64`. Device admission belongs to the submitting port;
     /// packet metadata and physical addresses never grant DMA authority.
-    /// `allocation` independently retains the entire physical backing, even
-    /// after the last CPU window returns, including every containing physical
-    /// page needed for IOMMU granularity. It confers no byte access or release
+    /// The slot must lie within `allocation`'s retained physical extent, which
+    /// can contain other slots owned by the same allocator. That extent
+    /// remains live after the last CPU window returns. It confers no byte access or release
     /// authority. Mapping owners retain it until IOTLB retirement completes.
     /// The owner must keep the header, backing, mapping and callback code valid
     /// until every acquired window returns, including during owner shutdown.
@@ -102,6 +102,24 @@ pub struct PacketBackingLease {
     allocation: Arc<dyn Send + Sync>,
 }
 impl PacketBackingLease {
+    /// Observe the full physical range owned by one packet allocation.
+    ///
+    /// # Safety
+    /// The owner must retain this entire physically contiguous range and its
+    /// containing pages until its last reference drops. Every lease of this
+    /// owner must describe the same range.
+    pub unsafe fn new(
+        physical: PhysicalAddress,
+        capacity: DmaByteCount,
+        allocation: Arc<dyn Send + Sync>,
+    ) -> Self {
+        Self {
+            physical,
+            capacity,
+            allocation,
+        }
+    }
+
     pub const fn physical_address(&self) -> PhysicalAddress {
         self.physical
     }
@@ -154,15 +172,10 @@ impl PacketDmaRegion {
         self.len
     }
     pub fn retains_backing(&self, lease: &PacketBackingLease) -> bool {
-        Arc::ptr_eq(&self.backing().allocation, &lease.allocation)
+        Arc::ptr_eq(&self.backing().allocation.allocation, &lease.allocation)
     }
     pub fn backing_lease(&self) -> PacketBackingLease {
-        let backing = self.backing();
-        PacketBackingLease {
-            physical: backing.physical,
-            capacity: backing.capacity,
-            allocation: Arc::clone(&backing.allocation),
-        }
+        self.backing().allocation.clone()
     }
 }
 impl fmt::Debug for PacketDmaRegion {
@@ -587,7 +600,11 @@ mod tests {
                 data,
                 DmaByteCount::new(capacity).unwrap(),
                 PhysicalAddress::new(0x1000),
-                Arc::clone(&allocation.bytes) as Arc<dyn Send + Sync>,
+                PacketBackingLease::new(
+                    PhysicalAddress::new(0x1000),
+                    DmaByteCount::new(capacity).unwrap(),
+                    Arc::clone(&allocation.bytes) as Arc<dyn Send + Sync>,
+                ),
                 owner,
                 retire_allocation,
             )

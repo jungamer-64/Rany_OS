@@ -87,7 +87,7 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 - completion outcome は `Transmitted`、`NotTransmitted`、`OutcomeUnknown` を区別し、port ごとに計数する。port の停止は受理を閉じて未 submit の lease を解放し、driver が device access の終了を証明した後にだけ受理済みの lease を解放する。停止に失敗した port は lease を保持したまま再試行を待つ。
 - device が公開する `max_tx_segments` が descriptor fan-out の authority である。TCP は payload の segment 数をこの上限から header 用の 1 を引いた数に収める。上限を超える frame は、先頭の小さな body segment（合計 64 byte まで）を header packet の tailroom へ移して収め、それでも収まらなければ受理しない。
 - TX queue を複数持つ port は queue ごとに FIFO と worker を持つ。frame の flow hash が queue を選ぶため、同じ flow の frame と同じ datagram の fragment は submission 順を保つ。
-- port の mapping owner は packet window と独立に物理 backing を保持する。TX の mapping は device の読み取りだけを許可し、書き込みを許可するのはその port 自身の RX pool の mapping だけである。mapping は port の停止まで保持するため、device は送信した frame の backing を停止まで読み取れる。backing を保持するものが mapping だけになった場合は、mapping 表が閾値を超えた時点で退役させる。IOTLB の退役完了まで RAM を解放せず、translation の未完了状態は再投稿へ使わない。port の終了は owner を保持して `Busy` を返す。
+- port の mapping owner は packet window と独立に物理 backing を保持する。同じ物理割り当てに属する slot は、対応する単一の mapping を共有する。TX の mapping は device の読み取りだけを許可し、書き込みを許可するのはその port 自身の RX pool の mapping だけである。mapping は port の停止まで保持するため、device は送信した frame の backing を停止まで読み取れる。backing を保持するものが mapping だけになった場合は、mapping 表が閾値を超えた時点で退役させる。IOTLB の退役完了まで RAM を解放せず、translation の未完了状態は再投稿へ使わない。port の終了は owner を保持して `Busy` を返す。
 
 ### 3.3 Normative: adaptive polling は baseline の一部
 
@@ -113,6 +113,7 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 - TCP は connection semantics を持つが、core では packet-backed payload queue と endpoint-owned state を中心に扱う。
 - UDP は token-aware bind、packet-native receive / send、scope-aware endpoint を優先する。
 - IPv6 のリンクローカル、SLAAC、DHCPv6 アドレスは、DAD プローブの送信完了から待機期間が満了して初めて通常の送受信に使用できる。送信を確認できなかったプローブは再試行する。
+- Router Advertisement の DNS サーバーは受信インターフェースに紐付ける。有効期限の満了、Lifetime 0 の通知、リンク停止で利用対象から外す。
 - DNS は parser / cache / record data まで packet-backed view を正規面とし、`String` / raw byte ownership への早期変換を baseline にしない。
 - DNS 応答の canonical ownership は `DnsResponseView { payload, records }` に置き、cache も response payload ownership + record metadata を保持する。
 - IPv4 は timeout / unknown-protocol / reassembled packet を含めて packet-backed quoted/original payload で扱う。

@@ -298,7 +298,11 @@ fn counted_packet_fixture(len: usize, physical: u64, releases: &Arc<AtomicUsize>
             data,
             kernel_api::dma::DmaByteCount::new(capacity).unwrap(),
             kernel_api::resource::memory::PhysicalAddress::new(physical),
-            storage,
+            kernel_api::resource::net::PacketBackingLease::new(
+                kernel_api::resource::memory::PhysicalAddress::new(physical),
+                kernel_api::dma::DmaByteCount::new(capacity).unwrap(),
+                storage,
+            ),
             owner,
             retire_packet_fixture,
         )
