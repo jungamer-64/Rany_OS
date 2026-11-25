@@ -651,9 +651,16 @@ pub fn test_build_lease_defaults_large_timers_without_overflow() {
 async fn assert_offer_probe_and_decline_flow() {
     use crate::net::l2::ethernet::MacAddress;
 
+    use crate::net::runtime::{manager, stack};
+
     let runtime = crate::net::runtime::default_runtime();
-    let if_id = crate::net::runtime::manager::primary_interface_in(runtime)
-        .expect("registered network interface");
+    let if_id =
+        manager::register_interface_in(runtime, "dhcp-probe", manager::PrimaryPreference::Never)
+            .expect("DHCP probe interface");
+    manager::set_interface_config_in(runtime, if_id, stack::NetworkConfig::default())
+        .expect("DHCP probe configuration");
+    manager::set_interface_link_state_in(runtime, if_id, manager::LinkState::Up)
+        .expect("DHCP probe link");
 
     let client = DhcpClient::new(runtime, if_id, MacAddress::new([7, 7, 7, 7, 7, 7]));
     client.xid.store(0x3333_4444, Ordering::SeqCst);
@@ -716,6 +723,7 @@ async fn assert_offer_probe_and_decline_flow() {
         client.last_declined_ip(),
         Some(Ipv4Address::new([10, 0, 0, 9]))
     );
+    assert!(manager::unregister_interface_in(runtime, if_id).unwrap());
 }
 
 #[cfg(feature = "qemu-test-export")]

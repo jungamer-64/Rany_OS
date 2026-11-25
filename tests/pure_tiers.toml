@@ -29,6 +29,7 @@ test_filter = ""
 exact = false
 serial = false
 mode = "hybrid"
+features = ["std"]
 
 [[package]]
 name = "boot_proto"

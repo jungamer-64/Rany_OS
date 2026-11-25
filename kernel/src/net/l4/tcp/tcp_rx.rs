@@ -1945,6 +1945,8 @@ fn notify_socket_urgent(runtime: NetRuntimeHandle, socket_id: SocketId) {
 
 #[cfg(feature = "qemu-test-export")]
 pub(crate) fn tcp_passive_queue_connection_lifetime_smoke() -> bool {
+    active_and_simultaneous_open_publish_the_connecting_socket();
+    passive_open_reset_releases_only_the_handshake();
     use crate::net::l4::socket::TcpSocketState;
     use core::task::{Poll, Waker};
 
@@ -2017,8 +2019,7 @@ pub(crate) fn tcp_passive_queue_connection_lifetime_smoke() -> bool {
     true
 }
 
-#[cfg(test)]
-#[test]
+#[cfg(feature = "qemu-test-export")]
 fn active_and_simultaneous_open_publish_the_connecting_socket() {
     let runtime = crate::net::runtime::create_runtime().expect("TCP handshake runtime");
     let table = tcp_table_in(runtime);
@@ -2081,8 +2082,7 @@ fn active_and_simultaneous_open_publish_the_connecting_socket() {
     }
 }
 
-#[cfg(test)]
-#[test]
+#[cfg(feature = "qemu-test-export")]
 fn passive_open_reset_releases_only_the_handshake() {
     let runtime = crate::net::runtime::create_runtime().expect("TCP handshake runtime");
     let table = tcp_table_in(runtime);
