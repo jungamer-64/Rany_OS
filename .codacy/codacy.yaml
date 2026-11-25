@@ -1,9 +1,12 @@
 runtimes:
-    - java@17.0.10
-    - python@3.11.11
+    # The Codacy downloader requires a Temurin +7 build.
+    - java@25.0.4
+    # The version must exist in Codacy's selected standalone CPython release.
+    - python@3.15.1
 tools:
-    - lizard@1.17.31
-    - opengrep@1.18.0
-    - pmd@6.55.0
-    - pylint@4.0.5
-    - trivy@0.70.0
+    - lizard@1.26.1
+    # The Codacy downloader expects the manylinux asset name.
+    - opengrep@1.33.1
+    - pmd@7.29.0
+    - pylint@4.1.4
+    - trivy@0.76.2

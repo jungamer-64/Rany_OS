@@ -26,7 +26,7 @@ jobs:
       run: python3 scripts/export_ci_rust_config.py
 
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+      uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
       with:
         toolchain: ${{ steps.rust-config.outputs.toolchain }}
         components: rust-src, llvm-tools-preview
@@ -79,7 +79,7 @@ jobs:
       run: cargo build -p rany_kernel --target x86_64-exorust.json --release -Z json-target-spec -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
     
     - name: Upload artifacts
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: kernel-binary
         path: target/x86_64-exorust/debug/exorust_kernel
@@ -100,7 +100,7 @@ jobs:
       run: python3 scripts/export_ci_rust_config.py
 
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+      uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
       with:
         toolchain: ${{ steps.rust-config.outputs.toolchain }}
         components: rust-src, llvm-tools-preview
@@ -134,7 +134,7 @@ jobs:
       run: python3 scripts/export_ci_rust_config.py
 
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+      uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
       with:
         toolchain: ${{ steps.rust-config.outputs.toolchain }}
         components: rust-src, llvm-tools-preview
@@ -186,7 +186,7 @@ jobs:
       run: python3 scripts/export_ci_rust_config.py
 
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+      uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
       with:
         toolchain: ${{ steps.rust-config.outputs.toolchain }}
         components: rustfmt, clippy, rust-src, llvm-tools-preview
@@ -248,7 +248,7 @@ jobs:
       run: python3 scripts/export_ci_rust_config.py
 
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+      uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
       with:
         toolchain: ${{ steps.rust-config.outputs.toolchain }}
         components: rust-src
@@ -269,7 +269,7 @@ jobs:
       continue-on-error: true  # no_std環境のdoc生成
     
     - name: Upload documentation
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: documentation
         path: target/x86_64-exorust/doc
@@ -367,7 +367,7 @@ jobs:
       run: python3 scripts/export_ci_rust_config.py
 
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+      uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
       with:
         toolchain: ${{ steps.rust-config.outputs.toolchain }}
     
@@ -395,7 +395,7 @@ jobs:
       run: python3 scripts/export_ci_rust_config.py
 
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+      uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
       with:
         toolchain: ${{ steps.rust-config.outputs.toolchain }}
         components: rust-src, llvm-tools-preview
@@ -423,7 +423,7 @@ jobs:
         tar -czvf exorust-${{ steps.version.outputs.version }}.tar.gz release/
     
     - name: Upload release artifact
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: exorust-release
         path: exorust-*.tar.gz
