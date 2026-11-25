@@ -975,8 +975,7 @@ pub fn is_interface_operational_in(runtime: NetRuntimeHandle, if_id: NetIfId) ->
     with_manager_in(runtime, |manager| {
         manager
             .get_interface(if_id)
-            .copied()
-            .is_some_and(|interface| interface.is_operational())
+            .is_some_and(NetworkInterfaceInfo::is_operational)
     })
     .unwrap_or(false)
 }
@@ -1060,7 +1059,9 @@ pub(crate) fn resolve_ipv6_path_in(
     scope: InterfaceScope,
     dst: Ipv6Address,
 ) -> Result<Ipv6Path, NetworkError> {
-    with_manager_in(runtime, |manager| manager.ipv6_path(scope, dst))?
+    // Until topology is published there is no interface or route to select.
+    with_manager_in(runtime, |manager| manager.ipv6_path(scope, dst))
+        .map_err(|_| NetworkError::NetworkUnreachable)?
 }
 
 pub fn list_ipv6_routes_in(runtime: NetRuntimeHandle) -> Result<Vec<Ipv6Route>, NetworkError> {
