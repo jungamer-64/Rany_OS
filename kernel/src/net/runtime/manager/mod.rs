@@ -127,7 +127,6 @@ pub struct NetworkInterfaceInfo {
     pub config: Option<NetworkConfig>,
     primary_preference: PrimaryPreference,
     was_operational: bool,
-    advertised_router_expires_ms: Option<u64>,
 }
 
 impl NetworkInterfaceInfo {
@@ -213,7 +212,6 @@ impl NetworkManager {
                 config: None,
                 primary_preference,
                 was_operational: false,
-                advertised_router_expires_ms: None,
             },
         );
         Ok(if_id)
@@ -307,95 +305,11 @@ impl NetworkManager {
         if iface.config == Some(config) {
             return Ok(TopologyChange::Unchanged);
         }
-        if iface
-            .config
-            .and_then(|config| config.ipv6)
-            .and_then(|ipv6| ipv6.gateway)
-            != config.ipv6.and_then(|ipv6| ipv6.gateway)
-        {
-            iface.advertised_router_expires_ms = None;
-        }
         iface.config = Some(config);
         self.refresh_managed_routes_for_interface(if_id, config);
         let first_operational = self.note_first_operational(if_id);
         self.reconcile_primary(first_operational);
         Ok(TopologyChange::Changed)
-    }
-
-    fn apply_ipv6_router_advertisement(
-        &mut self,
-        if_id: NetIfId,
-        router: Ipv6Address,
-        router_lifetime_secs: u16,
-        autonomous_prefix: Option<Ipv6Address>,
-        now_ms: u64,
-    ) -> Result<(Option<Ipv6Address>, TopologyChange), NetworkError> {
-        let interface = self
-            .interfaces
-            .get(&if_id)
-            .filter(|interface| interface.is_operational())
-            .ok_or(NetworkError::NetworkUnreachable)?;
-        let old_expiration = interface.advertised_router_expires_ms;
-        let mut config = interface.config.ok_or(NetworkError::InvalidAddress)?;
-        let ipv6 = config.ipv6.as_mut().ok_or(NetworkError::InvalidAddress)?;
-
-        let previous_address = ipv6.global;
-        if let Some(prefix) = autonomous_prefix {
-            ipv6.global = Some(Ipv6Address::from_prefix_eui64(
-                &prefix,
-                config.mac.as_bytes(),
-            ));
-            ipv6.prefix_len = 64;
-        }
-        let new_address = ipv6.global.filter(|_| ipv6.global != previous_address);
-
-        // A configured gateway has no RA lifetime. Keep it, and retain the
-        // selected advertised router while its advertisement is valid.
-        let mut expiration = old_expiration;
-        if expiration.is_some_and(|expires_ms| expires_ms <= now_ms) {
-            ipv6.gateway = None;
-            expiration = None;
-        }
-        if router_lifetime_secs == 0 {
-            if ipv6.gateway == Some(router) && expiration.is_some() {
-                ipv6.gateway = None;
-                expiration = None;
-            }
-        } else if ipv6.gateway.is_none() || (ipv6.gateway == Some(router) && expiration.is_some()) {
-            ipv6.gateway = Some(router);
-            expiration = Some(now_ms.saturating_add(u64::from(router_lifetime_secs) * 1000));
-        }
-        let change = self.set_interface_config(if_id, config)?;
-        if let Some(interface) = self.interfaces.get_mut(&if_id) {
-            interface.advertised_router_expires_ms = expiration;
-        }
-        Ok((new_address, change))
-    }
-
-    fn expire_ipv6_routers(&mut self, now_ms: u64) -> TopologyChange {
-        let mut change = TopologyChange::Unchanged;
-        for (&if_id, interface) in &mut self.interfaces {
-            if interface
-                .advertised_router_expires_ms
-                .is_some_and(|expires_ms| expires_ms <= now_ms)
-            {
-                interface.advertised_router_expires_ms = None;
-                if let Some(ipv6) = interface
-                    .config
-                    .as_mut()
-                    .and_then(|config| config.ipv6.as_mut())
-                {
-                    ipv6.gateway = None;
-                }
-                self.routes_v6.retain(|route| {
-                    !(route.if_id == if_id
-                        && route.managed_by_interface
-                        && route.flags.default_route)
-                });
-                change = TopologyChange::Changed;
-            }
-        }
-        change
     }
 
     fn set_primary_preference(
@@ -674,18 +588,6 @@ impl NetworkManager {
         }
 
         if let Some(ipv6_cfg) = config.ipv6 {
-            if let Some(global) = ipv6_cfg.global {
-                self.routes_v6.push(Ipv6Route {
-                    destination: ipv6_apply_prefix(global, ipv6_cfg.prefix_len),
-                    prefix_len: ipv6_cfg.prefix_len,
-                    gateway: None,
-                    if_id,
-                    metric: 0,
-                    flags: RouteFlags::connected(),
-                    admin_enabled: true,
-                    managed_by_interface: true,
-                });
-            }
             if let Some(gateway) = ipv6_cfg.gateway {
                 self.routes_v6.push(Ipv6Route {
                     destination: Ipv6Address::UNSPECIFIED,
@@ -964,34 +866,6 @@ pub(crate) fn update_interface_config_in<R>(
     })
 }
 
-pub(crate) fn apply_ipv6_router_advertisement_in(
-    runtime: NetRuntimeHandle,
-    if_id: NetIfId,
-    router: Ipv6Address,
-    router_lifetime_secs: u16,
-    autonomous_prefix: Option<Ipv6Address>,
-    now_ms: u64,
-) -> Result<Option<Ipv6Address>, NetworkError> {
-    mutate_topology_in(runtime, |manager| {
-        manager.apply_ipv6_router_advertisement(
-            if_id,
-            router,
-            router_lifetime_secs,
-            autonomous_prefix,
-            now_ms,
-        )
-    })
-}
-
-pub(crate) fn expire_ipv6_routers_in(
-    runtime: NetRuntimeHandle,
-    now_ms: u64,
-) -> Result<(), NetworkError> {
-    mutate_topology_in(runtime, |manager| {
-        Ok(((), manager.expire_ipv6_routers(now_ms)))
-    })
-}
-
 pub fn set_interface_config_in(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,
@@ -1138,25 +1012,6 @@ pub fn lookup_ipv6_route_in(
     dst: Ipv6Address,
 ) -> Result<RouteLookupResultV6, NetworkError> {
     with_manager_in(runtime, |m| m.lookup_ipv6_route(dst))
-}
-
-pub(crate) fn resolve_ipv6_interface_in(
-    runtime: NetRuntimeHandle,
-    scope: InterfaceScope,
-    dst: Ipv6Address,
-) -> Result<NetIfId, NetworkError> {
-    with_manager_in(runtime, |manager| match scope {
-        InterfaceScope::Pinned(if_id) => manager
-            .get_interface(if_id)
-            .copied()
-            .filter(|interface| interface.is_operational())
-            .map(|_| if_id)
-            .ok_or(NetworkError::NetworkUnreachable),
-        InterfaceScope::Any => manager
-            .lookup_ipv6_route(dst)
-            .map(|route| route.if_id)
-            .ok_or(NetworkError::NetworkUnreachable),
-    })?
 }
 
 pub fn list_ipv6_routes_in(runtime: NetRuntimeHandle) -> Result<Vec<Ipv6Route>, NetworkError> {

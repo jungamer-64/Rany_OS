@@ -1043,52 +1043,6 @@ impl NetworkStack {
         self.expire_fragment_reassembly(now);
     }
 
-    /// Publish a DHCPv6 address through the same topology as SLAAC.
-    pub(crate) fn apply_ipv6_global_address_on(
-        &mut self,
-        if_id: NetIfId,
-        addr: Ipv6Address,
-    ) -> Result<(), crate::net::types::NetworkError> {
-        let changed = crate::net::runtime::manager::update_interface_config_in(
-            self.runtime,
-            if_id,
-            |config| {
-                let ipv6 = config
-                    .ipv6
-                    .as_mut()
-                    .ok_or(crate::net::types::NetworkError::InvalidAddress)?;
-                Ok::<_, crate::net::types::NetworkError>(ipv6.global.replace(addr) != Some(addr))
-            },
-        )??;
-        self.refresh_interface_topology();
-        if changed {
-            self.initiate_ipv6_dad_on(if_id, addr);
-        }
-        Ok(())
-    }
-
-    /// Initiate DAD for an IPv6 address
-    pub fn initiate_ipv6_dad_on(&mut self, if_id: NetIfId, addr: Ipv6Address) {
-        let dad = {
-            let Some(state) = self.interfaces.get_mut(&if_id) else {
-                return;
-            };
-            let Some(ref mut ndp) = state.ndp else {
-                return;
-            };
-            match ndp.initiate_dad(&addr) {
-                NdpResult::SendNeighborSolicitation { src, dst, target } => {
-                    NdpProcessor::build_ns(&src, &dst, &target, state.config.mac.as_bytes())
-                        .map(|msg| (if_id, src, dst, msg))
-                }
-                _ => None,
-            }
-        };
-        if let Some((if_id, src, dst, msg)) = dad {
-            self.send_ipv6_icmpv6_raw_on(if_id, &src, &dst, msg);
-        }
-    }
-
     /// Expire timed-out NDP pending packets
     pub fn expire_ndp_pending(&mut self) {
         let current_time = self.current_time.load(Ordering::Relaxed);
