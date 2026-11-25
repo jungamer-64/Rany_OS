@@ -409,6 +409,9 @@ impl NetworkStack {
             self.record_dropped_on(if_id);
             return;
         };
+        if !self.allow_icmpv6_egress(if_id, resolved_src, *dst, &icmpv6_payload) {
+            return;
+        }
         let current_time = self.current_time.load(Ordering::Relaxed);
         let mut pending_payload = Some(icmpv6_payload);
 
@@ -489,6 +492,31 @@ impl NetworkStack {
         self.send_ipv6_icmpv6_raw_on_payload(if_id, src, dst, icmpv6_data);
     }
 
+    fn allow_icmpv6_egress(
+        &self,
+        if_id: super::NetIfId,
+        src: Ipv6Address,
+        dst: Ipv6Address,
+        payload: &PacketPayload,
+    ) -> bool {
+        let view = crate::net::payload::PacketPayloadView::new(payload);
+        let allowed = view.read_array::<2>(0).is_some_and(|[kind, code]| {
+            crate::net::security::firewall::check_egress_in(
+                self.runtime,
+                src.octets(),
+                dst.octets(),
+                58,
+                kind.into(),
+                code.into(),
+                0,
+            )
+        });
+        if !allowed {
+            self.record_dropped_on(if_id);
+        }
+        allowed
+    }
+
     fn send_ipv6_icmpv6_raw_on_payload(
         &mut self,
         if_id: super::NetIfId,
@@ -496,6 +524,9 @@ impl NetworkStack {
         dst: &Ipv6Address,
         icmpv6_payload: PacketPayload,
     ) {
+        if !self.allow_icmpv6_egress(if_id, *src, *dst, &icmpv6_payload) {
+            return;
+        }
         let Some(config) = self.interface_config_or_runtime(if_id) else {
             return;
         };

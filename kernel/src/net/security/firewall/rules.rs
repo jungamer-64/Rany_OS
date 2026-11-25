@@ -86,6 +86,7 @@ pub enum FirewallProtocol {
     Udp,
     /// ICMP (プロトコル番号 1)
     Icmp,
+    Icmpv6,
     /// 任意のプロトコル番号
     Number(u8),
 }
@@ -98,6 +99,7 @@ impl FirewallProtocol {
             FirewallProtocol::Tcp => proto == 6,
             FirewallProtocol::Udp => proto == 17,
             FirewallProtocol::Icmp => proto == 1,
+            FirewallProtocol::Icmpv6 => proto == 58,
             FirewallProtocol::Number(n) => proto == *n,
         }
     }
@@ -110,6 +112,7 @@ impl core::fmt::Display for FirewallProtocol {
             FirewallProtocol::Tcp => write!(f, "TCP"),
             FirewallProtocol::Udp => write!(f, "UDP"),
             FirewallProtocol::Icmp => write!(f, "ICMP"),
+            FirewallProtocol::Icmpv6 => write!(f, "ICMPv6"),
             FirewallProtocol::Number(n) => write!(f, "proto:{}", n),
         }
     }
@@ -387,7 +390,7 @@ impl FirewallRule {
                     return false;
                 }
             }
-            1 => {
+            1 | 58 => {
                 // ICMP
                 // src_port, dst_port に ICMP type/code が入っていると想定
                 if !self.icmp_match.matches(src_port as u8, dst_port as u8) {
@@ -551,13 +554,21 @@ impl FirewallRuleBuilder {
     /// ICMP タイプを設定
     pub fn icmp_type(mut self, t: u8) -> Self {
         self.icmp_match = IcmpMatch::Type(t);
-        self.icmp()
+        if self.protocol == FirewallProtocol::Any {
+            self.icmp()
+        } else {
+            self
+        }
     }
 
     /// ICMP タイプとコードを設定
     pub fn icmp_type_code(mut self, t: u8, c: u8) -> Self {
         self.icmp_match = IcmpMatch::TypeCode(t, c);
-        self.icmp()
+        if self.protocol == FirewallProtocol::Any {
+            self.icmp()
+        } else {
+            self
+        }
     }
 
     /// 送信元ポートを設定

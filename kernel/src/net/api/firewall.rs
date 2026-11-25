@@ -135,9 +135,10 @@ pub async fn firewall_add_rule_in(
         .dst_ip(dst_ip)
         .priority(priority);
     // ICMP rules carry the message type and code in the port positions.
-    let builder = if protocol == FirewallProtocol::Icmp {
+    let builder = if matches!(protocol, FirewallProtocol::Icmp | FirewallProtocol::Icmpv6) {
+        let builder = builder.protocol(protocol);
         match (parse_icmp_field(src_port)?, parse_icmp_field(dst_port)?) {
-            (None, None) => builder.icmp(),
+            (None, None) => builder,
             (Some(icmp_type), None) => builder.icmp_type(icmp_type),
             (Some(icmp_type), Some(code)) => builder.icmp_type_code(icmp_type, code),
             (None, Some(_)) => return Err(String::from("ICMP code requires an ICMP type")),
@@ -239,12 +240,16 @@ fn parse_protocol(s: &str) -> Result<FirewallProtocol, String> {
         "*" | "any" | "all" => Ok(FirewallProtocol::Any),
         "tcp" => Ok(FirewallProtocol::Tcp),
         "udp" => Ok(FirewallProtocol::Udp),
-        "icmp" => Ok(FirewallProtocol::Icmp),
+        "icmp" | "1" => Ok(FirewallProtocol::Icmp),
+        "icmpv6" | "58" => Ok(FirewallProtocol::Icmpv6),
         _ => {
             if let Ok(n) = s.parse::<u8>() {
                 Ok(FirewallProtocol::Number(n))
             } else {
-                Err(format!("unknown protocol: '{}' (tcp/udp/icmp/*/0-255)", s))
+                Err(format!(
+                    "unknown protocol: '{}' (tcp/udp/icmp/icmpv6/*/0-255)",
+                    s
+                ))
             }
         }
     }

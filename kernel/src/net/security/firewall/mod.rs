@@ -3,7 +3,7 @@
 // ============================================================================
 //! # ファイアウォール
 //!
-//! ステートレスなパケットフィルタリングエンジン。
+//! パケットフィルタリングエンジン。
 //! Ingress（受信）/ Egress（送信）の両方向でルールベースのフィルタリングを提供する。
 //!
 //! ## 設計方針
@@ -34,7 +34,9 @@ pub use rules::{
 };
 pub use stats::FirewallStats;
 
+use crate::net::l4::tcp::{EndpointAddr, TcpState};
 use crate::net::runtime::NetRuntimeHandle;
+use crate::net::runtime::manager::NetIfId;
 use crate::sync::PoisonLock;
 
 extern crate alloc;
@@ -70,6 +72,7 @@ fn firewall_in(runtime: NetRuntimeHandle) -> &'static FirewallRuntimeState {
 /// - `false`: パケットを拒否（ドロップ）
 pub fn check_ingress_in(
     runtime: NetRuntimeHandle,
+    ingress: NetIfId,
     src_ip: impl Into<IpAddress>,
     dst_ip: impl Into<IpAddress>,
     protocol: u8,
@@ -89,6 +92,24 @@ pub fn check_ingress_in(
                 src_port,
                 dst_port,
                 tcp_flags,
+                || {
+                    let (local, remote) = match (dst_ip, src_ip) {
+                        (IpAddress::V4(local), IpAddress::V4(remote)) => (
+                            EndpointAddr::new(local, dst_port),
+                            EndpointAddr::new(remote, src_port),
+                        ),
+                        (IpAddress::V6(local), IpAddress::V6(remote)) => (
+                            EndpointAddr::new_v6(local, dst_port),
+                            EndpointAddr::new_v6(remote, src_port),
+                        ),
+                        _ => return false,
+                    };
+                    crate::net::runtime::transport::tcp_table_in(runtime)
+                        .read(ingress, local, remote, |entry| {
+                            !matches!(entry.state(), TcpState::Closed | TcpState::Listen)
+                        })
+                        .unwrap_or(false)
+                },
             ) == FirewallVerdict::Allow
         }
         Err(_) => {
@@ -123,6 +144,7 @@ pub fn check_egress_in(
                 src_port,
                 dst_port,
                 tcp_flags,
+                || false,
             ) == FirewallVerdict::Allow
         }
         Err(_) => {
@@ -170,10 +192,6 @@ pub fn setup_default_firewall_in(runtime: NetRuntimeHandle) {
                     .build(),
             );
 
-            // 2. [REMOVED] 確立済みの TCP 接続を許可 (ACK フラグがセットされているもの)
-            // SECURITY: ステートレスファイアウォールで全ての ACK パケットを許可するのは危険なため削除。
-            // 必要であれば特定の宛先ポートに対して個別に許可ルールを追加すべき。
-
             // 3. DHCP を許可 (UDP 67, 68)
             let _ = fw.add_rule(
                 FirewallRule::builder()
@@ -220,10 +238,34 @@ pub fn setup_default_firewall_in(runtime: NetRuntimeHandle) {
                     .build(),
             );
 
+            // IPv6 control traffic used by address configuration, neighbor
+            // discovery and path MTU discovery. NDP validates hop limit and
+            // message-specific address constraints before updating its state.
+            for kind in [2, 134, 135, 136] {
+                fw.add_rule(
+                    FirewallRule::builder()
+                        .name("Allow IPv6 control traffic")
+                        .ingress()
+                        .protocol(FirewallProtocol::Icmpv6)
+                        .icmp_type_code(kind, 0)
+                        .allow()
+                        .build(),
+                );
+            }
+            fw.add_rule(
+                FirewallRule::builder()
+                    .name("Allow DHCPv6 replies")
+                    .ingress()
+                    .udp()
+                    .src_port(PortMatch::Exact(547))
+                    .dst_port(PortMatch::Exact(546))
+                    .allow()
+                    .build(),
+            );
+
             // 6. 全ての外向き通信を許可
             fw.set_default_policy(FirewallDirection::Egress, FirewallAction::Allow);
-            // 入向きはデフォルト拒否
-            fw.set_default_policy(FirewallDirection::Ingress, FirewallAction::Deny);
+            fw.allow_known_tcp_flows_by_default();
 
             fw.set_enabled(true);
             log::info!("[FIREWALL] Secure default rules applied.");

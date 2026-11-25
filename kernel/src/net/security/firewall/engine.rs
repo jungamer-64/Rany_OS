@@ -32,11 +32,25 @@ pub struct FirewallEngine {
     /// 次のルール ID
     next_id: u64,
     /// Ingress デフォルトポリシー
-    default_ingress: FirewallAction,
+    default_ingress: IngressDefault,
     /// Egress デフォルトポリシー
     default_egress: FirewallAction,
     /// 統計情報
     stats_inner: FirewallStatsInner,
+}
+
+enum IngressDefault {
+    Fixed(FirewallAction),
+    KnownTcpFlows,
+}
+
+impl core::fmt::Display for IngressDefault {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Fixed(action) => action.fmt(f),
+            Self::KnownTcpFlows => f.write_str("allow known TCP flows"),
+        }
+    }
 }
 
 /// 内部統計（非アトミック — PoisonLock 保護下でのみアクセス）
@@ -82,7 +96,7 @@ impl FirewallEngine {
             enabled: true,
             rules: Vec::new(),
             next_id: 1,
-            default_ingress: FirewallAction::Deny,
+            default_ingress: IngressDefault::Fixed(FirewallAction::Deny),
             default_egress: FirewallAction::Allow,
             stats_inner: FirewallStatsInner::new(),
         }
@@ -111,7 +125,7 @@ impl FirewallEngine {
     pub fn set_default_policy(&mut self, direction: FirewallDirection, action: FirewallAction) {
         match direction {
             FirewallDirection::Ingress => {
-                self.default_ingress = action;
+                self.default_ingress = IngressDefault::Fixed(action);
                 log::info!("[FIREWALL] default ingress policy: {}", action);
             }
             FirewallDirection::Egress => {
@@ -119,11 +133,15 @@ impl FirewallEngine {
                 log::info!("[FIREWALL] default egress policy: {}", action);
             }
             FirewallDirection::Both => {
-                self.default_ingress = action;
+                self.default_ingress = IngressDefault::Fixed(action);
                 self.default_egress = action;
                 log::info!("[FIREWALL] default policy (both): {}", action);
             }
         }
+    }
+
+    pub(super) fn allow_known_tcp_flows_by_default(&mut self) {
+        self.default_ingress = IngressDefault::KnownTcpFlows;
     }
 
     /// ルールを追加する
@@ -184,6 +202,7 @@ impl FirewallEngine {
         src_port: u16,
         dst_port: u16,
         tcp_flags: u8,
+        known_tcp_flow: impl FnOnce() -> bool,
     ) -> FirewallVerdict {
         if !self.enabled {
             return FirewallVerdict::Allow;
@@ -226,22 +245,18 @@ impl FirewallEngine {
             }
         }
 
-        // デフォルトポリシー
         self.stats_inner.default_applied += 1;
-        let default = match direction {
-            FirewallDirection::Ingress => &self.default_ingress,
-            FirewallDirection::Egress => &self.default_egress,
-            FirewallDirection::Both => {
-                // 両方向の場合は Ingress / Egress 双方が Allow なら Allow
-                if self.default_ingress.is_allow() && self.default_egress.is_allow() {
-                    &self.default_ingress
-                } else {
-                    &FirewallAction::Deny
-                }
-            }
+        let allow_ingress = || match self.default_ingress {
+            IngressDefault::Fixed(action) => action.is_allow(),
+            IngressDefault::KnownTcpFlows => protocol == 6 && known_tcp_flow(),
+        };
+        let allowed = match direction {
+            FirewallDirection::Ingress => allow_ingress(),
+            FirewallDirection::Egress => self.default_egress.is_allow(),
+            FirewallDirection::Both => self.default_egress.is_allow() && allow_ingress(),
         };
 
-        if default.is_allow() {
+        if allowed {
             self.stats_inner.allowed += 1;
             FirewallVerdict::Allow
         } else {

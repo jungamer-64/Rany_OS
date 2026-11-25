@@ -25,7 +25,73 @@ mod tests {
             src_port,
             dst_port,
             0,
+            || false,
         )
+    }
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn explicit_rules_precede_known_tcp_flow_default() {
+        let mut engine = FirewallEngine::new_const();
+        engine.allow_known_tcp_flows_by_default();
+        let mut classify = |known| {
+            engine.evaluate_mut(
+                FirewallDirection::Ingress,
+                [10, 0, 2, 2].into(),
+                [10, 0, 2, 15].into(),
+                6,
+                443,
+                50000,
+                0x12,
+                || known,
+            )
+        };
+        assert_eq!(classify(true), FirewallVerdict::Allow);
+        assert_eq!(classify(false), FirewallVerdict::Deny);
+
+        engine.add_rule(FirewallRule::builder().ingress().tcp().deny().build());
+        assert_eq!(
+            engine.evaluate_mut(
+                FirewallDirection::Ingress,
+                [10, 0, 2, 2].into(),
+                [10, 0, 2, 15].into(),
+                6,
+                443,
+                50000,
+                0x12,
+                || panic!("explicit rule decides the verdict"),
+            ),
+            FirewallVerdict::Deny
+        );
+    }
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn icmpv6_rules_match_message_type_and_code() {
+        let mut engine = FirewallEngine::new_const();
+        engine.add_rule(
+            FirewallRule::builder()
+                .ingress()
+                .protocol(FirewallProtocol::Icmpv6)
+                .icmp_type_code(136, 0)
+                .allow()
+                .build(),
+        );
+        let mut classify = |kind, code| {
+            engine.evaluate_mut(
+                FirewallDirection::Ingress,
+                [0; 16].into(),
+                [0; 16].into(),
+                58,
+                kind,
+                code,
+                0,
+                || false,
+            )
+        };
+        assert_eq!(classify(136, 0), FirewallVerdict::Allow);
+        assert_eq!(classify(136, 1), FirewallVerdict::Deny);
+        assert_eq!(classify(128, 0), FirewallVerdict::Deny);
     }
 
     fn matches_ipv4(rule: &IpMatch, addr: [u8; 4]) -> bool {

@@ -841,6 +841,18 @@ impl NetworkStack {
         let identifier = 0x1234u16; // Fixed identifier for now
 
         let (config, local_ip) = self.resolve_ipv4_egress_on(if_id, None).map_err(|_| ())?;
+        if !crate::net::security::firewall::check_egress_in(
+            self.runtime,
+            local_ip.octets(),
+            target.octets(),
+            1,
+            8,
+            0,
+            0,
+        ) {
+            self.record_dropped_on(if_id);
+            return Err(());
+        }
         let current_time = self.current_time();
         let dst_mac = match self.resolve_mac(if_id, target, &config, current_time) {
             Some(mac) => mac,

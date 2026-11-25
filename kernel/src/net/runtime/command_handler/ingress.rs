@@ -138,6 +138,7 @@ impl RuntimeCommandHandler {
                         // SECURITY: firewall check には完全な IPv6 address を使う。
                         if !crate::net::security::firewall::check_ingress_in(
                             runtime,
+                            selected_if_id,
                             crate::net::security::firewall::IpAddress::V6(src_ip),
                             crate::net::security::firewall::IpAddress::V6(dst_ip),
                             u8::from(protocol),
@@ -239,6 +240,7 @@ impl RuntimeCommandHandler {
 
             if !crate::net::security::firewall::check_ingress_in(
                 runtime,
+                ingress_if_id,
                 src_ip.octets(),
                 dst_ip.octets(),
                 protocol.into(),
@@ -392,6 +394,7 @@ impl RuntimeCommandHandler {
 
             if !crate::net::security::firewall::check_ingress_in(
                 runtime,
+                ingress_if_id,
                 crate::net::security::firewall::IpAddress::V6(src.octets()),
                 crate::net::security::firewall::IpAddress::V6(dst.octets()),
                 protocol.into(),
@@ -526,7 +529,14 @@ impl RuntimeCommandHandler {
                 };
 
                 if !crate::net::security::firewall::check_ingress_in(
-                    runtime, src_ip, dst_ip, protocol, src_port, dst_port, tcp_flags,
+                    runtime,
+                    ingress_if_id,
+                    src_ip,
+                    dst_ip,
+                    protocol,
+                    src_port,
+                    dst_port,
+                    tcp_flags,
                 ) {
                     if let Some(stats) = stack.interface_stats(ingress_if_id) {
                         stats.record_dropped();
