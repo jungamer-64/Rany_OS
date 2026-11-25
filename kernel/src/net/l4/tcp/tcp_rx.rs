@@ -23,15 +23,15 @@ use super::retransmit::{
 };
 use super::segment::{TcpSegmentBuilder, send_tcp_segment_payload_in};
 use super::tcb::{
-    AckSegment, TcpConnectionState, TcpControlBlock, TcpControlBlockSnapshot, TcpHandshakeOptions,
-    tcp_flags,
+    AckSegment, SynReceivedOrigin, TcpConnectionState, TcpControlBlock, TcpControlBlockSnapshot,
+    TcpHandshakeOptions, tcp_flags,
 };
 use super::termination::{
     TcpTermination, abort_connection_handle_in, abort_connection_in, terminate_connection_in,
 };
 use super::window_scale::TcpOptionParser;
 use crate::net::l4::socket::{
-    Socket, find_listening_tcp_socket_in, lookup_socket_in, unregister_socket_in,
+    Socket, TcpSocketState, find_listening_tcp_socket_in, lookup_socket_in, unregister_socket_in,
 };
 use crate::net::l4::types::{
     EndpointAddr, EndpointError, SocketId, seq_after, seq_before, seq_leq,
@@ -1008,18 +1008,11 @@ fn handle_synchronized_segment(
     options: &[u8],
     data_payload: Option<PacketPayload>,
 ) {
-    let is_rst = (flags & tcp_flags::RST) != 0;
     let is_syn = (flags & tcp_flags::SYN) != 0;
     let is_ack = (flags & tcp_flags::ACK) != 0;
     let is_fin = (flags & tcp_flags::FIN) != 0;
     let is_urg = (flags & tcp_flags::URG) != 0;
     let payload_len = data_payload.as_ref().map_or(0, PacketPayload::total_len);
-
-    // 1. Check RST bit (RFC 793 / RFC 5961 Section 3.2)
-    if is_rst {
-        handle_rst_received(runtime, tcb, seq_num);
-        return;
-    }
 
     // 2. Check SYN bit (RFC 5961 Section 4.2)
     // Synchronized states: ESTABLISHED, FIN-WAIT-1, FIN-WAIT-2, CLOSE-WAIT, CLOSING, LAST-ACK, TIME-WAIT
@@ -1316,7 +1309,14 @@ fn process_tcp_with_tcb(
         seg_len += 1;
     }
 
-    if tcb.state != TcpConnectionState::SynSent && !is_acceptable_sequence(&tcb, seq_num, seg_len) {
+    let crossing_syn_ack = tcb.syn_received_origin == Some(SynReceivedOrigin::Simultaneous)
+        && (flags & (tcp_flags::SYN | tcp_flags::ACK | tcp_flags::RST))
+            == (tcp_flags::SYN | tcp_flags::ACK)
+        && seq_num.wrapping_add(1) == tcb.rcv_nxt;
+    if tcb.state != TcpConnectionState::SynSent
+        && !crossing_syn_ack
+        && !is_acceptable_sequence(&tcb, seq_num, seg_len)
+    {
         if (flags & tcp_flags::RST) == 0 {
             log::warn!(
                 "[TCP] Incoming segment out of window (seq={}, len={}) for connection to {}, sending Challenge ACK",
@@ -1329,12 +1329,20 @@ fn process_tcp_with_tcb(
         return;
     }
 
+    if tcb.state != TcpConnectionState::SynSent && flags & tcp_flags::RST != 0 {
+        handle_rst_received(runtime, tcb, seq_num);
+        return;
+    }
+
     match tcb.state {
         TcpConnectionState::SynSent => {
             handle_syn_sent_segment(runtime, tcb, flags, seq_num, ack_num, window, options);
         }
         TcpConnectionState::SynReceived => {
-            // RFC 793: If ACK bit is set, check if acceptable and transition to Established
+            if flags & tcp_flags::SYN != 0 && !crossing_syn_ack {
+                send_challenge_ack(runtime, &tcb);
+                return;
+            }
             if (flags & tcp_flags::ACK) != 0 {
                 if seq_after(ack_num, tcb.snd_una) && seq_leq(ack_num, tcb.snd_nxt) {
                     let established = tcp_table_in(runtime).establish_syn_received(
@@ -1348,15 +1356,23 @@ fn process_tcp_with_tcb(
                             occupies_sequence_space: seg_len > 0,
                         },
                     );
-                    if !established
-                        || !complete_passive_open(
+                    if !established {
+                        return;
+                    }
+                    let published = match tcb.syn_received_origin {
+                        Some(SynReceivedOrigin::Passive) => complete_passive_open(
                             runtime,
                             tcb.if_id,
                             tcb.local,
                             tcb.remote,
                             tcb.socket_id,
-                        )
-                    {
+                        ),
+                        Some(SynReceivedOrigin::Simultaneous) => {
+                            complete_active_open(runtime, &tcb)
+                        }
+                        None => unreachable!("SYN-RECEIVED records its opening origin"),
+                    };
+                    if !published {
                         return;
                     }
 
@@ -1366,11 +1382,18 @@ fn process_tcp_with_tcb(
                             TcpControlBlockSnapshot::from(entry)
                         })
                     {
+                        if crossing_syn_ack {
+                            send_ack_for_fast_path(
+                                runtime,
+                                &established_tcb,
+                                established_tcb.rcv_nxt,
+                            );
+                        }
                         handle_synchronized_segment(
                             runtime,
                             established_tcb,
-                            flags,
-                            seq_num,
+                            flags & !tcp_flags::SYN,
+                            seq_num.wrapping_add(u32::from(crossing_syn_ack)),
                             ack_num,
                             window,
                             urgent_ptr,
@@ -1379,11 +1402,9 @@ fn process_tcp_with_tcb(
                             data_payload,
                         );
                     }
-                } else if (flags & tcp_flags::RST) == 0 {
+                } else {
                     send_rst_for_unexpected_ack(runtime, &tcb, ack_num);
                 }
-            } else if (flags & tcp_flags::SYN) != 0 {
-                // Duplicate SYN in SynReceived: Ignore or re-send SYN-ACK
             }
         }
         TcpConnectionState::Established
@@ -1578,7 +1599,7 @@ fn handle_syn_ack_received(
         },
     );
 
-    if !updated {
+    if !updated || !complete_active_open(runtime, &tcb) {
         return;
     }
     let Some(established) = tcp_table_in(runtime).read(tcb.if_id, tcb.local, tcb.remote, |entry| {
@@ -1595,6 +1616,32 @@ fn handle_syn_ack_received(
         tcb.local,
         tcb.remote
     );
+}
+
+fn complete_active_open(runtime: NetRuntimeHandle, tcb: &TcpControlBlockSnapshot) -> bool {
+    let connected = lookup_socket_in(runtime, tcb.socket_id).is_some_and(|socket| {
+        socket
+            .with_inner_mut(|inner| {
+                if inner.tcp_state() != Some(TcpSocketState::Connecting)
+                    || inner.set_tcp_state(TcpSocketState::Connected).is_err()
+                {
+                    return false;
+                }
+                inner.connect_waker.wake();
+                true
+            })
+            .unwrap_or(false)
+    });
+    if !connected {
+        terminate_connection_in(
+            runtime,
+            tcb.if_id,
+            tcb.local,
+            tcb.remote,
+            TcpTermination::Reset,
+        );
+    }
+    connected
 }
 
 /// Helper to get a socket by its file descriptor.
@@ -1968,6 +2015,114 @@ pub(crate) fn tcp_passive_queue_connection_lifetime_smoke() -> bool {
     }
     super::termination::close_listener_in(runtime, listener.socket_id());
     true
+}
+
+#[cfg(test)]
+#[test]
+fn active_and_simultaneous_open_publish_the_connecting_socket() {
+    let runtime = crate::net::runtime::create_runtime().expect("TCP handshake runtime");
+    let table = tcp_table_in(runtime);
+    let if_id = NetIfId(8);
+    let local = EndpointAddr::new([192, 0, 2, 1], 80);
+    for (port, simultaneous) in [(52000, false), (52001, true)] {
+        let remote = EndpointAddr::new([192, 0, 2, 2], port);
+        let socket = Socket::new_tcp_in(runtime, TcpSocketState::Connecting);
+        table
+            .insert(TcpControlBlock::start_connect(
+                socket.socket_id(),
+                local,
+                remote,
+                1000,
+                true,
+                if_id,
+            ))
+            .unwrap();
+        assert!(table.mark_syn_sent(if_id, local, remote));
+        let snapshot = || {
+            table
+                .read(if_id, local, remote, |entry| {
+                    TcpControlBlockSnapshot::from(entry)
+                })
+                .unwrap()
+        };
+        if simultaneous {
+            process_tcp_with_tcb(
+                runtime,
+                snapshot(),
+                tcp_flags::SYN,
+                2000,
+                0,
+                512,
+                0,
+                &[],
+                None,
+            );
+            assert_eq!(
+                snapshot().syn_received_origin,
+                Some(SynReceivedOrigin::Simultaneous)
+            );
+        }
+        process_tcp_with_tcb(
+            runtime,
+            snapshot(),
+            tcp_flags::SYN | tcp_flags::ACK,
+            2000,
+            1001,
+            512,
+            0,
+            &[],
+            None,
+        );
+        assert_eq!(snapshot().state, TcpConnectionState::Established);
+        assert_eq!(
+            socket.with_inner(|inner| inner.tcp_state()),
+            Some(Some(TcpSocketState::Connected))
+        );
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn passive_open_reset_releases_only_the_handshake() {
+    let runtime = crate::net::runtime::create_runtime().expect("TCP handshake runtime");
+    let table = tcp_table_in(runtime);
+    let if_id = NetIfId(8);
+    let local = EndpointAddr::new([192, 0, 2, 1], 80);
+    let remote = EndpointAddr::new([192, 0, 2, 2], 52000);
+    let listener = Socket::new_tcp_in(runtime, TcpSocketState::Listening);
+    table
+        .insert(TcpControlBlock::passive_open(
+            listener.socket_id(),
+            local,
+            remote,
+            1000,
+            2000,
+            true,
+            if_id,
+            TcpHandshakeOptions::default(),
+        ))
+        .unwrap();
+    let read = || {
+        table.read(if_id, local, remote, |entry| {
+            TcpControlBlockSnapshot::from(entry)
+        })
+    };
+    process_tcp_with_tcb(
+        runtime,
+        read().unwrap(),
+        tcp_flags::RST,
+        2001,
+        0,
+        0,
+        0,
+        &[],
+        None,
+    );
+    assert!(read().is_none());
+    assert_eq!(
+        listener.with_inner(|inner| inner.tcp_state()),
+        Some(Some(TcpSocketState::Listening))
+    );
 }
 
 #[cfg(test)]

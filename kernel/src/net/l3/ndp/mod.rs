@@ -19,6 +19,7 @@ use super::icmpv6::Icmpv6Type;
 use super::ipv4::{IpProtocol, data_checksum};
 use super::ipv6::{Ipv6Address, ipv6_pseudo_header_checksum};
 use crate::net::payload::PacketPayloadView;
+use kernel_api::resource::net::PacketPayload;
 
 // =====================================================
 // NDP Constants

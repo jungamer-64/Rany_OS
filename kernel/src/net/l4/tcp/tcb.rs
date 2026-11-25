@@ -138,12 +138,21 @@ struct TcpConnectionData {
     delayed_ack_timer: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::net::l4::tcp) enum SynReceivedOrigin {
+    Passive,
+    Simultaneous,
+}
+
 #[derive(Debug)]
 enum TcpTcbState {
     Closed,
     Listen,
     SynSent(TcpHandshakeData),
-    SynReceived { data: TcpHandshakeData, origin: SynReceivedOrigin },
+    SynReceived {
+        data: TcpHandshakeData,
+        origin: SynReceivedOrigin,
+    },
     Established(TcpConnectionData),
     FinWait1(TcpConnectionData),
     FinWait2(TcpConnectionData),
@@ -159,7 +168,7 @@ impl TcpTcbState {
             Self::Closed => TcpConnectionState::Closed,
             Self::Listen => TcpConnectionState::Listen,
             Self::SynSent(_) => TcpConnectionState::SynSent,
-            Self::SynReceived(_) => TcpConnectionState::SynReceived,
+            Self::SynReceived { .. } => TcpConnectionState::SynReceived,
             Self::Established(_) => TcpConnectionState::Established,
             Self::FinWait1(_) => TcpConnectionState::FinWait1,
             Self::FinWait2(_) => TcpConnectionState::FinWait2,
@@ -173,7 +182,7 @@ impl TcpTcbState {
     fn sequence(&self) -> Option<TcpSequenceSpace> {
         match self {
             Self::Closed | Self::Listen => None,
-            Self::SynSent(data) | Self::SynReceived(data) => Some(data.seq),
+            Self::SynSent(data) | Self::SynReceived { data, .. } => Some(data.seq),
             Self::Established(data)
             | Self::FinWait1(data)
             | Self::FinWait2(data)
@@ -187,7 +196,7 @@ impl TcpTcbState {
     fn sequence_mut(&mut self) -> Option<&mut TcpSequenceSpace> {
         match self {
             Self::Closed | Self::Listen => None,
-            Self::SynSent(data) | Self::SynReceived(data) => Some(&mut data.seq),
+            Self::SynSent(data) | Self::SynReceived { data, .. } => Some(&mut data.seq),
             Self::Established(data)
             | Self::FinWait1(data)
             | Self::FinWait2(data)
@@ -226,14 +235,14 @@ impl TcpTcbState {
 
     fn handshake_data(&self) -> Option<&TcpHandshakeData> {
         match self {
-            Self::SynSent(data) | Self::SynReceived(data) => Some(data),
+            Self::SynSent(data) | Self::SynReceived { data, .. } => Some(data),
             _ => None,
         }
     }
 
     fn handshake_data_mut(&mut self) -> Option<&mut TcpHandshakeData> {
         match self {
-            Self::SynSent(data) | Self::SynReceived(data) => Some(data),
+            Self::SynSent(data) | Self::SynReceived { data, .. } => Some(data),
             _ => None,
         }
     }
@@ -246,6 +255,7 @@ pub struct TcpControlBlockSnapshot {
     pub local: EndpointAddr,
     pub remote: EndpointAddr,
     pub state: TcpConnectionState,
+    pub(super) syn_received_origin: Option<SynReceivedOrigin>,
     pub snd_nxt: u32,
     pub snd_una: u32,
     pub rcv_nxt: u32,
@@ -547,6 +557,10 @@ impl From<&TcpControlBlock> for TcpControlBlockSnapshot {
             local: value.local,
             remote: value.remote,
             state,
+            syn_received_origin: match value.state {
+                TcpTcbState::SynReceived { origin, .. } => Some(origin),
+                _ => None,
+            },
             snd_nxt: seq.snd_nxt,
             snd_una: seq.snd_una,
             rcv_nxt: seq.rcv_nxt,
@@ -697,7 +711,10 @@ impl TcpControlBlock {
         handshake.apply_options(options);
         handshake.seq.snd_nxt = handshake.seq.snd_nxt.wrapping_add(1);
         let mut tcb = Self::closed(socket_id, if_id, local, remote);
-        tcb.state = TcpTcbState::SynReceived(handshake);
+        tcb.state = TcpTcbState::SynReceived {
+            data: handshake,
+            origin: SynReceivedOrigin::Passive,
+        };
         tcb
     }
 
@@ -1492,7 +1509,10 @@ impl TcbTable {
                 TcpTcbState::SynSent(mut data) => {
                     data.seq.rcv_nxt = seq_num.wrapping_add(1);
                     data.apply_options(options);
-                    entry.state = TcpTcbState::SynReceived(data);
+                    entry.state = TcpTcbState::SynReceived {
+                        data,
+                        origin: SynReceivedOrigin::Simultaneous,
+                    };
                     accepted = true;
                 }
                 other => {
@@ -1516,7 +1536,7 @@ impl TcbTable {
         self.mutate_entry(if_id, local, remote, |entry| {
             let old = core::mem::replace(&mut entry.state, TcpTcbState::Closed);
             match old {
-                TcpTcbState::SynReceived(mut data) => {
+                TcpTcbState::SynReceived { mut data, .. } => {
                     data.seq.snd_una = segment.ack;
                     let peer_window = PeerWindow::from_segment(
                         data.window_scale.scale_snd_window(segment.window),
