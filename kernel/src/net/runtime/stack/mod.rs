@@ -360,12 +360,6 @@ impl InterfaceStackState {
         self.config
     }
 
-    pub(crate) fn ipv6_link_local(&self) -> Option<Ipv6Address> {
-        self.config
-            .ipv6
-            .and_then(|config| config.addresses.link_local())
-    }
-
     pub(crate) fn has_ipv6(&self) -> bool {
         self.ipv6.is_some()
     }

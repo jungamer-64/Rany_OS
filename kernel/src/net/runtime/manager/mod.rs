@@ -9,8 +9,8 @@ use crate::net::runtime::stack::NetworkConfig;
 mod ipv6_discovery;
 use ipv6_discovery::Ipv6Discovery;
 pub(crate) use ipv6_discovery::{
-    DadEvent, learn_ipv6_ra_in, maintain_ipv6_in, rdnss_server_live_in, rdnss_servers_in,
-    stage_dhcp_ipv6_in, update_ipv6_dad_in,
+    DadEvent, assigned_ipv6_link_local_in, learn_ipv6_ra_in, maintain_ipv6_in,
+    rdnss_server_live_in, rdnss_servers_in, stage_dhcp_ipv6_in, update_ipv6_dad_in,
 };
 
 use crate::net::types::{InterfaceScope, NetworkError};

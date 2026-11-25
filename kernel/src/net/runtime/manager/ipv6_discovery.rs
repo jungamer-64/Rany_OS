@@ -432,6 +432,20 @@ impl NetworkManager {
     }
 }
 
+pub(crate) fn assigned_ipv6_link_local_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+) -> Option<Ipv6Address> {
+    with_manager_in(runtime, |manager| {
+        manager
+            .get_interface(if_id)
+            .filter(|iface| iface.is_operational())
+            .and_then(|iface| iface.ipv6_discovery.snapshot().link_local())
+    })
+    .ok()
+    .flatten()
+}
+
 pub(crate) fn rdnss_servers_in(
     runtime: NetRuntimeHandle,
     now: u64,

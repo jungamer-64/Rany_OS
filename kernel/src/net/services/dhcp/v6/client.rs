@@ -30,52 +30,8 @@ impl DhcpV6Client {
         writer.finish().ok_or("Incomplete DHCPv6 payload")
     }
 
-    /// スタック設定からリンクローカルIPv6アドレスを取得（キャッシュ付き）
-    ///
-    /// 初回アクセス時にキャッシュし、以降はロックフリーで高速に返す。
-    /// リンクローカルアドレスはMAC由来のため起動後は不変。
-    ///
-    /// ## 設計根拠
-    /// - `handle_packet()` / `check_timeout()` は同期関数であり、イベントハンドラの
-    ///   スタックロック保持中に呼ばれるため、async版（GetLinkLocal）は使用不可
-    ///   （再帰的ロック取得→デッドロック）
-    /// - 短期間の読み取りロックで初回のみアクセスし、以降はキャッシュを参照する
     fn get_link_local(&self) -> Option<Ipv6Address> {
-        // キャッシュ済みの場合はスタックロック不要
-        if let Ok(guard) = self.cached_link_local.lock()
-            && let Some(addr) = *guard
-        {
-            return Some(addr);
-        }
-
-        // 初回のみスタックロックで取得してキャッシュ
-        let result = match crate::net::runtime::stack::stack_in(self.runtime) {
-            Ok(stack_lock) => match stack_lock.lock() {
-                Ok(guard) => guard.as_ref().and_then(|s| {
-                    s.interface_state_for_ingress(self.if_id)
-                        .and_then(|(_, state)| state.ipv6_link_local())
-                }),
-                Err(_) => {
-                    log::error!("[NET] DHCPv6: stack poisoned - cannot get link-local");
-                    None
-                }
-            },
-            Err(error) => {
-                log::error!(
-                    "[NET] DHCPv6: CPU stack unavailable - cannot get link-local: {:?}",
-                    error
-                );
-                None
-            }
-        };
-
-        if let Some(addr) = result
-            && let Ok(mut guard) = self.cached_link_local.lock()
-        {
-            *guard = Some(addr);
-        }
-
-        result
+        crate::net::runtime::manager::assigned_ipv6_link_local_in(self.runtime, self.if_id)
     }
 
     /// 非同期イベントキュー経由でUDPv6パケットを送信（ロック競合回避）
@@ -156,7 +112,6 @@ impl DhcpV6Client {
             server_addr: PoisonLock::new(None),
             state_time: AtomicU64::new(0),
             retry_count: AtomicU32::new(0),
-            cached_link_local: PoisonLock::new(None),
         }
     }
 
@@ -889,6 +844,9 @@ impl DhcpV6Client {
         match self.state.lock() {
             Ok(mut s) => match *s {
                 DhcpV6State::Init => {
+                    let Some(src) = self.get_link_local() else {
+                        return Ok(());
+                    };
                     // Start new transaction: Generate cryptographically secure SOLICIT XID
                     if !self.generate_secure_xid() {
                         return Err("Secure DHCPv6 XID entropy unavailable");
@@ -899,10 +857,8 @@ impl DhcpV6Client {
                     let len = self.build_solicit(&mut buf)?;
 
                     // Use link-local as source for SOLICIT (async event queue)
-                    if let Some(src) = self.get_link_local()
-                        && Self::generated_message_payload(&buf[..len]).is_ok_and(|payload| {
-                            self.enqueue_v6_send(src, all_dhcp_servers, payload)
-                        })
+                    if Self::generated_message_payload(&buf[..len])
+                        .is_ok_and(|payload| self.enqueue_v6_send(src, all_dhcp_servers, payload))
                     {
                         *s = DhcpV6State::SolicitSent;
                         self.state_time.store(current_tick, Ordering::SeqCst);

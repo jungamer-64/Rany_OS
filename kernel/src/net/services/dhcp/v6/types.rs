@@ -65,5 +65,4 @@ pub struct DhcpV6Client {
     pub(crate) server_addr: PoisonLock<Option<Ipv6Address>>,
     pub(crate) state_time: AtomicU64,
     pub(crate) retry_count: AtomicU32,
-    pub(crate) cached_link_local: PoisonLock<Option<Ipv6Address>>,
 }

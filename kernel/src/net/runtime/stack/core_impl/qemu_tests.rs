@@ -440,6 +440,7 @@ fn ipv6_udp_waits_for_the_gateway_and_preserves_the_ip_destination() {
             .source()
     };
     assert_eq!(assigned(&stack), None);
+    assert_eq!(manager::assigned_ipv6_link_local_in(runtime, if_id), None);
     let now = crate::task::current_tick();
     stack.maintain_ipv6_addresses(now + 1000).unwrap();
     assert_eq!(assigned(&stack), Some(SOURCE));
@@ -485,6 +486,14 @@ fn ipv6_udp_waits_for_the_gateway_and_preserves_the_ip_destination() {
     stack.drain_ndp_pending_on(if_id, &ROUTER);
     stack.drain_ndp_pending_on(if_id, &ROUTER);
     assert_eq!(DATAGRAMS.load(Ordering::Relaxed), 1);
+    let link_local = Ipv6Address::from_eui64(config.mac.as_bytes());
+    assert_eq!(
+        manager::assigned_ipv6_link_local_in(runtime, if_id),
+        Some(link_local)
+    );
+    manager::set_interface_link_state_in(runtime, if_id, manager::LinkState::Down).unwrap();
+    manager::set_interface_link_state_in(runtime, if_id, manager::LinkState::Up).unwrap();
+    assert_eq!(manager::assigned_ipv6_link_local_in(runtime, if_id), None);
 }
 
 fn reassembled_ipv6_uses_extension_header_transport_window() {
