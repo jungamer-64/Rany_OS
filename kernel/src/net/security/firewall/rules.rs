@@ -554,20 +554,20 @@ impl FirewallRuleBuilder {
     /// ICMP タイプを設定
     pub fn icmp_type(mut self, t: u8) -> Self {
         self.icmp_match = IcmpMatch::Type(t);
-        if self.protocol == FirewallProtocol::Any {
-            self.icmp()
-        } else {
+        if self.protocol == FirewallProtocol::Icmpv6 {
             self
+        } else {
+            self.icmp()
         }
     }
 
     /// ICMP タイプとコードを設定
     pub fn icmp_type_code(mut self, t: u8, c: u8) -> Self {
         self.icmp_match = IcmpMatch::TypeCode(t, c);
-        if self.protocol == FirewallProtocol::Any {
-            self.icmp()
-        } else {
+        if self.protocol == FirewallProtocol::Icmpv6 {
             self
+        } else {
+            self.icmp()
         }
     }
 
