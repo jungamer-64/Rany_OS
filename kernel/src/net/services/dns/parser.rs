@@ -3,10 +3,10 @@
 // ============================================================================
 
 use super::*;
-use crate::net::payload::PayloadRange;
+use crate::net::payload::{PacketPayloadView, PayloadRange};
+use kernel_api::resource::net::PacketPayload;
 
 struct DnsSectionCounts {
-    qcount: usize,
     acount: usize,
     nscount: usize,
     arcount: usize,
@@ -32,87 +32,45 @@ struct DnsRecordHeader {
     rdata_offset: usize,
 }
 
+pub(super) struct DnsQuestion<'a> {
+    pub(super) id: u16,
+    pub(super) name: &'a DnsNameOwned,
+    pub(super) kind: DnsQueryType,
+}
+
+pub(super) enum DnsReply {
+    Unrelated,
+    Truncated,
+    Answer(Result<DnsResponseView, DnsResponseCode>),
+}
+
 impl DnsClient {
-    pub fn parse_response_payload_for_name(
+    pub(super) fn parse_reply(
         &self,
-        payload: kernel_api::resource::net::PacketPayload,
-        current_tick: u64,
-        expected_name: &DnsNameOwned,
-        expected_type: DnsQueryType,
-    ) -> Option<Result<DnsResponseView, DnsResponseCode>> {
-        if self.needs_tcp_fallback_payload(&payload) {
-            None
-        } else {
-            Some(self.parse_response_payload_chained(
-                payload,
-                current_tick,
-                expected_name,
-                expected_type,
-            ))
-        }
-    }
-
-    fn needs_tcp_fallback_payload(
-        &self,
-        payload: &kernel_api::resource::net::PacketPayload,
-    ) -> bool {
-        let view = crate::net::payload::PacketPayloadView::new(payload);
-        if view.total_len() < DnsHeader::SIZE {
-            return false;
-        }
-
-        let Some(flags) = view.read_array::<2>(2) else {
-            return false;
+        payload: PacketPayload,
+        question: &DnsQuestion<'_>,
+    ) -> DnsReply {
+        let view = PacketPayloadView::new(&payload);
+        let Some(flags) = view.read_array::<2>(2).map(u16::from_be_bytes) else {
+            return DnsReply::Unrelated;
         };
-        let flags = u16::from_be_bytes(flags);
-        ((flags >> 9) & 1 == 1) || view.total_len() >= 512
-    }
-
-    fn parse_and_validate_response_header_payload(
-        &self,
-        view: &crate::net::payload::PacketPayloadView<'_>,
-    ) -> Result<u16, DnsResponseCode> {
-        if view.total_len() < DnsHeader::SIZE {
-            return Err(DnsResponseCode::FormatError);
+        // QR must indicate a response and OPCODE must match standard QUERY.
+        if flags & 0xf800 != 0x8000 || view.read_array::<2>(0) != Some(question.id.to_be_bytes()) {
+            return DnsReply::Unrelated;
         }
-
-        let flags = view
-            .read_array::<2>(2)
-            .map(u16::from_be_bytes)
-            .ok_or(DnsResponseCode::FormatError)?;
-        if ((flags >> 15) & 1) != 1 {
-            return Err(DnsResponseCode::FormatError);
-        }
-
-        Ok(flags)
-    }
-
-    fn consume_pending_response_id_payload(
-        &self,
-        view: &crate::net::payload::PacketPayloadView<'_>,
-    ) -> Result<(), DnsResponseCode> {
-        let response_id = view
-            .read_array::<2>(0)
-            .map(u16::from_be_bytes)
-            .ok_or(DnsResponseCode::FormatError)?;
-
-        let id_valid = match self.pending_ids.lock() {
-            Ok(mut pending) => pending.remove(&response_id).is_some(),
-            Err(_) => {
-                log::error!("[NET] DNS pending_ids lock poisoned - dropping response for security");
-                false
-            }
+        let Ok(offset) = self.match_question(&payload, &view, question) else {
+            return DnsReply::Unrelated;
         };
-        if id_valid {
-            return Ok(());
+        if flags & 0x0200 != 0 {
+            return DnsReply::Truncated;
         }
-
-        log::warn!(
-            "[NET] DNS: Response with unexpected transaction ID 0x{:04x}, dropping (possible cache poisoning attempt)",
-            response_id
-        );
-        self.stats.errors.fetch_add(1, Ordering::Relaxed);
-        Err(DnsResponseCode::FormatError)
+        DnsReply::Answer(self.parse_matched_response(
+            payload,
+            crate::task::current_tick(),
+            question.name,
+            flags,
+            offset,
+        ))
     }
 
     fn handle_response_code_payload(
@@ -135,10 +93,6 @@ impl DnsClient {
         &self,
         view: &crate::net::payload::PacketPayloadView<'_>,
     ) -> Result<DnsSectionCounts, DnsResponseCode> {
-        let qcount = view
-            .read_array::<2>(4)
-            .map(u16::from_be_bytes)
-            .ok_or(DnsResponseCode::FormatError)? as usize;
         let acount = view
             .read_array::<2>(6)
             .map(u16::from_be_bytes)
@@ -152,10 +106,9 @@ impl DnsClient {
             .map(u16::from_be_bytes)
             .ok_or(DnsResponseCode::FormatError)? as usize;
 
-        if qcount > 64 || acount > 1024 || nscount > 1024 || arcount > 1024 {
+        if acount > 1024 || nscount > 1024 || arcount > 1024 {
             log::warn!(
-                "[NET] DNS: Response with excessive record counts (Q: {}, A: {}, NS: {}, AR: {}), dropping",
-                qcount,
+                "[NET] DNS: Response with excessive record counts (A: {}, NS: {}, AR: {}), dropping",
                 acount,
                 nscount,
                 arcount
@@ -164,51 +117,35 @@ impl DnsClient {
         }
 
         Ok(DnsSectionCounts {
-            qcount,
             acount,
             nscount,
             arcount,
         })
     }
 
-    fn validate_question_section_payload(
+    fn match_question(
         &self,
-        payload: &kernel_api::resource::net::PacketPayload,
-        view: &crate::net::payload::PacketPayloadView<'_>,
-        offset: &mut usize,
-        qcount: usize,
-        expected_name: &DnsNameOwned,
-        expected_type: DnsQueryType,
-    ) -> Result<(), DnsResponseCode> {
-        let mut matched_question = false;
-        for _ in 0..qcount {
-            let parsed_name = self.parse_name_payload(payload, view, *offset)?;
-            let qtype = view
-                .read_array::<2>(parsed_name.next_offset)
-                .map(u16::from_be_bytes)
-                .ok_or(DnsResponseCode::FormatError)?;
-            if view.read_array::<2>(parsed_name.next_offset + 2).is_none() {
-                return Err(DnsResponseCode::FormatError);
-            }
-
-            if compare_dns_name_view_to_owned(payload, &parsed_name.name, expected_name)
-                == core::cmp::Ordering::Equal
-                && qtype == expected_type as u16
-            {
-                matched_question = true;
-            }
-            *offset = parsed_name.next_offset + 4;
+        payload: &PacketPayload,
+        view: &PacketPayloadView<'_>,
+        expected: &DnsQuestion<'_>,
+    ) -> Result<usize, DnsResponseCode> {
+        if view.read_array::<2>(4) != Some(1u16.to_be_bytes()) {
+            return Err(DnsResponseCode::FormatError);
         }
-
-        if matched_question {
-            return Ok(());
+        let parsed = self.parse_name_payload(payload, view, DnsHeader::SIZE)?;
+        let kind = view
+            .read_array::<2>(parsed.next_offset)
+            .map(u16::from_be_bytes);
+        let class = view
+            .read_array::<2>(parsed.next_offset + 2)
+            .map(u16::from_be_bytes);
+        if compare_dns_name_view_to_owned(payload, &parsed.name, expected.name).is_ne()
+            || kind != Some(expected.kind as u16)
+            || class != Some(DnsQueryClass::IN as u16)
+        {
+            return Err(DnsResponseCode::FormatError);
         }
-
-        log::warn!(
-            "[NET] DNS: Response Question section does not match query ({:?}), dropping for security",
-            expected_type
-        );
-        Err(DnsResponseCode::FormatError)
+        Ok(parsed.next_offset + 4)
     }
 
     fn skip_authority_section_payload(
@@ -236,28 +173,17 @@ impl DnsClient {
         Ok(())
     }
 
-    fn parse_response_payload_chained(
+    fn parse_matched_response(
         &self,
-        payload: kernel_api::resource::net::PacketPayload,
+        payload: PacketPayload,
         current_tick: u64,
         expected_name: &DnsNameOwned,
-        expected_type: DnsQueryType,
+        flags: u16,
+        mut offset: usize,
     ) -> Result<DnsResponseView, DnsResponseCode> {
-        let view = crate::net::payload::PacketPayloadView::new(&payload);
-        let flags = self.parse_and_validate_response_header_payload(&view)?;
-        self.consume_pending_response_id_payload(&view)?;
-        self.handle_response_code_payload(flags, expected_name, current_tick)?;
-
+        let view = PacketPayloadView::new(&payload);
         let counts = self.parse_section_counts_payload(&view)?;
-        let mut offset = DnsHeader::SIZE;
-        self.validate_question_section_payload(
-            &payload,
-            &view,
-            &mut offset,
-            counts.qcount,
-            expected_name,
-            expected_type,
-        )?;
+        self.handle_response_code_payload(flags, expected_name, current_tick)?;
 
         let records =
             self.parse_answer_section_payload(&payload, &view, &mut offset, counts.acount)?;
@@ -524,5 +450,68 @@ impl DnsClient {
         }
 
         Ok(records)
+    }
+}
+
+#[cfg(all(test, any(feature = "std", target_os = "linux")))]
+mod tests {
+    use super::*;
+    use crate::net::l4::test_support::packet_fixture_with_data;
+
+    fn payload(bytes: &[u8]) -> PacketPayload {
+        PacketPayload::try_single(packet_fixture_with_data(bytes)).expect("fixture payload")
+    }
+
+    #[test]
+    fn reply_must_match_before_cache_or_fallback() {
+        let client = DnsClient::new(crate::net::runtime::default_runtime(), 1000);
+        let name_data = payload(b"host");
+        let labels = alloc::vec![PayloadRange::checked(&name_data, 0, 4).expect("label")];
+        let name = DnsNameOwned {
+            payload: name_data,
+            labels,
+        };
+        let question = DnsQuestion {
+            id: 0x0123,
+            name: &name,
+            kind: DnsQueryType::A,
+        };
+
+        let response =
+            b"\x01\x23\x81\x83\x00\x01\x00\x00\x00\x00\x00\x00\x04host\x00\x00\x01\x00\x01";
+        let mut unrelated = *response;
+        unrelated[1] = 0x24;
+        assert!(matches!(
+            client.parse_reply(payload(&unrelated), &question),
+            DnsReply::Unrelated
+        ));
+        unrelated = *response;
+        unrelated[13] = b'p';
+        assert!(matches!(
+            client.parse_reply(payload(&unrelated), &question),
+            DnsReply::Unrelated
+        ));
+        unrelated = *response;
+        unrelated[20] = 3;
+        unrelated[2] |= 2;
+        assert!(matches!(
+            client.parse_reply(payload(&unrelated), &question),
+            DnsReply::Unrelated
+        ));
+        assert_eq!(
+            client.ipv4_cache.lock().ok().expect("cache").entries.len(),
+            0
+        );
+
+        let mut truncated = *response;
+        truncated[2] |= 2;
+        assert!(matches!(
+            client.parse_reply(payload(&truncated), &question),
+            DnsReply::Truncated
+        ));
+        assert!(matches!(
+            client.parse_reply(payload(response), &question),
+            DnsReply::Answer(Err(DnsResponseCode::NameError))
+        ));
     }
 }

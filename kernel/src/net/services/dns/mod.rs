@@ -616,7 +616,6 @@ pub struct DnsClient {
     search_domains: PoisonLock<Vec<DnsNormalizedName>>,
     /// 統計情報
     stats: DnsStats,
-    /// 保留中クエリのトランザクションIDセット (Security: RFC 5452 - キャッシュポイズニング防止)
 }
 
 /// DNSサーバーアドレス（IPv4 / IPv6）
@@ -638,7 +637,6 @@ pub const DNS_MAX_SEARCH_DOMAINS: usize = 6;
 pub const DNS_MAX_CNAME_DEPTH: usize = 8;
 /// ネガティブキャッシュTTL（秒）
 pub const DNS_NEGATIVE_CACHE_TTL_SECS: u32 = 30;
-/// pending transaction ID の寿命（tick）
 
 /// DNS retry configuration
 pub const DNS_MAX_RETRIES: u8 = 3;

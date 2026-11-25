@@ -2,6 +2,7 @@
 // kernel/src/net/services/dns/transport_tcp.rs - サービス / DNS / TCPトランスポート
 // ============================================================================
 
+use super::parser::{DnsQuestion, DnsReply};
 use super::*;
 use crate::net::l4::udp::UdpAddr;
 use crate::task::{self, TimeoutResult};
@@ -11,60 +12,59 @@ impl DnsClient {
         &self,
         socket: &crate::net::l4::udp::UdpEndpoint,
         server: DnsServerAddr,
-        name: DnsNameOwned,
+        mut name: DnsNameOwned,
         qtype: DnsQueryType,
-        tick: u64,
-        query_id: u16,
     ) -> Result<DnsResponseView, (DnsNameOwned, &'static str)> {
         let dest = Self::udp_addr_for_server(server);
-        let query_payload = match self.build_query_payload_for_name_with_id(&name, qtype, query_id)
-        {
-            Ok(payload) => payload,
-            Err(err) => return Err((name, err)),
+        let id = match self.next_query_id() {
+            Ok(id) => id,
+            Err(error) => return Err((name, error)),
         };
-        if socket.send(query_payload, dest).await.is_err() {
-            return Err((name, "UDP send failed"));
-        }
+        for _ in 0..DNS_MAX_RETRIES {
+            let payload = match self.build_query_payload_for_name_with_id(&name, qtype, id) {
+                Ok(payload) => payload,
+                Err(error) => return Err((name, error)),
+            };
+            if socket.send(payload, dest).await.is_err() {
+                return Err((name, "UDP send failed"));
+            }
 
-        let mut attempt = 0;
-        // LOOP_PROOF: mode=bounded; reason=Each unsuccessful reply or timeout consumes one of DNS_MAX_RETRIES and successful parsing or timer failure returns.;
-        while attempt < DNS_MAX_RETRIES {
-            match task::with_timeout(socket.recv(), DNS_RETRY_TIMEOUT_MS).await {
-                TimeoutResult::Completed(Some((_if_id, src, _ttl, packet))) => {
+            let question_name = &mut name;
+            let reply = async move {
+                // LOOP_PROOF: mode=event; reason=Each receive awaits a datagram; unrelated traffic yields to let the attempt deadline be polled.;
+                loop {
+                    let Some((_if_id, src, _ttl, packet)) = socket.recv().await else {
+                        return None;
+                    };
                     if Self::source_matches_server(src, server) && src.port() == DNS_PORT {
-                        let parsed =
-                            self.parse_response_payload_for_name(packet, tick, &name, qtype);
-                        if let Some(parsed) = parsed {
-                            return parsed.map_err(|_| (name, "Parse error"));
+                        let question = DnsQuestion {
+                            id,
+                            name: &*question_name,
+                            kind: qtype,
+                        };
+                        match self.parse_reply(packet, &question) {
+                            DnsReply::Unrelated => {}
+                            matched => return Some(matched),
                         }
-
-                        log::info!(
-                            "[NET] DNS: UDP response truncated, retrying with TCP (RFC 7766 fallback)"
-                        );
-                        return self.query_tcp(server, name, qtype).await;
                     }
-
-                    attempt += 1;
+                    task::yield_now().await;
                 }
+            };
+            match task::with_timeout(reply, DNS_RETRY_TIMEOUT_MS).await {
+                TimeoutResult::Completed(Some(DnsReply::Answer(result))) => {
+                    return result.map_err(|_| (name, "DNS answer rejected"));
+                }
+                TimeoutResult::Completed(Some(DnsReply::Truncated)) => {
+                    return self.query_tcp(server, name, qtype).await;
+                }
+                TimeoutResult::Completed(_) => return Err((name, "DNS receive ended")),
+                TimeoutResult::TimedOut => {}
                 TimeoutResult::TimerFailed(cause) => {
                     log::error!("DNS query timer failed: {cause}");
                     return Err((name, "DNS query timer unavailable"));
                 }
-                _ => {
-                    attempt += 1;
-                    if attempt < DNS_MAX_RETRIES {
-                        let retry_payload = match self
-                            .build_query_payload_for_name_with_id(&name, qtype, query_id)
-                        {
-                            Ok(payload) => payload,
-                            Err(err) => return Err((name, err)),
-                        };
-                        let _ = socket.send(retry_payload, dest).await;
-                    }
-                }
             }
         }
-
         Err((name, "DNS query timed out"))
     }
 
@@ -134,7 +134,6 @@ impl DnsClient {
             Ok(query_id) => query_id,
             Err(err) => return Err((name, err)),
         };
-        self.register_pending_query_id(query_id);
         let payload = match self.build_tcp_query_payload_for_name_with_id(&name, qtype, query_id) {
             Ok(payload) => payload,
             Err(err) => return Err((name, err)),
@@ -183,11 +182,16 @@ impl DnsClient {
         };
         connection.close();
 
-        let tick = crate::task::current_tick();
-        match self.parse_response_payload_for_name(msg_data, tick, &name, qtype) {
-            Some(Ok(response)) => Ok(response),
-            Some(Err(_)) => Err((name, "Parse error")),
-            None => Err((name, "TCP fallback requested unexpectedly")),
+        let question = DnsQuestion {
+            id: query_id,
+            name: &name,
+            kind: qtype,
+        };
+        match self.parse_reply(msg_data, &question) {
+            DnsReply::Answer(Ok(response)) => Ok(response),
+            DnsReply::Answer(Err(_)) => Err((name, "DNS answer rejected")),
+            DnsReply::Unrelated => Err((name, "DNS reply does not match the query")),
+            DnsReply::Truncated => Err((name, "Truncated DNS reply over TCP")),
         }
     }
 

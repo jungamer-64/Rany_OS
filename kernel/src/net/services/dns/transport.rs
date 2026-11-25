@@ -10,7 +10,6 @@ impl DnsClient {
         name: DnsNameOwned,
         qtype: DnsQueryType,
     ) -> Result<DnsResponseView, &'static str> {
-        let tick = crate::task::current_tick();
         let ipv4_servers = self.ipv4_servers_snapshot();
         let ipv6_servers = self.ipv6_servers_snapshot();
         let servers = Self::build_prioritized_server_list(&ipv4_servers, &ipv6_servers);
@@ -19,15 +18,8 @@ impl DnsClient {
         }
 
         let socket = self.bind_udp_socket()?;
-        let query_id = self.next_query_id()?;
-        self.register_pending_query_id(query_id);
-        let result = self
-            .query_servers_with_failover(&socket, &servers, name, qtype, tick, query_id)
-            .await;
-        if result.is_err() {
-            self.retire_pending_query_id_value(query_id);
-        }
-        result
+        self.query_servers_with_failover(&socket, &servers, name, qtype)
+            .await
     }
 
     pub(super) fn build_prioritized_server_list(
@@ -56,15 +48,13 @@ impl DnsClient {
         servers: &[DnsServerAddr],
         name: DnsNameOwned,
         qtype: DnsQueryType,
-        tick: u64,
-        query_id: u16,
     ) -> Result<DnsResponseView, &'static str> {
         let mut last_error = "DNS query timed out";
         let mut retained_name = name;
 
         for server in servers {
             match self
-                .query_single_server(socket, *server, retained_name, qtype, tick, query_id)
+                .query_single_server(socket, *server, retained_name, qtype)
                 .await
             {
                 Ok(response) => return Ok(response),
