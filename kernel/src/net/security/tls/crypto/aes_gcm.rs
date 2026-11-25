@@ -336,7 +336,8 @@ mod tests {
         let ctx = AesGcmKey::new(&key).expect("test AES key is valid");
         let mut expected_ciphertext = [0u8; 48];
         let mut expected_tag = [0u8; 16];
-        ctx.encrypt_in_place(
+        super::super::test_support::aes_gcm_key_encrypt(
+            &ctx,
             &nonce,
             aad,
             &plaintext,

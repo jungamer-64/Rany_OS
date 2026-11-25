@@ -588,8 +588,6 @@ pub fn test_build_lease_defaults_large_timers_without_overflow() {
         renewal_time: None,
         rebinding_time: None,
         server_id: None,
-        metadata_payload: None,
-        hostname: None,
         domain_name: None,
     };
 

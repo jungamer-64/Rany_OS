@@ -6,28 +6,9 @@
 mod tests {
     use super::super::engine::{FirewallEngine, FirewallVerdict};
     use super::super::rules::*;
+    use alloc::format;
 
     fn eval_ipv4(
-        engine: &FirewallEngine,
-        direction: FirewallDirection,
-        src_ip: [u8; 4],
-        dst_ip: [u8; 4],
-        protocol: u8,
-        src_port: u16,
-        dst_port: u16,
-    ) -> FirewallVerdict {
-        engine.evaluate(
-            direction,
-            IpAddress::V4(src_ip),
-            IpAddress::V4(dst_ip),
-            protocol,
-            src_port,
-            dst_port,
-            0,
-        )
-    }
-
-    fn eval_ipv4_mut(
         engine: &mut FirewallEngine,
         direction: FirewallDirection,
         src_ip: [u8; 4],
@@ -66,7 +47,7 @@ mod tests {
         assert!(!engine.enabled());
         assert_eq!(
             eval_ipv4(
-                &engine,
+                &mut engine,
                 FirewallDirection::Ingress,
                 [10, 0, 0, 1],
                 [192, 168, 1, 1],
@@ -81,10 +62,10 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_configured_allow_policy() {
-        let engine = make_engine();
+        let mut engine = make_engine();
         assert_eq!(
             eval_ipv4(
-                &engine,
+                &mut engine,
                 FirewallDirection::Ingress,
                 [10, 0, 0, 1],
                 [192, 168, 1, 1],
@@ -99,11 +80,11 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_default_deny_policy() {
-        let engine = FirewallEngine::new_const();
+        let mut engine = FirewallEngine::new_const();
         assert!(engine.enabled());
         assert_eq!(
             eval_ipv4(
-                &engine,
+                &mut engine,
                 FirewallDirection::Ingress,
                 [10, 0, 0, 1],
                 [192, 168, 1, 1],
@@ -131,7 +112,7 @@ mod tests {
         // SSH → Deny
         assert_eq!(
             eval_ipv4(
-                &engine,
+                &mut engine,
                 FirewallDirection::Ingress,
                 [10, 0, 0, 1],
                 [192, 168, 1, 1],
@@ -145,7 +126,7 @@ mod tests {
         // HTTP → Allow (no matching rule)
         assert_eq!(
             eval_ipv4(
-                &engine,
+                &mut engine,
                 FirewallDirection::Ingress,
                 [10, 0, 0, 1],
                 [192, 168, 1, 1],
@@ -174,7 +155,7 @@ mod tests {
         // LAN → Allow
         assert_eq!(
             eval_ipv4(
-                &engine,
+                &mut engine,
                 FirewallDirection::Ingress,
                 [192, 168, 1, 100],
                 [10, 0, 0, 1],
@@ -188,7 +169,7 @@ mod tests {
         // WAN → Deny
         assert_eq!(
             eval_ipv4(
-                &engine,
+                &mut engine,
                 FirewallDirection::Ingress,
                 [8, 8, 8, 8],
                 [10, 0, 0, 1],
@@ -232,7 +213,7 @@ mod tests {
         // Trusted SSH → Allow (higher priority rule matched first)
         assert_eq!(
             eval_ipv4(
-                &engine,
+                &mut engine,
                 FirewallDirection::Ingress,
                 [10, 0, 0, 5],
                 [192, 168, 1, 1],
@@ -246,7 +227,7 @@ mod tests {
         // Untrusted SSH → Deny
         assert_eq!(
             eval_ipv4(
-                &engine,
+                &mut engine,
                 FirewallDirection::Ingress,
                 [8, 8, 8, 8],
                 [192, 168, 1, 1],
@@ -274,7 +255,7 @@ mod tests {
         // Well-known port → Allow
         assert_eq!(
             eval_ipv4(
-                &engine,
+                &mut engine,
                 FirewallDirection::Ingress,
                 [10, 0, 0, 1],
                 [192, 168, 1, 1],
@@ -288,7 +269,7 @@ mod tests {
         // High port → Deny
         assert_eq!(
             eval_ipv4(
-                &engine,
+                &mut engine,
                 FirewallDirection::Ingress,
                 [10, 0, 0, 1],
                 [192, 168, 1, 1],
@@ -314,7 +295,7 @@ mod tests {
 
         assert_eq!(
             eval_ipv4(
-                &engine,
+                &mut engine,
                 FirewallDirection::Ingress,
                 [203, 0, 113, 42],
                 [10, 0, 0, 1],
@@ -327,7 +308,7 @@ mod tests {
 
         assert_eq!(
             eval_ipv4(
-                &engine,
+                &mut engine,
                 FirewallDirection::Ingress,
                 [203, 0, 113, 43],
                 [10, 0, 0, 1],
@@ -355,7 +336,7 @@ mod tests {
         // Egress DNS → Deny
         assert_eq!(
             eval_ipv4(
-                &engine,
+                &mut engine,
                 FirewallDirection::Egress,
                 [192, 168, 1, 1],
                 [8, 8, 8, 8],
@@ -369,7 +350,7 @@ mod tests {
         // Ingress DNS → Allow (rule is egress-only)
         assert_eq!(
             eval_ipv4(
-                &engine,
+                &mut engine,
                 FirewallDirection::Ingress,
                 [8, 8, 8, 8],
                 [192, 168, 1, 1],
@@ -396,7 +377,7 @@ mod tests {
         // ICMP Ingress → Deny
         assert_eq!(
             eval_ipv4(
-                &engine,
+                &mut engine,
                 FirewallDirection::Ingress,
                 [10, 0, 0, 1],
                 [192, 168, 1, 1],
@@ -410,7 +391,7 @@ mod tests {
         // ICMP Egress → Deny
         assert_eq!(
             eval_ipv4(
-                &engine,
+                &mut engine,
                 FirewallDirection::Egress,
                 [192, 168, 1, 1],
                 [10, 0, 0, 1],
@@ -438,7 +419,7 @@ mod tests {
         // ルール有効: Deny
         assert_eq!(
             eval_ipv4(
-                &engine,
+                &mut engine,
                 FirewallDirection::Ingress,
                 [10, 0, 0, 1],
                 [192, 168, 1, 1],
@@ -455,7 +436,7 @@ mod tests {
         // ルール削除後: Allow
         assert_eq!(
             eval_ipv4(
-                &engine,
+                &mut engine,
                 FirewallDirection::Ingress,
                 [10, 0, 0, 1],
                 [192, 168, 1, 1],
@@ -487,10 +468,10 @@ mod tests {
                 .dst_port(PortMatch::Exact(80))
                 .build(),
         );
-        assert_eq!(engine.rule_count(), 2);
+        assert_eq!(engine.rules().len(), 2);
 
         engine.clear_rules();
-        assert_eq!(engine.rule_count(), 0);
+        assert_eq!(engine.rules().len(), 0);
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -550,7 +531,7 @@ mod tests {
         );
 
         // パケットを評価
-        eval_ipv4_mut(
+        eval_ipv4(
             &mut engine,
             FirewallDirection::Ingress,
             [10, 0, 0, 1],
@@ -559,7 +540,7 @@ mod tests {
             55555,
             22,
         );
-        eval_ipv4_mut(
+        eval_ipv4(
             &mut engine,
             FirewallDirection::Ingress,
             [10, 0, 0, 1],
