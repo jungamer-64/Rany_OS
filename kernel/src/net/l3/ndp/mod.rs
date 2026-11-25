@@ -512,18 +512,14 @@ impl NeighborCache {
 
     /// Trigger NUD: Stale → Delay when traffic is sent to a Stale neighbor
     /// (RFC 4861 Section 7.3.3)
-    /// Returns true if the entry exists and can be used (has a valid MAC)
-    pub fn trigger_delay(&mut self, ip: &Ipv6Address, current_time: u64) -> bool {
-        if let Some(entry) = self.entries.get_mut(ip.as_bytes()) {
-            if entry.state == NeighborState::Stale {
-                entry.state = NeighborState::Delay;
-                entry.timestamp = current_time;
-                entry.probes_sent = 0;
-            }
-            entry.has_mac()
-        } else {
-            false
+    fn mac_for_send(&mut self, ip: &Ipv6Address, current_time: u64) -> Option<[u8; 6]> {
+        let entry = self.entries.get_mut(ip.as_bytes())?;
+        if entry.state == NeighborState::Stale {
+            entry.state = NeighborState::Delay;
+            entry.timestamp = current_time;
+            entry.probes_sent = 0;
         }
+        entry.has_mac().then_some(entry.mac)
     }
 
     /// Process NUD timers — advances Delay→Probe, Probe retries, and

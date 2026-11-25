@@ -855,12 +855,8 @@ impl NdpProcessor {
         if ip.is_multicast() {
             return Ok(NeighborResolution::Resolved(ip.multicast_mac()));
         }
-        if self.cache.trigger_delay(&ip, now) {
-            let entry = self
-                .cache
-                .lookup(&ip)
-                .expect("usable neighbor is still in cache");
-            return Ok(NeighborResolution::Resolved(entry.mac));
+        if let Some(mac) = self.cache.mac_for_send(&ip, now) {
+            return Ok(NeighborResolution::Resolved(mac));
         }
         let source = self.link_local().ok_or(NetworkError::NetworkUnreachable)?;
         if self.cache.lookup(&ip).is_some() {
