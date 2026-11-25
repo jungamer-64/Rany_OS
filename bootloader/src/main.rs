@@ -76,6 +76,13 @@ fn main() -> Status {
         serial_println!("ExoLoader: Serial console initialized");
     }
 
+    let mut boot_log = boot_log::BootLog::start();
+    let status = boot_attempt(&mut boot_log);
+    boot_log.publish(boot_log::Checkpoint::Returned(status));
+    status
+}
+
+fn boot_attempt(boot_log: &mut boot_log::BootLog) -> Status {
     info!("ExoLoader v0.1.0 Starting...");
     #[cfg(feature = "serial_log")]
     serial_println!("ExoLoader v0.1.0 Starting...");
@@ -276,16 +283,17 @@ fn main() -> Status {
     boot_info.secure_boot.dbx_check_passed = dbx_check_passed;
 
     // 6.8. Boot recovery state management
-    let mut boot_logger = handle_boot_recovery(boot_info);
+    handle_boot_recovery(boot_info, boot_log);
 
     // 6.9. Run self-tests
-    run_boot_self_tests(boot_info, &mut boot_logger);
+    run_boot_self_tests(boot_info, boot_log);
 
     // GOP framebuffer setup
     setup_gop_framebuffer(boot_info);
 
     if let Err(err) = populate_boot_policy(boot_info, &cmdline_data) {
         error!("Boot policy rejected: {:?}", err);
+        boot_log.note(format_args!("Boot policy rejected: {err:?}"));
         boot::stall(Duration::from_micros(5_000_000));
         return Status::SECURITY_VIOLATION;
     }
@@ -314,8 +322,8 @@ fn main() -> Status {
     copy_cmdline_to_boot_info(boot_info, &cmdline_data, hhdm_start);
 
     // 6.7. Pre-allocate memory map buffer BEFORE exiting boot services
-    // Allow for allocations made by boot-log finalization and ExitBootServices;
-    // the final copy still checks this capacity instead of trusting the estimate.
+    // Allow headroom for firmware operations before the final map is read.
+    // The final copy verifies its capacity against the actual map.
     let capacity = match boot::memory_map(MemoryType::LOADER_DATA) {
         Ok(map) => match map.entries().len().checked_add(128) {
             Some(capacity) => capacity,
@@ -354,15 +362,7 @@ fn main() -> Status {
     info!("Kernel entry (KERNEL_BASE): 0x{:x}", entry_addr);
     info!("Kernel entry (HHDM): 0x{:x}", hhdm_entry);
 
-    // Mark this attempt as successful once we are ready to hand off to kernel.
-    // This prevents false-positive recovery escalation when kernel success
-    // acknowledgement is unavailable.
-    recovery::mark_boot_handoff_success();
-
-    // Save boot log before exiting boot services
-    boot_logger.info("About to exit boot services and jump to kernel");
-    boot_logger.finalize(true);
-    boot_logger.save();
+    boot_log.publish(boot_log::Checkpoint::ExitBootServicesPending);
 
     // 7. Exit Boot Services
     info!("Exiting Boot Services...");
@@ -373,6 +373,7 @@ fn main() -> Status {
         Ok(snapshot) => snapshot,
         Err(_failure) => {
             serial_println!("{}", _failure);
+            boot_log.publish(boot_log::Checkpoint::MemoryMapRejected);
             halt_after_boot_services();
         }
     };
@@ -380,6 +381,7 @@ fn main() -> Status {
         Ok(table) => table,
         Err(_cause) => {
             serial_println!("Memory-map publication rejected: {}", _cause);
+            boot_log.publish(boot_log::Checkpoint::MemoryMapPublicationRejected);
             halt_after_boot_services();
         }
     };
@@ -411,6 +413,11 @@ fn main() -> Status {
             );
         }
     }
+
+    // Runtime variable services remain callable under the firmware page tables.
+    // This checkpoint attests only that the loader prepared the kernel handoff.
+    boot_log.publish(boot_log::Checkpoint::KernelHandoffReady);
+    recovery::mark_boot_handoff_success();
 
     // 8. Switch CR3 & Jump to kernel
     unsafe {

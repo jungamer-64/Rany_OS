@@ -177,19 +177,17 @@ pub(crate) fn populate_boot_policy(
 // リカバリ・セルフテスト
 // ============================================================
 
-/// ブートリカバリ状態を管理し、ブートロガーを返す
 pub(crate) fn handle_boot_recovery(
     boot_info: &mut boot_proto::ExoBootInfo,
-) -> boot_log::BootLogger {
+    boot_log: &mut boot_log::BootLog,
+) {
     let mut boot_state = recovery::load_boot_state();
     recovery::log_boot_state(&boot_state);
 
-    let mut boot_logger = boot_log::BootLogger::new();
-    boot_logger.init();
-    boot_logger.info("ExoLoader boot sequence started");
-
     if recovery::should_enter_recovery(&boot_state) {
-        boot_logger.warning("Entering recovery mode due to repeated failures");
+        boot_log.note(format_args!(
+            "Entering recovery mode due to repeated failures"
+        ));
         info!(
             "RECOVERY MODE: {} consecutive boot failures detected",
             boot_state.failure_count
@@ -205,15 +203,14 @@ pub(crate) fn handle_boot_recovery(
         _reserved: 0,
         expected_success_id: recovery_info.expected_success_id,
     };
-    boot_logger.info("Boot recovery state prepared");
-    boot_logger
+    boot_log.note(format_args!("Boot recovery state prepared"));
 }
 
 /// セルフテストを実行して結果を boot_info に格納 (self_test フィーチャ有効時)
 #[cfg(feature = "self_test")]
 pub(crate) fn run_boot_self_tests(
     boot_info: &mut boot_proto::ExoBootInfo,
-    boot_logger: &mut boot_log::BootLogger,
+    boot_log: &mut boot_log::BootLog,
 ) {
     let self_test_config = self_test::SelfTestConfig::default();
     let self_test_results = self_test::run_self_tests(&self_test_config);
@@ -231,11 +228,11 @@ pub(crate) fn run_boot_self_tests(
     };
 
     if self_test_results.critical_failures > 0 {
-        boot_logger.error("Self-test detected critical failures");
+        boot_log.note(format_args!("Self-test detected critical failures"));
     } else if self_test_results.warnings > 0 {
-        boot_logger.warning("Self-test completed with warnings");
+        boot_log.note(format_args!("Self-test completed with warnings"));
     } else {
-        boot_logger.info("All self-tests passed");
+        boot_log.note(format_args!("All self-tests passed"));
     }
 }
 
@@ -243,7 +240,7 @@ pub(crate) fn run_boot_self_tests(
 #[cfg(not(feature = "self_test"))]
 pub(crate) fn run_boot_self_tests(
     boot_info: &mut boot_proto::ExoBootInfo,
-    boot_logger: &mut boot_log::BootLogger,
+    boot_log: &mut boot_log::BootLog,
 ) {
     boot_info.self_test = boot_proto::SelfTestInfo {
         overall_result: 3, // Skip
@@ -252,7 +249,7 @@ pub(crate) fn run_boot_self_tests(
         tests_run: 0,
         _reserved: [0; 4],
     };
-    boot_logger.info("Self-tests skipped (minimal build)");
+    boot_log.note(format_args!("Self-tests skipped (minimal build)"));
 }
 
 // ============================================================

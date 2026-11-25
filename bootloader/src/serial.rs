@@ -15,6 +15,7 @@ const LSR_OFFSET: u16 = 5;
 
 /// Transmitter Holding Register Empty bit
 const LSR_THRE: u8 = 0x20;
+const TRANSMIT_POLLS: usize = 100_000;
 
 /// Whether serial port has been initialized
 static SERIAL_INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -77,33 +78,27 @@ impl SerialWriter {
         unsafe { (inb(COM1_PORT + LSR_OFFSET) & LSR_THRE) != 0 }
     }
 
-    /// Write a single byte to serial port
-    pub fn write_byte(&self, byte: u8) {
-        // Wait for transmit buffer to be empty
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while !self.is_transmit_empty() {
+    fn write_byte(&self, byte: u8) -> fmt::Result {
+        for _ in 0..TRANSMIT_POLLS {
+            if self.is_transmit_empty() {
+                // SAFETY: the loader owns COM1 until the kernel handoff.
+                unsafe { outb(COM1_PORT, byte) };
+                return Ok(());
+            }
             core::hint::spin_loop();
         }
-        unsafe {
-            outb(COM1_PORT, byte);
-        }
-    }
-
-    /// Write a string to serial port
-    pub fn write_str_bytes(&self, s: &str) {
-        for byte in s.bytes() {
-            if byte == b'\n' {
-                // Send CR before LF for proper line endings
-                self.write_byte(b'\r');
-            }
-            self.write_byte(byte);
-        }
+        Err(fmt::Error)
     }
 }
 
 impl Write for SerialWriter {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.write_str_bytes(s);
+        for byte in s.bytes() {
+            if byte == b'\n' {
+                self.write_byte(b'\r')?;
+            }
+            self.write_byte(byte)?;
+        }
         Ok(())
     }
 }
