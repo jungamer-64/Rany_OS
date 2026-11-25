@@ -124,7 +124,7 @@ impl RouteFlags {
 }
 
 /// Interface metadata managed by `NetworkManager`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct NetworkInterfaceInfo {
     pub if_id: NetIfId,
     pub name: &'static str,
@@ -226,7 +226,7 @@ impl NetworkManager {
     }
 
     fn list_interfaces(&self) -> Vec<NetworkInterfaceInfo> {
-        self.interfaces.values().copied().collect()
+        self.interfaces.values().cloned().collect()
     }
 
     fn get_interface(&self, if_id: NetIfId) -> Option<&NetworkInterfaceInfo> {
@@ -307,8 +307,11 @@ impl NetworkManager {
     fn set_interface_config(
         &mut self,
         if_id: NetIfId,
-        config: NetworkConfig,
+        mut config: NetworkConfig,
     ) -> Result<TopologyChange, NetworkError> {
+        if let Some(ipv6) = &mut config.ipv6 {
+            ipv6.addresses = Default::default();
+        }
         let iface = self
             .interfaces
             .get_mut(&if_id)
@@ -316,8 +319,16 @@ impl NetworkManager {
         if iface.config == Some(config) {
             return Ok(TopologyChange::Unchanged);
         }
-        if iface.config.map(|previous| previous.mac) != Some(config.mac) || config.ipv6.is_none() {
-            iface.ipv6_discovery = Ipv6Discovery::default();
+        if iface
+            .config
+            .map(|previous| (previous.mac, previous.ipv6.is_some()))
+            != Some((config.mac, config.ipv6.is_some()))
+        {
+            iface.ipv6_discovery = if config.ipv6.is_some() {
+                Ipv6Discovery::with_link_local(config.mac)
+            } else {
+                Ipv6Discovery::default()
+            };
         }
         iface.config = Some(config);
         self.refresh_managed_routes_for_interface(if_id, config);
@@ -633,8 +644,8 @@ impl NetworkManager {
             }
         }
 
-        let discovery = self.interfaces[&if_id].ipv6_discovery;
-        self.refresh_managed_ipv6_routes(if_id, config, discovery);
+        let discovery = &self.interfaces[&if_id].ipv6_discovery;
+        Self::replace_ipv6_routes(&mut self.routes_v6, if_id, config, discovery);
         self.sort_ipv4_routes();
         self.sort_ipv6_routes();
     }
@@ -784,7 +795,7 @@ pub fn get_interface_in(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,
 ) -> Result<Option<NetworkInterfaceInfo>, NetworkError> {
-    with_manager_in(runtime, |m| m.get_interface(if_id).copied())
+    with_manager_in(runtime, |m| m.get_interface(if_id).cloned())
 }
 
 pub(crate) fn current_interface_topology_revision_in(
@@ -1010,7 +1021,6 @@ pub(crate) fn resolve_ipv4_interface_in(
     with_manager_in(runtime, |manager| match scope {
         InterfaceScope::Pinned(if_id) => manager
             .get_interface(if_id)
-            .copied()
             .filter(|interface| interface.is_operational())
             .map(|_| if_id)
             .ok_or(NetworkError::NetworkUnreachable),

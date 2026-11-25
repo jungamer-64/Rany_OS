@@ -645,7 +645,6 @@ pub struct NdpProcessor {
     /// Neighbor cache
     cache: NeighborCache,
     /// Our link-local address
-    pub(crate) our_link_local: Ipv6Address,
     addresses: crate::net::l3::ipv6::address_state::Ipv6AddressSet,
     /// Our MAC address
     our_mac: [u8; 6],

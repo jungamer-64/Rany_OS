@@ -82,7 +82,7 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 - ABI callback の cookie、instance、code lease は借用中および packet lease の返却完了まで保持する。停止後の返却失敗は同じ未消費 owner で再試行し、消費済みの失敗は再返却しない。
 - 送信単位は frame であり、生成した header packet と body からなる。body は所有権を渡す `PacketPayload` か、送信側が自分の handle を持ち続ける `RetainedPayload` である。所有権を渡す body は headroom があれば header をその場に前置する。
 - port が frame を受理すると、frame は device から見える region だけになる。所有 packet は region へ消費され、retained body は凍結済みなので、region が存在する間その byte へ書き込める CPU handle は存在しない。region は driver の exactly-once completion か port 停止の成功まで backing を pool へ返さない。送信側へ返却する owner はない。
-- 受理の成否が送信側への唯一の結果である。拒否は理由（interface 停止、port 不在、port 停止、lease 枯渇、descriptor 上限超過、lease 記憶域不足）と未変更の frame を返し、device access を一切残さない。
+- 通常のデータ送信は受理結果を返す。送信完了に依存する制御処理には、リースの終端結果を一度だけ通知する。拒否は理由（interface 停止、port 不在、port 停止、lease 枯渇、descriptor 上限超過、lease 記憶域不足）と未変更の frame を返し、device access を一切残さない。
 - TX lease は port ごとの表が所有し、`Queued -> Submitting -> DeviceOwned -> 解放` の順序を持つ。submission 中に届いた同期 completion は `Submitting` に記録し、descriptor visit の終了時に適用する。completion はその port 自身の submit 済み lease にだけ有効で、他 port の lease、未 submit の lease、重複 completion は拒否する。
 - completion outcome は `Transmitted`、`NotTransmitted`、`OutcomeUnknown` を区別し、port ごとに計数する。port の停止は受理を閉じて未 submit の lease を解放し、driver が device access の終了を証明した後にだけ受理済みの lease を解放する。停止に失敗した port は lease を保持したまま再試行を待つ。
 - device が公開する `max_tx_segments` が descriptor fan-out の authority である。TCP は payload の segment 数をこの上限から header 用の 1 を引いた数に収める。上限を超える frame は、先頭の小さな body segment（合計 64 byte まで）を header packet の tailroom へ移して収め、それでも収まらなければ受理しない。
@@ -112,6 +112,7 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 
 - TCP は connection semantics を持つが、core では packet-backed payload queue と endpoint-owned state を中心に扱う。
 - UDP は token-aware bind、packet-native receive / send、scope-aware endpoint を優先する。
+- IPv6 のリンクローカル、SLAAC、DHCPv6 アドレスは、DAD プローブの送信完了から待機期間が満了して初めて通常の送受信に使用できる。送信を確認できなかったプローブは再試行する。
 - DNS は parser / cache / record data まで packet-backed view を正規面とし、`String` / raw byte ownership への早期変換を baseline にしない。
 - DNS 応答の canonical ownership は `DnsResponseView { payload, records }` に置き、cache も response payload ownership + record metadata を保持する。
 - IPv4 は timeout / unknown-protocol / reassembled packet を含めて packet-backed quoted/original payload で扱う。

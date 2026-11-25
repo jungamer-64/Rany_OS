@@ -11,6 +11,7 @@
 // =============================================================================
 
 use super::*;
+use crate::net::runtime::device::tx::TxReporter;
 use crate::net::runtime::manager::Ipv6Path;
 use crate::net::types::{InterfaceScope, NetworkError};
 use core::sync::atomic::AtomicU32;
@@ -346,12 +347,11 @@ impl NetworkStack {
         code: u8,
         original_packet: PacketPayload,
     ) -> bool {
-        let Some(our_addr) = self.interfaces.get(&if_id).and_then(|state| {
-            state
-                .ipv6
-                .as_ref()
-                .map(|ipv6_proc| ipv6_proc.config().link_local)
-        }) else {
+        let Some(our_addr) = self
+            .interface_config(if_id)
+            .and_then(|cfg| cfg.ipv6)
+            .and_then(|cfg| cfg.addresses.link_local())
+        else {
             return false;
         };
         {
@@ -497,13 +497,15 @@ impl NetworkStack {
         allowed
     }
 
-    /// Send multicast NDP directly, returning the frame admission outcome.
-    pub(crate) fn send_ndp_multicast(
+    /// Submit an unfragmented NDP probe directly to a known link-layer destination.
+    pub(crate) fn send_ndp_probe(
         &mut self,
         if_id: super::NetIfId,
         src: Ipv6Address,
         dst: Ipv6Address,
+        dst_mac: MacAddress,
         payload: PacketPayload,
+        completion: Option<TxReporter>,
     ) -> Result<(), NetworkError> {
         if !self.allow_icmpv6_egress(if_id, src, dst, &payload) {
             return Err(NetworkError::PermissionDenied);
@@ -511,17 +513,21 @@ impl NetworkStack {
         let config = self
             .interface_config_or_runtime(if_id)
             .ok_or(NetworkError::NetworkUnreachable)?;
-        self.send_ipv6_l4_payload_with_pmtu(
-            if_id,
-            config.mac,
-            MacAddress::new(dst.multicast_mac()),
+        let header = Ipv6FrameHeader {
+            src_mac: config.mac,
+            dst_mac,
             src,
             dst,
-            IpProtocol::Icmpv6,
-            255,
-            TxBody::Owned(payload),
-            crate::net::l3::ipv6::Ipv6PmtuEntry::MIN_MTU as usize,
-        )
+            hop_limit: 255,
+        };
+        let packet =
+            self.build_ipv6_header_packet(&header, IpProtocol::Icmpv6, payload.total_len(), None)?;
+        let mut frame = TxFrame::with_header(packet, TxBody::Owned(payload));
+        if let Some(completion) = completion {
+            frame = frame.observe_completion(completion);
+        }
+        self.transmit_frame_on(if_id, frame)
+            .map_err(|_| NetworkError::TransmitFailed)
     }
 
     /// Resolve an already selected next hop without taking ownership of a packet.
@@ -545,8 +551,16 @@ impl NetworkStack {
         let ns = ndp
             .start_resolution(&next_hop, current_time)
             .ok_or(NetworkError::ResourceExhausted)?;
-        let source = ndp.our_link_local;
-        self.send_ndp_multicast(if_id, source, next_hop.solicited_node(), ns)?;
+        let source = ndp.link_local().ok_or(NetworkError::InvalidAddress)?;
+        let dst = next_hop.solicited_node();
+        self.send_ndp_probe(
+            if_id,
+            source,
+            dst,
+            MacAddress::new(dst.multicast_mac()),
+            ns,
+            None,
+        )?;
         Ok(None)
     }
 

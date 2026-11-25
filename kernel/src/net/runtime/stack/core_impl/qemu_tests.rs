@@ -87,9 +87,7 @@ fn identical_topology_snapshot_preserves_interface_protocol_state() {
     let runtime = crate::net::runtime::create_runtime().expect("isolated network runtime");
     crate::net::runtime::manager::init_network_manager_in(runtime);
     let mut config = NetworkConfig::default();
-    config.ipv6 = Some(crate::net::l3::ipv6::Ipv6Config::from_mac(
-        config.mac.as_bytes(),
-    ));
+    config.ipv6 = Some(crate::net::l3::ipv6::Ipv6Config::default());
     let if_id = register_operational_interface(
         runtime,
         "if-state",
@@ -283,7 +281,7 @@ fn ipv6_router_advertisement_reaches_route_lookup_and_peer_stacks() {
     let runtime = crate::net::runtime::create_runtime().expect("isolated IPv6 runtime");
     manager::init_network_manager_in(runtime);
     let mut config = NetworkConfig::default();
-    config.ipv6 = Some(Ipv6Config::from_mac(config.mac.as_bytes()));
+    config.ipv6 = Some(Ipv6Config::default());
     let if_id = register_operational_interface(runtime, "slaac", PrimaryPreference::Auto, config);
     let mut ingress = NetworkStack::new_in(runtime);
     let mut peer_stack = NetworkStack::new_in(runtime);
@@ -335,6 +333,26 @@ fn ipv6_router_advertisement_reaches_route_lookup_and_peer_stacks() {
     assert!(!learned.addresses.for_destination(address));
 }
 
+fn complete_probe(
+    _: NetRuntimeHandle,
+    _: NetIfId,
+    frame: TxFrame,
+    meta: kernel_api::service::netdev::NetTxMeta,
+) -> Result<(), crate::net::runtime::device::TxAdmissionError> {
+    use crate::net::runtime::device::tx::NetPortTx;
+    use kernel_api::service::netdev::TxDeviceOutcome;
+    let tx = NetPortTx::new(4, 1).expect("fake port TX");
+    tx.admit(frame, meta)?;
+    let mut scratch = Vec::new();
+    let (lease, _) = tx
+        .begin_submission(0, &mut scratch)
+        .expect("admitted DAD probe");
+    tx.finish_submission(lease, true, &mut scratch);
+    tx.complete(lease, TxDeviceOutcome::Transmitted)
+        .expect("DAD TX completion");
+    Ok(())
+}
+
 fn ipv6_udp_waits_for_the_gateway_and_preserves_the_ip_destination() {
     use crate::net::l3::ipv6::Ipv6Config;
     use crate::net::l3::ipv6::address_state::AddressLifetimes;
@@ -376,9 +394,6 @@ fn ipv6_udp_waits_for_the_gateway_and_preserves_the_ip_destination() {
             .expect("Ethernet and IPv6 header");
         assert_eq!(&packet[12..14], &[0x86, 0xdd]);
         match packet[20] {
-            58 if packet[22..38] == [0; 16] => {
-                assert_eq!(&packet[38..54], SOURCE.solicited_node().as_bytes());
-            }
             58 => assert_eq!(&packet[38..54], ROUTER.solicited_node().as_bytes()),
             17 => {
                 assert_eq!(&packet[..6], &ROUTER_MAC);
@@ -394,7 +409,7 @@ fn ipv6_udp_waits_for_the_gateway_and_preserves_the_ip_destination() {
     let runtime = crate::net::runtime::create_runtime().expect("isolated IPv6 runtime");
     manager::init_network_manager_in(runtime);
     let mut config = NetworkConfig::default();
-    config.ipv6 = Some(Ipv6Config::from_mac(config.mac.as_bytes()));
+    config.ipv6 = Some(Ipv6Config::default());
     let if_id =
         register_operational_interface(runtime, "ipv6-egress", PrimaryPreference::Auto, config);
     manager::set_default_route_v6_in(runtime, if_id, ROUTER, 10).expect("default route");
@@ -407,7 +422,7 @@ fn ipv6_udp_waits_for_the_gateway_and_preserves_the_ip_destination() {
     )
     .expect("stage address");
     let mut stack = NetworkStack::new_in(runtime);
-    stack.transmit_fn = capture;
+    stack.transmit_fn = complete_probe;
     stack
         .maintain_ipv6_addresses(0)
         .expect("admit the DAD probe");
@@ -421,10 +436,20 @@ fn ipv6_udp_waits_for_the_gateway_and_preserves_the_ip_destination() {
             .source()
     };
     assert_eq!(assigned(&stack), None);
-    stack.maintain_ipv6_addresses(999).unwrap();
-    assert_eq!(assigned(&stack), None);
-    stack.maintain_ipv6_addresses(1000).unwrap();
+    let now = crate::task::current_tick();
+    stack.maintain_ipv6_addresses(now + 1000).unwrap();
     assert_eq!(assigned(&stack), Some(SOURCE));
+    assert!(
+        stack
+            .interface_config(if_id)
+            .unwrap()
+            .ipv6
+            .unwrap()
+            .addresses
+            .link_local()
+            .is_some()
+    );
+    stack.transmit_fn = capture;
 
     let mut writer =
         GeneratedPacketWriter::new(4, kernel_api::resource::net::DEFAULT_PACKET_HEADROOM)
@@ -465,11 +490,18 @@ fn reassembled_ipv6_uses_extension_header_transport_window() {
     let runtime = crate::net::runtime::create_runtime().expect("isolated IPv6 ingress runtime");
     manager::init_network_manager_in(runtime);
     let mut config = NetworkConfig::default();
-    let ipv6 = Ipv6Config::from_mac(config.mac.as_bytes());
+    let ipv6 = Ipv6Config::default();
     config.ipv6 = Some(ipv6);
     let if_id =
         register_operational_interface(runtime, "ipv6-ingress", PrimaryPreference::Auto, config);
     let mut stack = NetworkStack::new_in(runtime);
+    stack.transmit_fn = complete_probe;
+    stack
+        .maintain_ipv6_addresses(0)
+        .expect("probe link-local address");
+    stack
+        .maintain_ipv6_addresses(crate::task::current_tick() + 1000)
+        .expect("assign link-local address");
     let socket = Socket::new_udp_in(runtime);
     let dst_port = 30_001u16;
     bind_udp_dual_stack_in(
@@ -493,7 +525,7 @@ fn reassembled_ipv6_uses_extension_header_transport_window() {
     .expect("allow destination port");
 
     let src = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
-    let dst = ipv6.link_local;
+    let dst = Ipv6Address::from_eui64(config.mac.as_bytes());
     let mut packet = [0; 60];
     packet[0] = 0x60;
     packet[4..6].copy_from_slice(&20u16.to_be_bytes());

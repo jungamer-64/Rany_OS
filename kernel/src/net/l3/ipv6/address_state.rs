@@ -1,6 +1,8 @@
 use super::Ipv6Address;
+use crate::net::runtime::device::tx::{TxObservation, TxReceipt};
 
-pub(crate) const MAX_IPV6_ADDRESSES: usize = 8;
+pub(crate) const MAX_IPV6_ADDRESSES: usize = 9;
+const DAD_RETRANS_TIMER_MS: u64 = 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LocalAddressState {
@@ -39,13 +41,21 @@ impl Ipv6AddressSet {
             .map(|entry| entry.address)
     }
 
+    pub(crate) fn link_local(&self) -> Option<Ipv6Address> {
+        self.assigned().find(Ipv6Address::is_unicast_link_local)
+    }
+
     pub(crate) fn source(&self) -> Option<Ipv6Address> {
-        self.entries
-            .iter()
-            .flatten()
+        let global = || {
+            self.entries
+                .iter()
+                .flatten()
+                .filter(|entry| !entry.address.is_unicast_link_local())
+        };
+        global()
             .find(|entry| entry.state == LocalAddressState::Preferred)
+            .or_else(|| global().find(|entry| entry.assigned()))
             .map(|entry| entry.address)
-            .or_else(|| self.assigned().next())
     }
 
     pub(crate) fn for_destination(&self, destination: Ipv6Address) -> bool {
@@ -58,6 +68,7 @@ impl Ipv6AddressSet {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Ipv6AddressOrigin {
+    LinkLocal,
     Slaac,
     Dhcp,
 }
@@ -100,16 +111,16 @@ pub(crate) fn expiration_at(now: u64, seconds: u32) -> u64 {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) enum DadState {
     AwaitingProbe,
-    Submitting([u8; 6]),
+    Submitting { nonce: [u8; 6], receipt: TxReceipt },
     Probing { nonce: [u8; 6], until: u64 },
     Assigned,
     Duplicate,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) struct LearnedIpv6Address {
     pub(crate) address: Ipv6Address,
     pub(crate) origin: Ipv6AddressOrigin,
@@ -119,15 +130,27 @@ pub(crate) struct LearnedIpv6Address {
 
 impl LearnedIpv6Address {
     pub(crate) fn tick(&mut self, now: u64) {
+        if let DadState::Submitting { nonce, receipt } = &self.dad {
+            match receipt.observe() {
+                TxObservation::Pending => {}
+                TxObservation::Unconfirmed => self.dad = DadState::AwaitingProbe,
+                TxObservation::Transmitted { at } => {
+                    self.dad = DadState::Probing {
+                        nonce: *nonce,
+                        until: at.saturating_add(DAD_RETRANS_TIMER_MS),
+                    };
+                }
+            }
+        }
         if matches!(self.dad, DadState::Probing { until, .. } if now >= until) {
             self.dad = DadState::Assigned;
         }
     }
 
-    pub(crate) fn snapshot(self, now: u64) -> Option<LocalIpv6Address> {
+    pub(crate) fn snapshot(&self, now: u64) -> Option<LocalIpv6Address> {
         let state = match self.dad {
             DadState::AwaitingProbe => LocalAddressState::AwaitingProbe,
-            DadState::Submitting(_) | DadState::Probing { .. } => LocalAddressState::Tentative,
+            DadState::Submitting { .. } | DadState::Probing { .. } => LocalAddressState::Tentative,
             DadState::Assigned if now < self.lifetimes.preferred_until => {
                 LocalAddressState::Preferred
             }

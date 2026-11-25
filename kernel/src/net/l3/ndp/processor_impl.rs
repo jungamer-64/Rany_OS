@@ -9,11 +9,13 @@ use kernel_api::resource::net::PacketPayload;
 
 impl NdpProcessor {
     /// Create a new NDP processor
-    pub fn new(our_link_local: Ipv6Address, our_mac: [u8; 6]) -> Self {
+    pub(crate) fn new(
+        our_mac: [u8; 6],
+        addresses: crate::net::l3::ipv6::address_state::Ipv6AddressSet,
+    ) -> Self {
         Self {
             cache: NeighborCache::new(),
-            our_link_local,
-            addresses: Default::default(),
+            addresses,
             our_mac,
             stats: NdpStats::default(),
         }
@@ -26,8 +28,12 @@ impl NdpProcessor {
         self.addresses = addresses;
     }
 
+    pub(crate) fn link_local(&self) -> Option<Ipv6Address> {
+        self.addresses.link_local()
+    }
+
     pub fn is_our_address(&self, addr: &Ipv6Address) -> bool {
-        *addr == self.our_link_local || self.addresses.assigned().any(|address| address == *addr)
+        self.addresses.assigned().any(|address| address == *addr)
     }
 
     /// Get neighbor cache reference
@@ -875,13 +881,16 @@ impl NdpProcessor {
 
         // Build NS targeting the solicited-node multicast address
         let sn_mcast = target.solicited_node();
-        Self::build_ns(&self.our_link_local, &sn_mcast, target, &self.our_mac)
+        Self::build_ns(&self.link_local()?, &sn_mcast, target, &self.our_mac)
     }
 
     /// Run periodic maintenance (expire entries + NUD timer processing)
     ///
     /// Returns a list of NS probe messages to send (for NUD Probe/Incomplete states)
     pub fn tick(&mut self, current_time: u64) -> Vec<PacketPayload> {
+        let Some(source) = self.link_local() else {
+            return Vec::new();
+        };
         self.cache.expire_reachable(current_time);
         self.cache.expire_old(current_time);
 
@@ -895,12 +904,12 @@ impl NdpProcessor {
             let ns = match entry_state {
                 Some(NeighborState::Probe) => {
                     // Unicast NS to target's last known address
-                    Self::build_ns(&self.our_link_local, &target, &target, &self.our_mac)
+                    Self::build_ns(&source, &target, &target, &self.our_mac)
                 }
                 _ => {
                     // Multicast NS to solicited-node address
                     let sn_mcast = target.solicited_node();
-                    Self::build_ns(&self.our_link_local, &sn_mcast, &target, &self.our_mac)
+                    Self::build_ns(&source, &sn_mcast, &target, &self.our_mac)
                 }
             };
             if let Some(ns) = ns {

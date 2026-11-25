@@ -328,7 +328,7 @@ impl NetworkStack {
                         reply_src = Some(dst);
                     }
                     if reply_src.is_none() {
-                        reply_src = Some(config.link_local);
+                        reply_src = config.addresses.link_local();
                     }
                 }
 
@@ -386,11 +386,10 @@ impl NetworkStack {
                 if let Some(config) = self
                     .interface_config_or_runtime(ingress_if_id)
                     .and_then(|cfg| cfg.ipv6)
-                    && (quoted_src == config.link_local
-                        || config
-                            .addresses
-                            .assigned()
-                            .any(|address| address == quoted_src))
+                    && config
+                        .addresses
+                        .assigned()
+                        .any(|address| address == quoted_src)
                 {
                     is_our_packet = true;
                 }
@@ -671,7 +670,7 @@ impl NetworkStack {
                 let our_addr = self
                     .interface_config_or_runtime(ingress_if_id)
                     .and_then(|cfg| cfg.ipv6)
-                    .map(|cfg| cfg.link_local);
+                    .and_then(|cfg| cfg.addresses.link_local());
                 if let Some(our_addr) = our_addr {
                     let Some(na_msg) =
                         NdpProcessor::build_na(&our_addr, &na_dst, &target, &our_mac, solicited)
@@ -688,7 +687,7 @@ impl NetworkStack {
                 let our_addr = self
                     .interface_config_or_runtime(ingress_if_id)
                     .and_then(|cfg| cfg.ipv6)
-                    .map(|cfg| cfg.link_local);
+                    .and_then(|cfg| cfg.addresses.link_local());
                 if let Some(our_addr) = our_addr {
                     let mcast_dst = Ipv6Address::ALL_NODES_LINK_LOCAL;
                     let Some(na_msg) = NdpProcessor::build_na(

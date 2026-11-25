@@ -295,8 +295,7 @@ impl InterfaceStackState {
         let mac = config.mac;
         let ip = config.ipv4.address;
         let (ipv6_proc, icmpv6_proc, ndp_proc) = if let Some(ref ipv6_config) = config.ipv6 {
-            let mut ndp = NdpProcessor::new(ipv6_config.link_local, *mac.as_bytes());
-            ndp.set_addresses(ipv6_config.addresses);
+            let ndp = NdpProcessor::new(*mac.as_bytes(), ipv6_config.addresses);
             (
                 Some(Ipv6Processor::new(*ipv6_config)),
                 Some(Icmpv6Processor::new(config.icmp_echo_enabled)),
@@ -340,12 +339,10 @@ impl InterfaceStackState {
             if self.icmpv6.is_none() || self.config.icmp_echo_enabled != config.icmp_echo_enabled {
                 self.icmpv6 = Some(Icmpv6Processor::new(config.icmp_echo_enabled));
             }
-            if previous.is_none_or(|old| old.link_local != ipv6_config.link_local)
-                || self.config.mac != config.mac
-            {
+            if self.ndp.is_none() || self.config.mac != config.mac {
                 self.ndp = Some(NdpProcessor::new(
-                    ipv6_config.link_local,
                     *config.mac.as_bytes(),
+                    ipv6_config.addresses,
                 ));
             }
             if let Some(ndp) = &mut self.ndp {
@@ -364,7 +361,9 @@ impl InterfaceStackState {
     }
 
     pub(crate) fn ipv6_link_local(&self) -> Option<Ipv6Address> {
-        self.config.ipv6.map(|config| config.link_local)
+        self.config
+            .ipv6
+            .and_then(|config| config.addresses.link_local())
     }
 
     pub(crate) fn has_ipv6(&self) -> bool {

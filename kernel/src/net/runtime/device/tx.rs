@@ -23,9 +23,11 @@ extern crate alloc;
 use crate::sync::PoisonLock;
 use crate::sync::atomic_waker::AtomicWaker;
 use alloc::collections::VecDeque;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::Waker;
+use exorust_sync::Mutex;
 use kernel_api::resource::net::{
     PacketByteCount, PacketDmaRegion, PacketPayload, PacketPayloadFront, PacketRef,
     RetainedPayload, RetainedPayloadFront,
@@ -106,6 +108,56 @@ impl TxBody {
     }
 }
 
+/// The outcome observed by the owner of a control frame. The completion time
+/// uses the same clock as protocol timers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TxObservation {
+    Pending,
+    Transmitted { at: u64 },
+    Unconfirmed,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct TxReceipt(Arc<Mutex<TxObservation>>);
+
+impl TxReceipt {
+    pub(crate) fn reserve() -> Result<(Self, TxReporter), crate::net::types::NetworkError> {
+        let status = Arc::try_new(Mutex::new(TxObservation::Pending))
+            .map_err(|_| crate::net::types::NetworkError::ResourceExhausted)?;
+        Ok((Self(Arc::clone(&status)), TxReporter(Some(status))))
+    }
+
+    pub(crate) fn observe(&self) -> TxObservation {
+        *self.0.lock()
+    }
+}
+
+/// A lease owns the only publisher. Dropping it covers rejected admission,
+/// driver rejection and leases retired by stop.
+#[derive(Debug)]
+pub(crate) struct TxReporter(Option<Arc<Mutex<TxObservation>>>);
+
+impl TxReporter {
+    pub(crate) fn finish(mut self, outcome: TxDeviceOutcome, at: u64) {
+        if let Some(status) = self.0.take() {
+            *status.lock() = match outcome {
+                TxDeviceOutcome::Transmitted => TxObservation::Transmitted { at },
+                TxDeviceOutcome::NotTransmitted | TxDeviceOutcome::OutcomeUnknown => {
+                    TxObservation::Unconfirmed
+                }
+            };
+        }
+    }
+}
+
+impl Drop for TxReporter {
+    fn drop(&mut self) {
+        if let Some(status) = self.0.take() {
+            *status.lock() = TxObservation::Unconfirmed;
+        }
+    }
+}
+
 /// One wire frame: an optional generated header followed by its body.
 #[derive(Debug)]
 pub(crate) struct TxFrame {
@@ -113,6 +165,7 @@ pub(crate) struct TxFrame {
     body: TxBody,
     /// Selects the TX queue; frames without one use the port's first queue.
     flow_hash: Option<u32>,
+    completion: Option<TxReporter>,
 }
 
 impl TxFrame {
@@ -122,6 +175,7 @@ impl TxFrame {
             header: None,
             body: TxBody::Owned(payload),
             flow_hash: None,
+            completion: None,
         }
     }
 
@@ -131,12 +185,18 @@ impl TxFrame {
             header: (!header.is_empty()).then_some(header),
             body,
             flow_hash: None,
+            completion: None,
         }
     }
 
     /// Keep this frame on the TX queue of `flow_hash`.
     pub(crate) const fn in_flow(mut self, flow_hash: u32) -> Self {
         self.flow_hash = Some(flow_hash);
+        self
+    }
+
+    pub(crate) fn observe_completion(mut self, completion: TxReporter) -> Self {
+        self.completion = Some(completion);
         self
     }
 
@@ -298,6 +358,7 @@ struct TxSlot {
     state: TxSlotState,
     regions: Vec<PacketDmaRegion>,
     meta: NetTxMeta,
+    completion: Option<TxReporter>,
 }
 
 struct TxSlab {
@@ -326,6 +387,7 @@ impl TxSlab {
     fn free_slot(&mut self, index: u32) {
         let slot = &mut self.slots[index as usize];
         slot.regions.clear();
+        slot.completion = None;
         slot.state = TxSlotState::Free;
         slot.generation = slot.generation.wrapping_add(1);
         self.free.push(index);
@@ -415,6 +477,7 @@ impl NetPortTx {
                 state: TxSlotState::Free,
                 regions: Vec::new(),
                 meta: NetTxMeta::default(),
+                completion: None,
             });
             free.push(index);
         }
@@ -481,9 +544,10 @@ impl NetPortTx {
                 frame,
             ));
         }
-        let frame = frame
+        let mut frame = frame
             .fit_segments(self.max_segments)
             .map_err(|frame| TxAdmissionError::new(TxAdmissionCause::TooManySegments, frame))?;
+        slot.completion = frame.completion.take();
         frame.push_dma_regions(&mut slot.regions);
         slot.meta = NetTxMeta {
             queue_index: Some(queue as u16),
@@ -539,6 +603,9 @@ impl NetPortTx {
             }
             (true, Some(outcome)) => {
                 self.counters.record_outcome(outcome);
+                if let Some(completion) = slab.slots[index as usize].completion.take() {
+                    completion.finish(outcome, crate::task::current_tick());
+                }
                 scratch.clear();
                 slab.free_slot(index);
             }
@@ -578,6 +645,9 @@ impl NetPortTx {
             }
             TxSlotState::DeviceOwned => {
                 self.counters.record_outcome(outcome);
+                if let Some(completion) = slab.slots[index as usize].completion.take() {
+                    completion.finish(outcome, crate::task::current_tick());
+                }
                 slab.free_slot(index);
                 Ok(())
             }

@@ -249,7 +249,7 @@ pub fn test_multicast_mac() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_resolve_multicast() {
     let mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
-    let processor = NdpProcessor::new(Ipv6Address::LOOPBACK, mac);
+    let processor = NdpProcessor::new(mac, local_addresses(Ipv6Address::LOOPBACK));
 
     let mcast = Ipv6Address::ALL_NODES_LINK_LOCAL;
     let resolved = processor.resolve(&mcast).unwrap();
@@ -263,7 +263,7 @@ pub fn test_ns_processing() {
     let our_ip = Ipv6Address::new([
         0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x50, 0x54, 0, 0xff, 0xfe, 0x12, 0x34, 0x56,
     ]);
-    let mut processor = NdpProcessor::new(our_ip, our_mac);
+    let mut processor = NdpProcessor::new(our_mac, local_addresses(our_ip));
 
     let sender_mac = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
     let sender_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
@@ -306,7 +306,7 @@ pub fn test_ndp_spoofing_detection() {
     let our_ip = Ipv6Address::new([
         0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x50, 0x54, 0, 0xff, 0xfe, 0x12, 0x34, 0x56,
     ]);
-    let mut processor = NdpProcessor::new(our_ip, our_mac);
+    let mut processor = NdpProcessor::new(our_mac, local_addresses(our_ip));
 
     let sender_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
     let dst = our_ip.solicited_node();
@@ -338,7 +338,7 @@ pub fn test_na_multicast_target_rejection() {
     let our_ip = Ipv6Address::new([
         0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x50, 0x54, 0, 0xff, 0xfe, 0x12, 0x34, 0x56,
     ]);
-    let mut processor = NdpProcessor::new(our_ip, our_mac);
+    let mut processor = NdpProcessor::new(our_mac, local_addresses(our_ip));
 
     let sender_mac = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
     let sender_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
@@ -374,7 +374,7 @@ pub fn test_na_discard_unknown_target() {
     let our_ip = Ipv6Address::new([
         0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x50, 0x54, 0, 0xff, 0xfe, 0x12, 0x34, 0x56,
     ]);
-    let mut processor = NdpProcessor::new(our_ip, our_mac);
+    let mut processor = NdpProcessor::new(our_mac, local_addresses(our_ip));
 
     let sender_mac = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
     let sender_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
@@ -408,7 +408,7 @@ pub fn test_na_discard_unknown_target() {
 pub fn test_ra_processing() {
     let our_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
     let our_ip = Ipv6Address::from_eui64(&our_mac);
-    let mut processor = NdpProcessor::new(our_ip, our_mac);
+    let mut processor = NdpProcessor::new(our_mac, local_addresses(our_ip));
 
     let router_mac = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
     let router_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
@@ -454,4 +454,16 @@ pub fn test_ra_processing() {
         .expect("Router should be in cache");
     assert_eq!(entry.mac, router_mac);
     assert_eq!(entry.state, NeighborState::Stale);
+}
+
+fn local_addresses(address: Ipv6Address) -> crate::net::l3::ipv6::address_state::Ipv6AddressSet {
+    use crate::net::l3::ipv6::address_state::{
+        Ipv6AddressSet, LocalAddressState, LocalIpv6Address,
+    };
+    let mut set = Ipv6AddressSet::default();
+    set.entries[0] = Some(LocalIpv6Address {
+        address,
+        state: LocalAddressState::Preferred,
+    });
+    set
 }

@@ -8,7 +8,7 @@
 
 extern crate alloc;
 
-mod tx;
+pub(crate) mod tx;
 use tx::NetPortTx;
 pub(crate) use tx::{
     TX_FRAME_MAX_SEGMENTS, TxAdmissionCause, TxAdmissionError, TxBody, TxCompletionError, TxFrame,
@@ -871,7 +871,7 @@ fn default_config_for_port(info: NetDeviceInfo) -> NetworkConfig {
     NetworkConfig {
         mac,
         ipv4: Ipv4Config::default(),
-        ipv6: Some(crate::net::l3::ipv6::Ipv6Config::from_mac(mac.as_bytes())),
+        ipv6: Some(crate::net::l3::ipv6::Ipv6Config::default()),
         icmp_echo_enabled: true,
         icmp_redirect_enabled: false,
         icmpv6_redirect_enabled: false,

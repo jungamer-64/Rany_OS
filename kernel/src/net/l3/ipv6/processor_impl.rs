@@ -77,7 +77,14 @@ impl Ipv6Processor {
             // SECURITY: Martian packet を破棄する。
             // 1. Source IP cannot be multicast (RFC 4291 Section 2.7)
             // 2. Source IP cannot be the loopback address unless it's truly a loopback packet
-            if src.is_multicast() || (src.is_loopback() && !self.config.link_local.is_loopback()) {
+            if src.is_multicast()
+                || (src.is_loopback()
+                    && !self
+                        .config
+                        .addresses
+                        .assigned()
+                        .any(|addr| addr.is_loopback()))
+            {
                 self.stats.record_dropped();
                 log::warn!("[NET-IPV6] Dropping Martian packet with source {}", src);
                 return Ipv6ProcessResult::Dropped;
@@ -274,17 +281,18 @@ impl Ipv6Processor {
     /// Check if a destination address is for this interface
     pub(crate) fn is_for_us(&self, addr: &Ipv6Address) -> bool {
         // Direct matches: link-local, all-nodes multicast, solicited-node
-        if *addr == self.config.link_local
-            || *addr == Ipv6Address::ALL_NODES_LINK_LOCAL
-            || *addr == self.config.link_local.solicited_node()
-        {
+        if *addr == Ipv6Address::ALL_NODES_LINK_LOCAL {
             return true;
         }
 
         // SECURITY: RFC 4291 に従い、loopback address (::1) の受理範囲を制限する。
         // if the interface itself is the loopback interface.
         if addr.is_loopback() {
-            return self.config.link_local.is_loopback();
+            return self
+                .config
+                .addresses
+                .assigned()
+                .any(|addr| addr.is_loopback());
         }
 
         self.config.addresses.for_destination(*addr)

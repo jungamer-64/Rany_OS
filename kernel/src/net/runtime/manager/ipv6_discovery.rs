@@ -6,10 +6,10 @@ use crate::net::l3::ipv6::address_state::{
     MAX_IPV6_ADDRESSES, expiration_at,
 };
 use crate::net::l3::ndp::NdpOption;
+use crate::net::runtime::device::tx::TxReceipt;
 
 const MAX_ON_LINK_PREFIXES: usize = 8;
 const MAX_ADVERTISED_ROUTERS: usize = 4;
-const DAD_RETRANS_TIMER_MS: u64 = 1000;
 const MAX_LEARNED_ROUTES: usize = MAX_ON_LINK_PREFIXES + MAX_ADVERTISED_ROUTERS + 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,7 +25,7 @@ struct AdvertisedRouter {
     expires_at: u64,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone)]
 pub(super) struct Ipv6Discovery {
     addresses: [Option<LearnedIpv6Address>; MAX_IPV6_ADDRESSES],
     prefixes: [Option<OnLinkPrefix>; MAX_ON_LINK_PREFIXES],
@@ -33,12 +33,15 @@ pub(super) struct Ipv6Discovery {
     now: u64,
 }
 
-fn update_slot<T: Copy>(
+fn update_slot<T>(
     slots: &mut [Option<T>],
-    matches: impl Fn(T) -> bool,
+    matches: impl Fn(&T) -> bool,
     entry: Option<T>,
 ) -> Result<(), NetworkError> {
-    if let Some(index) = slots.iter().position(|slot| slot.is_some_and(&matches)) {
+    if let Some(index) = slots
+        .iter()
+        .position(|slot| slot.as_ref().is_some_and(&matches))
+    {
         slots[index] = entry;
     } else if entry.is_some() {
         let slot = slots
@@ -51,22 +54,33 @@ fn update_slot<T: Copy>(
 }
 
 impl Ipv6Discovery {
+    pub(super) fn with_link_local(mac: MacAddress) -> Self {
+        let mut discovery = Self::default();
+        discovery.addresses[0] = Some(LearnedIpv6Address {
+            address: Ipv6Address::from_eui64(mac.as_bytes()),
+            origin: Ipv6AddressOrigin::LinkLocal,
+            lifetimes: AddressLifetimes {
+                preferred_until: u64::MAX,
+                valid_until: u64::MAX,
+            },
+            dad: DadState::AwaitingProbe,
+        });
+        discovery
+    }
+
     pub(super) fn suspend_dad(&mut self) {
         for address in self.addresses.iter_mut().flatten() {
-            if matches!(
-                address.dad,
-                DadState::Submitting(_) | DadState::Probing { .. }
-            ) {
-                address.dad = DadState::AwaitingProbe;
-            }
+            address.dad = DadState::AwaitingProbe;
         }
     }
 
     pub(super) fn snapshot(&self) -> Ipv6AddressSet {
         Ipv6AddressSet {
-            entries: self
-                .addresses
-                .map(|entry| entry.and_then(|address| address.snapshot(self.now))),
+            entries: core::array::from_fn(|index| {
+                self.addresses[index]
+                    .as_ref()
+                    .and_then(|address| address.snapshot(self.now))
+            }),
         }
     }
 
@@ -103,8 +117,7 @@ impl Ipv6Discovery {
             .addresses
             .iter()
             .flatten()
-            .find(|entry| entry.address == address && entry.origin == origin)
-            .copied();
+            .find(|entry| entry.address == address && entry.origin == origin);
         if let Some(old) = old.filter(|_| origin == Ipv6AddressOrigin::Slaac) {
             lifetimes = lifetimes.refresh_slaac(old.lifetimes, self.now);
         }
@@ -114,9 +127,8 @@ impl Ipv6Discovery {
                     .iter()
                     .flatten()
                     .find(|entry| entry.address == address)
-                    .copied()
             })
-            .map_or(DadState::AwaitingProbe, |entry| entry.dad);
+            .map_or(DadState::AwaitingProbe, |entry| entry.dad.clone());
         let entry = (lifetimes.valid_until > self.now).then_some(LearnedIpv6Address {
             address,
             origin,
@@ -204,21 +216,23 @@ impl Ipv6Discovery {
             .flatten()
             .filter(|entry| entry.address == address)
         {
-            entry.dad = match (entry.dad, event) {
-                (DadState::AwaitingProbe, DadEvent::Reserve(nonce)) => DadState::Submitting(nonce),
-                (DadState::Submitting(nonce), DadEvent::Submitted(now)) => DadState::Probing {
-                    nonce,
-                    until: now.saturating_add(DAD_RETRANS_TIMER_MS),
-                },
-                (DadState::Submitting(_), DadEvent::Rejected) => DadState::AwaitingProbe,
+            entry.dad = match (&entry.dad, &event) {
+                (DadState::AwaitingProbe, DadEvent::Reserve { nonce, receipt }) => {
+                    DadState::Submitting {
+                        nonce: *nonce,
+                        receipt: receipt.clone(),
+                    }
+                }
                 (
-                    DadState::Submitting(nonce) | DadState::Probing { nonce, .. },
+                    DadState::Submitting { nonce, .. } | DadState::Probing { nonce, .. },
                     DadEvent::Conflict {
                         received_nonce: Some(received),
                     },
                 ) if nonce == received => continue,
                 (
-                    DadState::AwaitingProbe | DadState::Submitting(_) | DadState::Probing { .. },
+                    DadState::AwaitingProbe
+                    | DadState::Submitting { .. }
+                    | DadState::Probing { .. },
                     DadEvent::Conflict { .. },
                 ) => DadState::Duplicate,
                 _ => continue,
@@ -256,11 +270,8 @@ impl Ipv6Discovery {
     }
 }
 
-#[derive(Clone, Copy)]
 pub(crate) enum DadEvent {
-    Reserve([u8; 6]),
-    Submitted(u64),
-    Rejected,
+    Reserve { nonce: [u8; 6], receipt: TxReceipt },
     Conflict { received_nonce: Option<[u8; 6]> },
 }
 
@@ -275,7 +286,7 @@ impl NetworkManager {
             .interfaces
             .get_mut(&if_id)
             .ok_or(NetworkError::NetworkUnreachable)?;
-        let old = interface.ipv6_discovery;
+        let old = &interface.ipv6_discovery;
         let routes_changed = old.prefixes != state.prefixes || old.routers != state.routers;
         let changed = routes_changed || old.snapshot() != state.snapshot();
         if routes_changed {
@@ -283,9 +294,11 @@ impl NetworkManager {
                 .try_reserve(MAX_LEARNED_ROUTES)
                 .map_err(|_| NetworkError::ResourceExhausted)?;
         }
+        if routes_changed {
+            Self::replace_ipv6_routes(&mut self.routes_v6, if_id, config, &state);
+        }
         interface.ipv6_discovery = state;
         if routes_changed {
-            self.refresh_managed_ipv6_routes(if_id, config, state);
             self.sort_ipv6_routes();
         }
         Ok(if changed {
@@ -295,20 +308,11 @@ impl NetworkManager {
         })
     }
 
-    pub(super) fn refresh_managed_ipv6_routes(
-        &mut self,
-        if_id: NetIfId,
-        config: NetworkConfig,
-        state: Ipv6Discovery,
-    ) {
-        Self::replace_ipv6_routes(&mut self.routes_v6, if_id, config, state);
-    }
-
-    fn replace_ipv6_routes(
+    pub(super) fn replace_ipv6_routes(
         routes: &mut Vec<Ipv6Route>,
         if_id: NetIfId,
         config: NetworkConfig,
-        state: Ipv6Discovery,
+        state: &Ipv6Discovery,
     ) {
         routes.retain(|route| !(route.if_id == if_id && route.managed_by_interface));
         let Some(ipv6) = config.ipv6 else {
@@ -355,7 +359,7 @@ impl NetworkManager {
             .config
             .filter(|cfg| cfg.ipv6.is_some())
             .ok_or(NetworkError::InvalidAddress)?;
-        Ok((config, iface.ipv6_discovery))
+        Ok((config, iface.ipv6_discovery.clone()))
     }
 
     pub(super) fn maintain_ipv6(&mut self, now: u64) -> TopologyChange {
@@ -365,14 +369,15 @@ impl NetworkManager {
             let Some(config) = iface.config.filter(|cfg| cfg.ipv6.is_some()) else {
                 continue;
             };
-            let old = iface.ipv6_discovery;
+            let old = &iface.ipv6_discovery;
+            let (addresses, routers, prefixes) = (old.snapshot(), old.routers, old.prefixes);
             iface.ipv6_discovery.advance(now);
-            let current = iface.ipv6_discovery;
-            if old.routers != current.routers || old.prefixes != current.prefixes {
+            let current = &iface.ipv6_discovery;
+            if routers != current.routers || prefixes != current.prefixes {
                 Self::replace_ipv6_routes(&mut self.routes_v6, id, config, current);
                 routes_changed = true;
             }
-            changed |= old.snapshot() != current.snapshot();
+            changed |= addresses != current.snapshot();
         }
         if routes_changed {
             self.sort_ipv6_routes();
@@ -444,6 +449,7 @@ pub(crate) fn maintain_ipv6_in(runtime: NetRuntimeHandle, now: u64) -> Result<()
 mod tests {
     use super::*;
     use crate::net::l3::ipv6::{Ipv6Config, address_state::LocalAddressState};
+    use kernel_api::service::netdev::TxDeviceOutcome;
 
     #[test]
     fn router_prefix_and_address_lifetimes_are_independent() {
@@ -452,7 +458,7 @@ mod tests {
             .register_interface("ipv6", PrimaryPreference::Auto)
             .unwrap();
         let mut config = NetworkConfig::default();
-        config.ipv6 = Some(Ipv6Config::from_mac(config.mac.as_bytes()));
+        config.ipv6 = Some(Ipv6Config::default());
         manager.set_interface_config(id, config).unwrap();
         manager.set_link_state(id, LinkState::Up).unwrap();
 
@@ -505,8 +511,15 @@ mod tests {
         );
 
         let discovery = &mut manager.interfaces.get_mut(&id).unwrap().ipv6_discovery;
-        assert!(discovery.transition_dad(address, DadEvent::Reserve([1; 6])));
-        assert!(discovery.transition_dad(address, DadEvent::Submitted(100)));
+        let (receipt, reporter) = TxReceipt::reserve().unwrap();
+        assert!(discovery.transition_dad(
+            address,
+            DadEvent::Reserve {
+                nonce: [1; 6],
+                receipt
+            }
+        ));
+        reporter.finish(TxDeviceOutcome::Transmitted, 100);
         assert!(!discovery.transition_dad(
             address,
             DadEvent::Conflict {
@@ -525,7 +538,13 @@ mod tests {
         assert_eq!(addresses(&manager).source(), Some(address));
         manager.maintain_ipv6(3100);
         assert_eq!(
-            addresses(&manager).entries[0].unwrap().state,
+            addresses(&manager)
+                .entries
+                .into_iter()
+                .flatten()
+                .find(|entry| entry.address == address)
+                .unwrap()
+                .state,
             LocalAddressState::Deprecated
         );
         manager.maintain_ipv6(4100);
@@ -543,19 +562,35 @@ mod tests {
         discovery
             .stage_address(address, Ipv6AddressOrigin::Dhcp, lifetimes)
             .unwrap();
-        assert!(discovery.transition_dad(address, DadEvent::Reserve([0; 6])));
-        assert!(discovery.transition_dad(address, DadEvent::Rejected));
-        discovery.advance(DAD_RETRANS_TIMER_MS);
+        let (receipt, reporter) = TxReceipt::reserve().unwrap();
+        assert!(discovery.transition_dad(
+            address,
+            DadEvent::Reserve {
+                nonce: [0; 6],
+                receipt
+            }
+        ));
+        discovery.advance(1000);
         assert!(discovery.snapshot().assigned().next().is_none());
-        assert!(discovery.transition_dad(address, DadEvent::Reserve([1; 6])));
-        assert!(discovery.transition_dad(address, DadEvent::Submitted(DAD_RETRANS_TIMER_MS)));
+        reporter.finish(TxDeviceOutcome::OutcomeUnknown, 1000);
+        discovery.advance(2000);
+        assert!(discovery.snapshot().assigned().next().is_none());
+        let (receipt, reporter) = TxReceipt::reserve().unwrap();
+        assert!(discovery.transition_dad(
+            address,
+            DadEvent::Reserve {
+                nonce: [1; 6],
+                receipt
+            }
+        ));
+        reporter.finish(TxDeviceOutcome::Transmitted, 2000);
         assert!(discovery.transition_dad(
             address,
             DadEvent::Conflict {
                 received_nonce: None
             }
         ));
-        discovery.advance(DAD_RETRANS_TIMER_MS * 2);
+        discovery.advance(3000);
         assert!(!discovery.snapshot().for_destination(address));
         assert!(
             !discovery

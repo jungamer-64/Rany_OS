@@ -189,7 +189,6 @@ impl NetworkStack {
                     .addresses
                     .assigned()
                     .any(|address| address == src_ip)
-                    || ipv6_cfg.link_local == src_ip
                 {
                     Ok(src_ip)
                 } else {
@@ -197,16 +196,13 @@ impl NetworkStack {
                 }
             }
             _ => {
+                let addresses = &ipv6_cfg.addresses;
                 let candidate = if dst_ip.is_link_local() {
-                    ipv6_cfg.link_local
+                    addresses.link_local()
                 } else {
-                    ipv6_cfg.addresses.source().unwrap_or(ipv6_cfg.link_local)
+                    addresses.source().or_else(|| addresses.link_local())
                 };
-                if candidate.is_unspecified() {
-                    Err(crate::net::types::NetworkError::NetworkUnreachable)
-                } else {
-                    Ok(candidate)
-                }
+                candidate.ok_or(crate::net::types::NetworkError::NetworkUnreachable)
             }
         }
     }
@@ -1067,18 +1063,34 @@ impl NetworkStack {
                 }
             }
         }
+        let mut admission = Ok(());
         for (if_id, address) in pending {
             let mut nonce = [0; 6];
             crate::net::runtime::entropy::fill_secure_random(&mut nonce)
                 .map_err(|_| NetworkError::ResourceExhausted)?;
             let packet = NdpProcessor::build_dad_ns(address, &nonce)
                 .ok_or(NetworkError::ResourceExhausted)?;
-            if manager::update_ipv6_dad_in(self.runtime, if_id, address, DadEvent::Reserve(nonce))?
-            {
-
+            let (receipt, reporter) = crate::net::runtime::device::tx::TxReceipt::reserve()?;
+            if manager::update_ipv6_dad_in(
+                self.runtime,
+                if_id,
+                address,
+                DadEvent::Reserve { nonce, receipt },
+            )? {
+                let dst = address.solicited_node();
+                if let Err(error) = self.send_ndp_probe(
+                    if_id,
+                    Ipv6Address::UNSPECIFIED,
+                    dst,
+                    MacAddress::new(dst.multicast_mac()),
+                    packet,
+                    Some(reporter),
+                ) {
+                    admission = Err(error);
+                }
             }
         }
-        Ok(())
+        admission
     }
 
     /// Expire timed-out NDP pending packets
