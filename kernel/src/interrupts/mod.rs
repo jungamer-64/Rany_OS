@@ -316,14 +316,6 @@ pub fn enable_interrupts() {
     load_idt_for_current_cpu().unwrap_or_else(|error| panic!("cannot enable interrupts: {error}"));
     // actually enable
     x86_64::instructions::interrupts::enable();
-
-    // Serial TX kick is global housekeeping and only needs to run on the BSP.
-    // Avoid touching COM1 TX interrupt state from AP worker bring-up paths.
-    if crate::cpu::CurrentCpu::acquire()
-        .is_some_and(|current_cpu| current_cpu.id() == crate::cpu::CpuId::BOOTSTRAP)
-    {
-        crate::io::log::start_serial_tx();
-    }
 }
 
 /// 割り込みを無効化
@@ -378,7 +370,7 @@ const ICW1_ICW4: u8 = 0x01;
 const ICW4_8086: u8 = 0x01;
 
 /// Remaps bootstrap IRQs. Timer IRQ0 is masked after local timer handoff;
-/// keyboard and serial routing remain available for legacy devices.
+/// keyboard IRQ remains available through the bootstrap PIC. COM1 is routed by I/O APIC.
 fn init_pic() {
     let ports = PIC_PORTS.lock().unwrap_or_else(|error| error.into_inner());
     let [
@@ -403,7 +395,7 @@ fn init_pic() {
         slave_data.write(slave);
         delay.write(0);
     }
-    master_data.write(0xe8);
+    master_data.write(0xf8);
     // PCI completion is deferred; legacy shared INTx lines stay masked.
     slave_data.write(0xff);
 }
@@ -453,6 +445,76 @@ fn read_pic_irq_masked(irq: u8) -> bool {
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub fn pit_irq0_masked() -> bool {
     read_pic_irq_masked(0)
+}
+
+#[derive(Debug)]
+pub(crate) enum Com1RouteError {
+    UartUnavailable,
+    MissingAcpiTables,
+    Acpi(crate::drivers::acpi::AcpiError),
+    MissingBootstrapCpu,
+    IoApic(crate::drivers::apic::IoApicError),
+    GsiInUse(u32),
+}
+
+impl core::fmt::Display for Com1RouteError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::UartUnavailable => f.write_str("COM1 UART initialization failed"),
+            Self::MissingAcpiTables => f.write_str("ACPI table catalog unavailable"),
+            Self::Acpi(error) => write!(f, "MADT interrupt overrides unavailable: {error:?}"),
+            Self::MissingBootstrapCpu => f.write_str("bootstrap CPU topology unavailable"),
+            Self::IoApic(error) => write!(f, "{error}"),
+            Self::GsiInUse(gsi) => write!(f, "GSI {gsi} is already routed"),
+        }
+    }
+}
+
+pub(crate) fn route_com1() -> Result<(), Com1RouteError> {
+    use crate::drivers::acpi::{InterruptPolarity, InterruptTriggerMode};
+    use crate::drivers::apic::{
+        self, ApicDestination, IoApicDestination, Polarity, RedirectionEntry, TriggerMode,
+    };
+
+    const ISA_IRQ: u8 = 4;
+    let overrides = crate::platform::firmware::tables()
+        .ok_or(Com1RouteError::MissingAcpiTables)?
+        .interrupt_overrides()
+        .map_err(Com1RouteError::Acpi)?;
+    let source = overrides
+        .iter()
+        .find(|entry| entry.bus == 0 && entry.source == ISA_IRQ);
+    let gsi = source.map_or(u32::from(ISA_IRQ), |entry| entry.global_interrupt);
+    let trigger = match source.map(|entry| entry.trigger_mode) {
+        Some(InterruptTriggerMode::Level) => TriggerMode::Level,
+        _ => TriggerMode::Edge,
+    };
+    let polarity = match source.map(|entry| entry.polarity) {
+        Some(InterruptPolarity::ActiveLow) => Polarity::LowActive,
+        _ => Polarity::HighActive,
+    };
+    let topology = crate::cpu::snapshot();
+    let bootstrap = topology
+        .slot(crate::cpu::CpuId::BOOTSTRAP)
+        .ok_or(Com1RouteError::MissingBootstrapCpu)?;
+    let destination =
+        IoApicDestination::try_from(ApicDestination::new(bootstrap.firmware.apic_id.as_u32()))
+            .map_err(Com1RouteError::IoApic)?;
+    let controllers = apic::io_apics().map_err(Com1RouteError::IoApic)?;
+    if !controllers
+        .read_gsi(gsi)
+        .map_err(Com1RouteError::IoApic)?
+        .is_masked()
+    {
+        return Err(Com1RouteError::GsiInUse(gsi));
+    }
+    let entry = RedirectionEntry::new(InterruptVector::Com1 as u8)
+        .destination(destination)
+        .with_trigger_mode(trigger)
+        .with_polarity(polarity);
+    controllers
+        .write_gsi(gsi, entry)
+        .map_err(Com1RouteError::IoApic)
 }
 
 // ============================================================================
@@ -857,7 +919,7 @@ define_interrupt!(
 define_interrupt!(
     fn com1_interrupt_handler(_stack_frame: InterruptStackFrame) {
         record_interrupt_frame(InterruptVector::Com1 as u8, &_stack_frame);
-        crate::io::log::handle_serial_interrupt();
+        crate::drivers::serial::handle_interrupt();
 
         // Interrupt-Wakerブリッジに通知
         crate::task::interrupt_waker::wake_from_interrupt(
@@ -867,8 +929,9 @@ define_interrupt!(
         // Interrupt-Waker Bridge（設計書 4.2: 2段階Wake方式）
         crate::io::interrupt_manager::push_interrupt_event(InterruptVector::Com1 as u8);
 
-        // EOI を送信 (IRQ4 = COM1)
-        acknowledge_legacy_irq(InterruptVector::Com1 as u8 - PIC1_OFFSET);
+        crate::drivers::apic::local_apic()
+            .expect("COM1 routing requires a local APIC")
+            .send_eoi();
     }
 );
 

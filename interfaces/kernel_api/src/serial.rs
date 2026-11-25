@@ -17,6 +17,8 @@ pub struct SerialPortInfo {
 
 pub trait SerialServices: Send + Sync {
     fn ports(&self) -> Vec<SerialPortInfo>;
+    /// Returns the accepted prefix length. Queued bytes may reach the device later.
+    ///
     /// # Errors
     ///
     /// Returns an error if the request is invalid or the receiver cannot accept the operation.

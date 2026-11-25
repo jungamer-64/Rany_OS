@@ -39,7 +39,7 @@ impl SerialFrontend {
     }
 
     fn write_str(&self, s: &str) {
-        crate::io::log::write_serial_bytes(s.as_bytes());
+        let _ = crate::drivers::serial::write_console(s.as_bytes());
     }
 
     fn redraw_line(&mut self, shell: &ExoShell) {

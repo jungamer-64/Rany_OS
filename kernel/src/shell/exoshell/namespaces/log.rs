@@ -51,6 +51,10 @@ impl LogNamespace {
             s("serial_output"),
             ExoValue::Bool(crate::io::log::serial_output_enabled()),
         );
+        map.insert(
+            s("dropped_records"),
+            ExoValue::Int(i64::try_from(crate::io::log::dropped_log_records()).unwrap_or(i64::MAX)),
+        );
         ExoValue::Map(map)
     }
 

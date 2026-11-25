@@ -256,9 +256,7 @@ impl SerialServices for KernelServiceHost {
             return Err(KapiError::NotFound);
         }
 
-        crate::io::log::write_serial_bytes(bytes);
-
-        Ok(bytes.len())
+        Ok(crate::drivers::serial::write_console(bytes))
     }
 }
 

@@ -1,15 +1,7 @@
 use super::*;
 
-/// 文字列からログレベルを設定
-///
-/// シェルコマンド等から呼び出される。
-/// alloc依存を排除し、ゼロアロケーションで比較を行います。
-///
-/// # Arguments
-/// * `level_str` - "error", "warn", "info", "debug", "trace" のいずれか（大文字小文字不問）
-///
-/// # Returns
-/// 設定成功時は`Ok(新レベル)`、無効な文字列は`Err`
+/// # Errors
+/// Returns an error when the requested level name is unknown.
 pub fn set_log_level_from_str(level_str: &str) -> Result<LevelFilter, &'static str> {
     // eq_ignore_ascii_case を使用してヒープアロケーションを回避
     if level_str.eq_ignore_ascii_case("off") {
@@ -38,17 +30,4 @@ pub fn set_log_level_from_str(level_str: &str) -> Result<LevelFilter, &'static s
     }
 
     Err("Invalid log level. Use: off, error, warn, info, debug, trace")
-}
-
-/// Prints formatted arguments to the serial port.
-/// Used by println!/eprintln! macros in lib.rs
-pub fn print(args: core::fmt::Arguments) {
-    struct SerialWriter;
-    impl core::fmt::Write for SerialWriter {
-        fn write_str(&mut self, s: &str) -> core::fmt::Result {
-            LOGGER.write_raw(s);
-            Ok(())
-        }
-    }
-    let _ = core::fmt::Write::write_fmt(&mut SerialWriter, args);
 }

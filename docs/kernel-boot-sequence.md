@@ -67,10 +67,10 @@ ExoRust のカーネル初期化は、実装上 6 フェーズに分割されて
 - 実装単位: `AsyncBootCoordinator` と stage task 群
 - Phase 4 で動き始めた scheduler 上に、残りの boot を高優先度 task 群として展開する。
 - stage 構成:
-  - `platform_task`: ACPI/IOMMU、heap available 通知、`services` 経由の kernel services/provider 登録、async logging 切替
+  - `platform_task`: ACPI/IOMMU、`services` 経由の kernel services/provider 登録
   - `graphics_task`: framebuffer/text console 初期化
   - `core_services_task`: domain/SAS/security/MPK、loader/live update/driver domain、boot artifact cell load
-  - `driver_task`: HID/serial/NVMe/AHCI/USB、system integration
+  - `driver_task`: HID/NVMe/AHCI/USB、system integration、COM1 の I/O APIC 配線
   - `post_driver_task`: network infra、memfs、durability/kgdb
 - `graphics_task` は `platform_task` と並行に走り、それ以外は dependency latch に従って段階実行される。
 - Intel IOMMU は firmware が所有するレジスタ範囲を検証し、controller を registry が保持してから hardware pointer を公開する。応答失敗でも mapping・queue・table を保持し、依存する device の起動は完了させない。
@@ -78,6 +78,8 @@ ExoRust のカーネル初期化は、実装上 6 フェーズに分割されて
 - `integration::init().await` は driver bring-up 後、network infra 前に実行する。待機中の composition owner は task が保持し、共有ロックの外で device を進める。取消時も完了済みの controller と未完了の acquisition を保持する。
 - AHCI は PCI BAR の資源 claim と UC mapping を保持し、firmware hand-off と実際の IDENTIFY 完了後に port を公開する。期限切れは完了証拠にせず、DMA と register の owner を保持する。遅れて完了した IDENTIFY は保守 task が回収し、公開済み port の終了は callback rundown と engine stop、IOTLB 完了を必要とする。
 - `init_network_infra()` は同期の stack/endpoint/timer wheel 準備だけを担当し、VirtIO-Net 登録、DHCP、ping は runtime task に残す。
+
+COM1 の非同期ログ送信は、I/O APIC の割り込み経路と UART の初期化が成立してから有効になる。割り込みを利用できないブートでは、送信待ちに上限のあるポーリング出力を使用する。
 
 ## Phase 6: Async Boot Finalization
 
@@ -95,6 +97,7 @@ ExoRust のカーネル初期化は、実装上 6 フェーズに分割されて
 `spawn_kernel_tasks()` は最小の runtime 起動責務だけを束ねる。
 
 - `spawn_shell_tasks()`
+  - KGDB が COM1 を排他的に確保すると serial shell は起動しない。
   - 既定は serial shell、`shell=console` 指定時のみ console shell を起動
 - `spawn_core_runtime_tasks()`
   - I/O scheduler 初期化、network bootstrap、network event task、timeout task、DHCP/DNS/mDNS 背景タスク

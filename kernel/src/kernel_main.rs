@@ -4,6 +4,7 @@
 // 責務: kmain_inner()、デバイス検出、ドライバ初期化、Executorループ
 // ============================================================================
 use super::*;
+use crate::drivers::serial;
 use crate::{
     debug, domain, driver_registry, durability, fs, graphics, heap, integration, interrupts, io,
     loader, sas, security, services, task, util,
@@ -14,7 +15,7 @@ use log::{debug, error, info, warn};
 mod kernel_runtime;
 use self::kernel_runtime::{print_logo, register_kernel_symbols, start_async_boot_runtime};
 
-/// Initializes HID drivers and starts the kernel-owned serial IRQ path.
+/// Initializes HID drivers.
 pub(crate) fn init_hid_drivers() {
     use crate::driver_registry::register_driver;
     use alloc::boxed::Box;
@@ -37,7 +38,6 @@ pub(crate) fn init_hid_drivers() {
         }
     }
     info!(target: "init", "HID drivers initialized");
-    crate::io::log::start_serial_runtime();
 }
 
 /// ネットワークインフラストラクチャの早期初期化（Executor不要）
@@ -216,6 +216,11 @@ fn phase_entry_and_early_cpu(context: &KernelBootContext) {
 
     // ロギングシステムの初期化（最優先、ヒープ不要）
     io::log::early_print("[BOOT] Initializing logger...\n");
+    if let Err(error) = serial::init() {
+        io::log::print(format_args!(
+            "[BOOT] COM1 initialization failed: {error:?}\n"
+        ));
+    }
     if io::log::init().is_err() {
         io::log::early_print("[FATAL] Logger init failed\n");
         io::log::early_print("[BOOT] Logger init FAILED!\n");
@@ -484,18 +489,6 @@ fn register_runtime_service_boundary() {
     });
 }
 
-fn enable_async_logging_for_boot() {
-    // qemu-test-export/full-boot profiles can run with interrupts disabled
-    // (`qemu_no_if=1`), so keep synchronous logging there to avoid async
-    // logger backpressure stalls before runtime profile dispatch.
-    #[cfg(not(feature = "qemu-test-export"))]
-    {
-        io::log::enable_async_logging();
-    }
-    #[cfg(feature = "qemu-test-export")]
-    {}
-}
-
 fn boot_cmdline_allows_interrupts(cmdline: Option<&str>) -> bool {
     #[cfg(not(feature = "qemu-test-export"))]
     {
@@ -556,11 +549,7 @@ fn phase_platform_and_security_base(context: &KernelBootContext) {
 
     init_acpi_and_iommu(context.boot_info_view());
 
-    // ヒープが使用可能になったことを通知
-    io::log::notify_heap_available();
-
     register_runtime_service_boundary();
-    enable_async_logging_for_boot();
 }
 
 fn phase_graphics_console(context: &KernelBootContext) -> bool {
@@ -598,12 +587,25 @@ fn log_driver_registry_summary() {
     info!(target: "init", "==============================");
 }
 
+fn start_serial_interrupts() {
+    if !crate::interrupts::are_interrupts_enabled() {
+        return;
+    }
+    match serial::start_interrupts() {
+        Ok(()) => info!(target: "init", "COM1 interrupt-driven output ready"),
+        Err(error) => {
+            warn!(target: "init", "COM1 IRQ routing unavailable: {error}; using polled output")
+        }
+    }
+}
+
 async fn initialize_system_integration() -> bool {
     info!(target: "init", "Initializing system integration");
     if let Err(e) = integration::init().await {
         warn!(target: "init", "System integration failed: {:?}", e);
         false
     } else {
+        start_serial_interrupts();
         info!(target: "init", "System integration initialized");
         true
     }
@@ -623,6 +625,7 @@ async fn retry_system_integration_if_needed(integration_ready: bool) -> bool {
         warn!(target: "init", "(late) System integration failed: {:?}", e);
         false
     } else {
+        start_serial_interrupts();
         info!(target: "init", "(late) System integration initialized");
         true
     }
@@ -715,7 +718,7 @@ async fn init_durability_and_kgdb(context: &KernelBootContext) {
             ));
         }
         if serial_exclusive && use_serial {
-            io::log::set_serial_output_enabled(false);
+            serial::reserve_for_debugger();
         }
         info!(
             target: "init",
@@ -867,6 +870,9 @@ fn schedule_runtime_tests_if_requested(context: &KernelBootContext) {
             crate::task::yield_now().await;
             let summary =
                 crate::test::runtime_dispatch::run(request.profile, request.case_filter).await;
+            if !serial::drain_for_shutdown().await {
+                io::log::early_print("[kernel-test] COM1 shutdown drain timed out\n");
+            }
             exit_with_runtime_summary(summary);
         },
         crate::task::TaskOptions::pinned(target_cpu),
@@ -897,6 +903,14 @@ fn resolve_shell_mode(
         );
     }
 
+    let adjusted_mode = if adjusted_mode == crate::shell::session::ShellLaunchMode::Serial
+        && !serial::console_available()
+    {
+        warn!(target: "init", "Serial shell unavailable while the debugger owns COM1");
+        crate::shell::session::ShellLaunchMode::Off
+    } else {
+        adjusted_mode
+    };
     info!(target: "init", "Shell launch mode: {:?}", adjusted_mode);
     adjusted_mode
 }

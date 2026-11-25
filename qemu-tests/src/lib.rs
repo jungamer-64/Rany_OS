@@ -70,13 +70,32 @@ fn run_required_profile(profile: &str) {
             cfg.max_cpus = count;
         }
         match run_fullboot(&cfg) {
-            Ok(report) => eprintln!(
-                "required full-boot profile '{}' SMP={} passed in {:?} (log: {})",
-                report.profile,
-                count,
-                report.duration,
-                report.log_path.display()
-            ),
+            Ok(report) => {
+                if profile == "boot-smoke" {
+                    let serial = std::fs::read(&report.log_path)
+                        .expect("boot-smoke serial capture must be readable");
+                    for marker in [
+                        "COM1 interrupt-driven output ready",
+                        "[boot] BOOT COMPLETE!",
+                        "[kernel-test] result pass",
+                    ] {
+                        assert!(
+                            serial
+                                .windows(marker.len())
+                                .any(|bytes| bytes == marker.as_bytes()),
+                            "boot-smoke serial capture is missing {marker:?}: {}",
+                            report.log_path.display()
+                        );
+                    }
+                }
+                eprintln!(
+                    "required full-boot profile '{}' SMP={} passed in {:?} (log: {})",
+                    report.profile,
+                    count,
+                    report.duration,
+                    report.log_path.display()
+                );
+            }
             Err(err) => panic!("required full-boot profile '{profile}' SMP={count} failed: {err}"),
         }
     }

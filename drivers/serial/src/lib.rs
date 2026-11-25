@@ -53,6 +53,7 @@ impl LineStatus {
     const FRAMING_ERROR: u8 = 1 << 3;
     const BREAK_INTERRUPT: u8 = 1 << 4;
     const TX_HOLDING_EMPTY: u8 = 1 << 5;
+    const TRANSMITTER_EMPTY: u8 = 1 << 6;
     const FIFO_ERROR: u8 = 1 << 7;
     fn from_u8(val: u8) -> Self {
         Self(val)
@@ -207,6 +208,16 @@ impl SerialPort {
             Err(SerialError::NoData)
         }
     }
+    /// Checks whether both the transmit FIFO and shift register are empty.
+    ///
+    /// Returns false if a concurrent UART transaction prevents the observation.
+    pub fn transmitter_idle(&self) -> bool {
+        self.registers.try_lock().is_some_and(|lock_result| {
+            let registers = lock_result.unwrap_or_else(|error| error.into_inner());
+            registers.line_status().0 & LineStatus::TRANSMITTER_EMPTY != 0
+        })
+    }
+
     /// Selects the complete interrupt mask in one serialized register write.
     pub fn set_interrupt_mode(&self, mode: SerialInterruptMode) {
         let registers = self
@@ -247,6 +258,11 @@ impl SerialPort {
 
         // LOOP_PROOF: mode=bounded; reason=Each handled cause increments the counter and an empty interrupt status ends this admitted ISR budget.;
         while causes < budget.causes {
+            // Reading a TX-empty IIR acknowledges that cause. A frame still
+            // waiting after the TX budget must retain its next notification.
+            if report.transmitted_bytes == budget.transmitted_bytes {
+                break;
+            }
             let interrupt_id = registers.port_at(reg::IIR).read();
             if (interrupt_id & 1) != 0 {
                 break;
