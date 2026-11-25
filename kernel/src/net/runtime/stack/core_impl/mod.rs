@@ -608,6 +608,19 @@ impl NetworkStack {
         self.applied_topology_revision != revision
     }
 
+    /// Stack commands observe the current authoritative topology even if a
+    /// change notification could not enter a full command queue.
+    pub(crate) fn refresh_interface_topology(&mut self) {
+        let revision =
+            crate::net::runtime::manager::current_interface_topology_revision_in(self.runtime);
+        if self.needs_interface_topology_revision(revision)
+            && let Some(topology) =
+                crate::net::runtime::manager::try_interface_topology_in(self.runtime)
+        {
+            self.reconcile_interface_topology(topology);
+        }
+    }
+
     pub(crate) fn reconcile_interface_topology(
         &mut self,
         topology: crate::net::runtime::manager::InterfaceTopologySnapshot,

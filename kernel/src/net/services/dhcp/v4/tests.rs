@@ -447,11 +447,19 @@ pub fn test_build_decline_and_build_release_contents() {
 pub fn test_release_clears_lease_and_sets_last_released() {
     use crate::net::l2::ethernet::MacAddress;
 
-    let client = DhcpClient::new(
-        crate::net::runtime::default_runtime(),
-        crate::net::runtime::manager::NetIfId(1),
-        MacAddress::new([5, 5, 5, 5, 5, 5]),
-    );
+    use crate::net::runtime::manager;
+    let runtime = crate::net::runtime::create_runtime().expect("isolated network runtime");
+    manager::init_network_manager_in(runtime);
+    let if_id =
+        manager::register_interface_in(runtime, "dhcp-test", manager::PrimaryPreference::Auto)
+            .expect("registered interface");
+    manager::set_interface_config_in(
+        runtime,
+        if_id,
+        crate::net::runtime::stack::NetworkConfig::default(),
+    )
+    .expect("configured interface");
+    let client = DhcpClient::new(runtime, if_id, MacAddress::new([5, 5, 5, 5, 5, 5]));
     let lease = DhcpLease {
         ip_address: Ipv4Address::new([192, 168, 10, 10]),
         subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
@@ -462,19 +470,58 @@ pub fn test_release_clears_lease_and_sets_last_released() {
         t2: 3150,
         obtained_at: 0,
     };
-    {
-        let mut l = client.lease.lock().unwrap();
-        *l = Some(lease);
-    }
-    {
-        let mut s = client.state.lock().unwrap();
-        *s = DhcpState::Bound;
-    }
+    let publish_lease = |state| {
+        *client.lease.lock().unwrap() = Some(lease);
+        *client.state.lock().unwrap() = state;
+        client.publish_ack(super::DhcpAckResult {
+            lease,
+            dns_servers: alloc::vec::Vec::new(),
+            domain_name: None,
+        });
+    };
+    let configured_address = || {
+        manager::get_interface_in(runtime, if_id)
+            .expect("manager")
+            .expect("interface")
+            .config
+            .expect("configuration")
+            .ipv4
+            .address
+    };
 
-    // Call release (best-effort send) - should clear lease and set last_released
-    client.release();
-    assert!(client.lease.lock().unwrap().is_none());
+    publish_lease(DhcpState::Bound);
+    assert_eq!(configured_address(), lease.ip_address);
+    client.release(None);
+    assert!(client.lease().is_none());
+    assert_eq!(configured_address(), Ipv4Address::ANY);
     assert_eq!(client.last_released_ip(), Some(lease.ip_address));
+
+    publish_lease(DhcpState::Renewing);
+    assert_eq!(configured_address(), lease.ip_address);
+    client.xid.store(0x1234_5678, Ordering::SeqCst);
+    let mut nak = [0; DhcpHeader::SIZE + 14];
+    nak[0] = DhcpOperation::Reply as u8;
+    nak[1] = 1;
+    nak[2] = 6;
+    nak[4..8].copy_from_slice(&0x1234_5678u32.to_be_bytes());
+    nak[28..34].copy_from_slice(client.mac_address.as_bytes());
+    nak[DhcpHeader::SIZE..DhcpHeader::SIZE + 4].copy_from_slice(&DHCP_MAGIC_COOKIE);
+    nak[DhcpHeader::SIZE + 4..DhcpHeader::SIZE + 9].copy_from_slice(&[
+        DhcpOption::MessageType as u8,
+        1,
+        DhcpMessageType::Nak as u8,
+        DhcpOption::ServerIdentifier as u8,
+        4,
+    ]);
+    nak[DhcpHeader::SIZE + 9..DhcpHeader::SIZE + 13].copy_from_slice(lease.server_ip.as_bytes());
+    nak[DhcpHeader::SIZE + 13] = DhcpOption::End as u8;
+    assert!(matches!(
+        client.process_response_payload(response_payload(&nak), 1),
+        Ok(DhcpResponseResult::Nak)
+    ));
+    assert_eq!(client.state(), DhcpState::Init);
+    assert!(client.lease().is_none());
+    assert_eq!(configured_address(), Ipv4Address::ANY);
 }
 
 #[cfg(feature = "qemu-test-export")]
@@ -852,11 +899,8 @@ fn assert_process_response_ack_informing_accepts_zero_yiaddr() {
             assert_eq!(updated.lease.t1, lease.t1);
             assert_eq!(updated.lease.t2, lease.t2);
             assert_eq!(updated.lease.server_ip, lease.server_ip);
-            assert_eq!(updated.applied.dns_servers.len(), 1);
-            assert_eq!(
-                updated.applied.dns_servers[0],
-                Ipv4Address::new([1, 1, 1, 1])
-            );
+            assert_eq!(updated.dns_servers.len(), 1);
+            assert_eq!(updated.dns_servers[0], Ipv4Address::new([1, 1, 1, 1]));
         }
         _ => panic!("expected Ack"),
     }

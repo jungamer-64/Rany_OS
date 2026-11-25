@@ -69,51 +69,84 @@ impl DhcpClient {
         DhcpResponseResult::Offer(lease)
     }
 
-    /// ACK 受信時の副作用を適用する
-    pub(super) fn apply_ack(
+    fn apply_ack(
         &self,
-        lease: DhcpLease,
-        applied: crate::net::services::dhcp::DhcpV4AppliedConfig,
+        expected_state: DhcpState,
+        ack: super::DhcpAckResult,
         current_tick: u64,
-    ) -> DhcpResponseResult {
-        // Clear any offer probe state
-        self.offered_probe_at.store(0, Ordering::SeqCst);
-        match self.state.lock() {
-            Ok(mut g) => *g = DhcpState::Bound,
-            Err(_) => log::error!(
-                "[NET] DHCP State lock poisoned (process_response Ack) - state not updated"
-            ),
+    ) -> Result<DhcpResponseResult, &'static str> {
+        let mut active = self.lease.lock().map_err(|_| "DHCP lease lock poisoned")?;
+        let mut state = self.state.lock().map_err(|_| "DHCP state lock poisoned")?;
+        if *state != expected_state {
+            return Err("DHCP state changed before ACK");
         }
+        *active = Some(ack.lease);
+        *state = DhcpState::Bound;
+        self.offered_probe_at.store(0, Ordering::SeqCst);
         self.state_time.store(current_tick, Ordering::SeqCst);
         self.retry_count.store(0, Ordering::SeqCst);
-
-        match self.lease.lock() {
-            Ok(mut g) => *g = Some(lease),
-            Err(_) => log::error!(
-                "[NET] DHCP Lease lock poisoned (process_response Ack) - skipping storing lease"
-            ),
-        }
-
-        DhcpResponseResult::Ack(crate::net::services::dhcp::DhcpAckResult { lease, applied })
+        Ok(DhcpResponseResult::Ack(ack))
     }
 
-    /// NAK 受信時の副作用を適用する
-    pub(super) fn apply_nak(&self) -> DhcpResponseResult {
-        match self.state.lock() {
-            Ok(mut g) => *g = DhcpState::Init,
-            Err(_) => log::error!(
-                "[NET] DHCP State lock poisoned (process_response Nak) - state not updated"
-            ),
+    pub(in crate::net::services::dhcp) fn publish_ack(&self, ack: super::DhcpAckResult) {
+        let Ok(active) = self.lease.lock() else {
+            return;
+        };
+        if *active != Some(ack.lease) {
+            return;
         }
-        match self.offered_lease.lock() {
-            Ok(mut g) => *g = None,
-            Err(_) => log::error!(
-                "[NET] DHCP Offer lock poisoned (process_response Nak) - skipping clear"
-            ),
+        let super::DhcpAckResult {
+            lease,
+            dns_servers,
+            domain_name,
+        } = ack;
+        let updated = crate::net::runtime::manager::update_interface_config_in(
+            self.runtime,
+            self.if_id,
+            |config| {
+                config.ipv4.address = lease.ip_address;
+                config.ipv4.subnet_mask = lease.subnet_mask;
+                config.ipv4.gateway = lease.gateway.unwrap_or(Ipv4Address::ANY);
+                config.ipv4.dns = dns_servers.first().copied();
+            },
+        );
+        if let Err(error) = updated {
+            log::warn!(
+                "[NET] DHCPv4: if{} config publication failed: {:?}",
+                self.if_id.0,
+                error
+            );
+            return;
         }
-        // Clear any probe timestamp
-        self.offered_probe_at.store(0, Ordering::SeqCst);
-        DhcpResponseResult::Nak
+        if crate::net::runtime::manager::primary_interface_in(self.runtime) == Some(self.if_id) {
+            if !dns_servers.is_empty() {
+                crate::net::services::dns::set_ipv4_servers_in(self.runtime, &dns_servers);
+            }
+            if let Some(domain) = domain_name {
+                crate::net::services::dns::set_search_domains_in(self.runtime, &[domain]);
+            }
+            crate::net::services::mdns::set_local_ip_in(self.runtime, lease.ip_address);
+        }
+    }
+
+    fn apply_nak(
+        &self,
+        expected_state: DhcpState,
+        server: Ipv4Address,
+    ) -> Result<DhcpResponseResult, &'static str> {
+        match expected_state {
+            DhcpState::Requesting
+                if self
+                    .offered_lease()
+                    .is_some_and(|offer| offer.server_ip == server) => {}
+            DhcpState::Renewing if self.lease().is_some_and(|lease| lease.server_ip == server) => {}
+            DhcpState::Rebinding => {}
+            _ => return Err("Unexpected DHCPNAK"),
+        }
+        if !self.reset_leases(Some(expected_state)) {
+            return Err("DHCP state changed before NAK");
+        }
+        Ok(DhcpResponseResult::Nak)
     }
 
     pub fn process_response_payload(
@@ -138,16 +171,17 @@ impl DhcpClient {
             }
             DhcpMessageType::Ack => {
                 let lease = self.build_ack_lease(current_state, &header, &opts, current_tick)?;
-                let applied = crate::net::services::dhcp::DhcpV4AppliedConfig::new(
-                    lease.ip_address,
-                    lease.subnet_mask,
-                    lease.gateway,
-                    opts.dns_servers,
-                    opts.domain_name,
-                );
-                Ok(self.apply_ack(lease, applied, current_tick))
+                let ack = super::DhcpAckResult {
+                    lease,
+                    dns_servers: opts.dns_servers,
+                    domain_name: opts.domain_name,
+                };
+                self.apply_ack(current_state, ack, current_tick)
             }
-            DhcpMessageType::Nak => Ok(self.apply_nak()),
+            DhcpMessageType::Nak => self.apply_nak(
+                current_state,
+                opts.server_id.ok_or("No server identifier in NAK")?,
+            ),
             _ => Err("Unexpected message type"),
         }
     }
@@ -312,52 +346,37 @@ impl DhcpClient {
         Ok(offset)
     }
 
-    fn send_release_packet(&self) -> bool {
-        // Acquire lease to get server
-        let lease = match self.lease.lock() {
-            Ok(g) => *g,
-            Err(_) => return false,
+    /// Send a best-effort DHCPRELEASE before withdrawing the address. A port
+    /// departure has no stack with which to send and only withdraws the address.
+    pub(crate) fn release(
+        &self,
+        stack: Option<&mut crate::net::runtime::stack::NetworkStack>,
+    ) -> bool {
+        let Some(lease) = self.lease() else {
+            self.reset_leases(None);
+            return false;
         };
-
-        let lease = match lease {
-            Some(l) => l,
-            None => return false,
-        };
-
-        // Record for tests/diagnostics
         self.last_released
             .store(lease.ip_address.to_u32(), Ordering::SeqCst);
-
         let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
-        match self.build_release(&mut buf, 0) {
-            // RFC 2131: RELEASE は取得済みクライアントIPをソースIPとして使用
-            Ok(len) => dhcpv4_generated_payload(&buf[..len]).is_ok_and(|payload| {
-                send_dhcpv4_packet_on(
-                    self.runtime,
-                    self.if_id,
-                    lease.ip_address,
-                    DHCP_CLIENT_PORT,
-                    lease.server_ip,
-                    DHCP_SERVER_PORT,
-                    payload,
-                    64,
-                )
-            }),
-            Err(_) => false,
-        }
-    }
-
-    /// リースを解放
-    pub fn release(&self) -> bool {
-        self.release_bound()
-    }
-
-    /// リースを指定インターフェース上で解放
-    fn release_bound(&self) -> bool {
-        let released = self.send_release_packet();
-        self.transition_state(DhcpState::Init);
-        self.clear_all_leases();
-        released
+        let sent = stack.is_some_and(|stack| {
+            let Ok(len) = self.build_release(&mut buf, 0) else {
+                return false;
+            };
+            let Ok(payload) = dhcpv4_generated_payload(&buf[..len]) else {
+                return false;
+            };
+            stack.send_udp_raw_payload_on_with_src_ttl(
+                self.if_id,
+                lease.ip_address,
+                lease.server_ip,
+                UdpPorts::new(DHCP_CLIENT_PORT, DHCP_SERVER_PORT),
+                payload,
+                64,
+            )
+        });
+        self.reset_leases(None);
+        sent
     }
 
     async fn send_discover_packet_on(&self, current_tick: u64) -> Result<bool, &'static str> {
@@ -543,8 +562,7 @@ impl DhcpClient {
                 self.transition_state(DhcpState::Renewing);
             }
             _ => {
-                self.transition_state(DhcpState::Init);
-                self.clear_all_leases();
+                self.reset_leases(Some(state));
             }
         }
         self.state_time.store(current_tick, Ordering::SeqCst);
@@ -559,37 +577,48 @@ impl DhcpClient {
         }
     }
 
-    /// Drops the bound and offered leases and withdraws a bound address from
-    /// the interface (RFC 2131 Section 4.4.5).
-    pub(super) fn clear_all_leases(&self) {
-        let had_lease = match self.lease.lock() {
-            Ok(mut g) => g.take().is_some(),
-            Err(_) => {
-                log::error!("[NET] DHCP Lease lock poisoned - cannot clear lease");
-                false
-            }
+    /// Withdraw the manager's configuration while the corresponding lease
+    /// is still owned. Replica refresh notifications can be lost without
+    /// losing the authoritative topology revision.
+    fn reset_leases(&self, expected_state: Option<DhcpState>) -> bool {
+        let Ok(mut active) = self.lease.lock() else {
+            return false;
         };
-        if had_lease
-            && crate::net::runtime::command::try_enqueue_command_in(
-                self.runtime,
-                crate::net::runtime::command::RuntimeCommand::Control(
-                    crate::net::runtime::command::ControlCommand::DhcpLeaseCleared {
-                        if_id: self.if_id,
-                    },
-                ),
-            )
-            .is_err()
-        {
-            log::warn!(
-                "[NET] DHCP: if{} address withdrawal could not be queued",
-                self.if_id.0
-            );
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        if expected_state.is_some_and(|expected| *state != expected) {
+            return false;
         }
+        if let Some(lease) = *active {
+            let updated = crate::net::runtime::manager::update_interface_config_in(
+                self.runtime,
+                self.if_id,
+                |config| {
+                    if config.ipv4.address == lease.ip_address {
+                        config.ipv4.address = Ipv4Address::ANY;
+                        config.ipv4.subnet_mask =
+                            crate::net::l3::ipv4::Ipv4Config::default().subnet_mask;
+                        config.ipv4.gateway = Ipv4Address::ANY;
+                        config.ipv4.dns = None;
+                    }
+                },
+            );
+            // An absent interface already has no active address or route.
+            if let Err(error) = updated {
+                log::debug!("[NET] DHCPv4: if{} withdrawal: {:?}", self.if_id.0, error);
+            }
+        }
+        *active = None;
+        *state = DhcpState::Init;
+        drop(state);
+        drop(active);
         match self.offered_lease.lock() {
             Ok(mut g) => *g = None,
             Err(_) => log::error!("[NET] DHCP Offer lock poisoned - cannot clear offer"),
         }
         self.offered_probe_at.store(0, Ordering::SeqCst);
+        true
     }
 
     // --- check_timeout helper: common retry-or-transition pattern ---
@@ -814,11 +843,12 @@ impl DhcpClient {
         };
         if expired {
             log::warn!("[NET] DHCP lease expired while rebinding, restarting discovery");
-            self.transition_state(DhcpState::Init);
-            self.state_time.store(current_tick, Ordering::SeqCst);
-            self.retry_count.store(0, Ordering::SeqCst);
-            self.clear_all_leases();
-            return true;
+            if self.reset_leases(Some(DhcpState::Rebinding)) {
+                self.state_time.store(current_tick, Ordering::SeqCst);
+                self.retry_count.store(0, Ordering::SeqCst);
+                return true;
+            }
+            return false;
         }
 
         // RFC 2131: Retransmit rebind requests with exponential backoff.
@@ -845,10 +875,9 @@ impl DhcpClient {
             let actual_retry = self.retry_count.fetch_add(1, Ordering::SeqCst);
             if actual_retry >= Self::MAX_RETRIES {
                 // Give up
-                self.transition_state(DhcpState::Init);
-                self.retry_count.store(0, Ordering::SeqCst);
-                // Clear leases
-                self.clear_all_leases();
+                if self.reset_leases(Some(DhcpState::Rebinding)) {
+                    self.retry_count.store(0, Ordering::SeqCst);
+                }
             }
             return true;
         }

@@ -225,6 +225,9 @@ impl RuntimeCommandHandler {
             // DHCP/TCP 非同期クエリ: runtime-owned state だけで回答できるものは
             // stack lock に依存せず通常クエリ経路を使う。
             // ============================================================
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::DhcpRelease { reply },
+            ) => self.handle_dhcp_release(runtime, reply, None),
             query_event @ RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::GetDhcpState { .. },
             )
@@ -233,9 +236,6 @@ impl RuntimeCommandHandler {
             )
             | query_event @ RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::DhcpRenew { .. },
-            )
-            | query_event @ RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::DhcpRelease { .. },
             )
             | query_event @ RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::DhcpDiscover { .. },
@@ -278,6 +278,7 @@ impl RuntimeCommandHandler {
         event: RuntimeCommand,
         stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
+        stack.refresh_interface_topology();
         match event {
             RuntimeCommand::Ingress(crate::net::runtime::command::IngressCommand::Packet {
                 if_id,
@@ -441,9 +442,9 @@ impl RuntimeCommandHandler {
             query_event @ RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::DhcpRenew { .. },
             ) => self.handle_query_event_with_stack(runtime, query_event),
-            query_event @ RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::DhcpRelease { .. },
-            ) => self.handle_query_event_with_stack(runtime, query_event),
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::DhcpRelease { reply },
+            ) => self.handle_dhcp_release(runtime, reply, Some(stack)),
             query_event @ RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::DhcpDiscover { .. },
             ) => self.handle_query_event_with_stack(runtime, query_event),

@@ -14,5 +14,5 @@ use self::types::ParsedOptions;
 pub use self::types::{
     DHCP_CLIENT_PORT, DHCP_MAGIC_COOKIE, DHCP_MAX_MESSAGE_SIZE, DHCP_SERVER_PORT, DhcpAckResult,
     DhcpClient, DhcpHeader, DhcpLease, DhcpMessageType, DhcpOperation, DhcpOption,
-    DhcpResponseResult, DhcpState, DhcpV4AppliedConfig,
+    DhcpResponseResult, DhcpState,
 };

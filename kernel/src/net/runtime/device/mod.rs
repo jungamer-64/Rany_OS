@@ -703,15 +703,7 @@ fn handle_interface_departure_in(
     reason: FailoverReason,
     previous_primary: Option<NetIfId>,
 ) {
-    let release_sent = crate::net::services::dhcp::release_interface_in(runtime, if_id);
-    if release_sent {
-        log::info!(
-            target: "net::device",
-            "[NET] dhcp_release_best_effort: if{} reason={}",
-            if_id.0,
-            reason.as_str()
-        );
-    }
+    crate::net::services::dhcp::suspend_interface_in(runtime, if_id);
 
     if previous_primary != Some(if_id) {
         return;

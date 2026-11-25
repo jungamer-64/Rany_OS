@@ -849,6 +849,24 @@ pub fn unregister_interface_in(
     })
 }
 
+/// Edit a single interface's configuration and publish its routes and topology
+/// revision under the same manager lock.
+pub(crate) fn update_interface_config_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+    update: impl FnOnce(&mut NetworkConfig),
+) -> Result<(), NetworkError> {
+    mutate_topology_in(runtime, |manager| {
+        let mut config = manager
+            .get_interface(if_id)
+            .and_then(|interface| interface.config)
+            .ok_or(NetworkError::InvalidAddress)?;
+        update(&mut config);
+        let change = manager.set_interface_config(if_id, config)?;
+        Ok(((), change))
+    })
+}
+
 pub fn set_interface_config_in(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,

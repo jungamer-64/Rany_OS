@@ -173,40 +173,13 @@ const _: [(); DhcpHeader::SIZE] = [(); core::mem::size_of::<DhcpHeader>()];
 const _: [(); core::mem::size_of::<DhcpHeader>()] = [(); DhcpHeader::SIZE];
 
 #[derive(Debug)]
-pub struct DhcpV4AppliedConfig {
-    pub ip_address: Ipv4Address,
-    pub subnet_mask: Ipv4Address,
-    pub gateway: Option<Ipv4Address>,
+pub struct DhcpAckResult {
+    pub lease: DhcpLease,
     pub dns_servers: Vec<Ipv4Address>,
-    /// Domain Name option (RFC 2132 Section 3.17), used as the DNS search domain.
     pub domain_name: Option<crate::net::services::dns::DnsNormalizedName>,
 }
 
-impl DhcpV4AppliedConfig {
-    pub fn new(
-        ip_address: Ipv4Address,
-        subnet_mask: Ipv4Address,
-        gateway: Option<Ipv4Address>,
-        dns_servers: Vec<Ipv4Address>,
-        domain_name: Option<crate::net::services::dns::DnsNormalizedName>,
-    ) -> Self {
-        Self {
-            ip_address,
-            subnet_mask,
-            gateway,
-            dns_servers,
-            domain_name,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct DhcpAckResult {
-    pub lease: DhcpLease,
-    pub applied: DhcpV4AppliedConfig,
-}
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DhcpLease {
     pub ip_address: Ipv4Address,
     pub subnet_mask: Ipv4Address,

@@ -13,6 +13,24 @@ use crate::net::runtime::manager::NetIfId;
 use crate::net::runtime::transport::tcp_table_in;
 
 impl RuntimeCommandHandler {
+    pub(super) fn handle_dhcp_release(
+        &self,
+        runtime: NetRuntimeHandle,
+        reply: crate::net::runtime::command::CommandReplyTicket<bool>,
+        stack: Option<&mut crate::net::runtime::stack::NetworkStack>,
+    ) -> EventHandleResult {
+        use crate::net::services::dhcp;
+        let v4 = dhcp::primary_v4_client_in(runtime);
+        let v6 = dhcp::primary_v6_client_in(runtime);
+        if let Some(client) = v4 {
+            client.release(stack);
+        }
+        if let Some(client) = v6 {
+            client.release();
+        }
+        finish_command(reply, v4.is_some() || v6.is_some())
+    }
+
     pub(super) fn handle_query_event_with_stack(
         &self,
         runtime: NetRuntimeHandle,
@@ -70,26 +88,6 @@ impl RuntimeCommandHandler {
                 };
 
                 complete_command(reply, result);
-                EventHandleResult::Success
-            }
-            RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::DhcpRelease { reply },
-            ) => {
-                use crate::net::services::dhcp;
-
-                let mut released = false;
-                // DHCPv4 Release
-                if let Some(client) = dhcp::primary_v4_client_in(runtime) {
-                    client.release();
-                    released = true;
-                }
-                // DHCPv6 Release (RFC 8415 Section 18.2.6)
-                if let Some(client6) = dhcp::primary_v6_client_in(runtime) {
-                    client6.release();
-                    released = true;
-                }
-
-                complete_command(reply, released);
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(

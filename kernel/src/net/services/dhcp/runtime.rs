@@ -2,7 +2,7 @@
 // kernel/src/net/services/dhcp/runtime.rs - サービス / DHCP / ランタイム
 // ============================================================================
 
-use super::v4::{DHCP_CLIENT_PORT, DhcpAckResult, DhcpClient, DhcpResponseResult};
+use super::v4::{DHCP_CLIENT_PORT, DhcpClient, DhcpResponseResult};
 use super::v6::{DHCPV6_CLIENT_PORT, DhcpV6Client};
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::runtime::NetRuntimeHandle;
@@ -167,12 +167,11 @@ pub(crate) fn interface_v4_client_in(
     interface_runtime_in(runtime, if_id).map(|runtime| &runtime.v4)
 }
 
-pub(crate) fn release_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> bool {
-    let Some(interface_runtime) = interface_runtime_in(runtime, if_id) else {
-        return false;
-    };
-    interface_runtime.suspended.store(true, Ordering::Release);
-    interface_runtime.v4.release()
+pub(crate) fn suspend_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
+    if let Some(interface_runtime) = interface_runtime_in(runtime, if_id) {
+        interface_runtime.suspended.store(true, Ordering::Release);
+        interface_runtime.v4.release(None);
+    }
 }
 
 pub(crate) fn restart_interface_runtime_in(
@@ -365,22 +364,14 @@ async fn dhcp_v4_dispatcher_task(runtime: NetRuntimeHandle) {
 
                 match result {
                     Ok(DhcpResponseResult::Ack(result)) => {
-                        let DhcpAckResult { lease, applied } = result;
+                        let lease = result.lease;
                         log::info!(
                             "[NET] DHCPv4 ACK received: if{} mac={} ip={:?}",
                             interface_runtime.if_id.0,
                             interface_runtime.mac(),
                             lease.ip_address
                         );
-                        let _ = crate::net::runtime::command::try_enqueue_command_in(
-                            runtime,
-                            crate::net::runtime::command::RuntimeCommand::Control(
-                                crate::net::runtime::command::ControlCommand::DhcpApplyLease {
-                                    if_id: interface_runtime.if_id,
-                                    config: applied,
-                                },
-                            ),
-                        );
+                        interface_runtime.v4.publish_ack(result);
                     }
                     Ok(DhcpResponseResult::Offer(lease)) => {
                         log::info!(
