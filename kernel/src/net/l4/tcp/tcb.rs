@@ -1524,13 +1524,15 @@ impl TcbTable {
     }
 
     /// SYN-RECEIVED -> ESTABLISHED on the ACK of our SYN. The caller has
-    /// verified `SND.UNA < SEG.ACK <= SND.NXT`.
+    /// verified `SND.UNA < SEG.ACK <= SND.NXT`. A crossing SYN-ACK advertises
+    /// an unscaled window.
     pub(in crate::net::l4::tcp) fn establish_syn_received(
         &self,
         if_id: NetIfId,
         local: EndpointAddr,
         remote: EndpointAddr,
         segment: AckSegment,
+        crossing_syn_ack: bool,
     ) -> bool {
         let mut accepted = false;
         self.mutate_entry(if_id, local, remote, |entry| {
@@ -1538,11 +1540,12 @@ impl TcbTable {
             match old {
                 TcpTcbState::SynReceived { mut data, .. } => {
                     data.seq.snd_una = segment.ack;
-                    let peer_window = PeerWindow::from_segment(
-                        data.window_scale.scale_snd_window(segment.window),
-                        segment.seq,
-                        segment.ack,
-                    );
+                    let bytes = if crossing_syn_ack {
+                        u32::from(segment.window)
+                    } else {
+                        data.window_scale.scale_snd_window(segment.window)
+                    };
+                    let peer_window = PeerWindow::from_segment(bytes, segment.seq, segment.ack);
                     entry.state = TcpTcbState::Established(data.into_connection(peer_window));
                     accepted = true;
                 }
@@ -2030,7 +2033,13 @@ pub mod tests {
         table.insert(tcb).expect("insert syn-received tcb");
 
         assert_eq!(table.syn_recv_count(), 1);
-        assert!(table.establish_syn_received(TEST_IF, local, remote, ack_segment(3001, 7001, 512)));
+        assert!(table.establish_syn_received(
+            TEST_IF,
+            local,
+            remote,
+            ack_segment(3001, 7001, 512),
+            false
+        ));
         assert_eq!(table.syn_recv_count(), 0);
 
         let state = table
@@ -2049,7 +2058,7 @@ pub mod tests {
         let tcb = TcpControlBlock::closed(SocketId::from_raw(4), TEST_IF, local, remote);
         table.insert(tcb).expect("insert closed tcb");
 
-        assert!(!table.establish_syn_received(TEST_IF, local, remote, ack_segment(0, 1, 0)));
+        assert!(!table.establish_syn_received(TEST_IF, local, remote, ack_segment(0, 1, 0), false));
         assert!(table.begin_close(TEST_IF, local, remote).is_none());
 
         let state = table
@@ -2183,7 +2192,8 @@ pub mod tests {
             TEST_IF,
             local,
             remote,
-            ack_segment(8001, 5001, completing_window)
+            ack_segment(8001, 5001, completing_window),
+            false,
         ));
         (local, remote)
     }

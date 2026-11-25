@@ -1355,6 +1355,7 @@ fn process_tcp_with_tcb(
                             window,
                             occupies_sequence_space: seg_len > 0,
                         },
+                        crossing_syn_ack,
                     );
                     if !established {
                         return;
@@ -1383,17 +1384,24 @@ fn process_tcp_with_tcb(
                         })
                     {
                         if crossing_syn_ack {
-                            send_ack_for_fast_path(
-                                runtime,
-                                &established_tcb,
-                                established_tcb.rcv_nxt,
-                            );
+                            if payload_len > 0 || flags & tcp_flags::FIN != 0 {
+                                handle_data_received_with_delayed_ack(
+                                    runtime,
+                                    established_tcb,
+                                    tcb.rcv_nxt,
+                                    data_payload,
+                                    flags & tcp_flags::FIN != 0,
+                                );
+                            } else {
+                                send_ack_for_fast_path(runtime, &established_tcb, tcb.rcv_nxt);
+                            }
+                            return;
                         }
                         handle_synchronized_segment(
                             runtime,
                             established_tcb,
-                            flags & !tcp_flags::SYN,
-                            seq_num.wrapping_add(u32::from(crossing_syn_ack)),
+                            flags,
+                            seq_num,
                             ack_num,
                             window,
                             urgent_ptr,
