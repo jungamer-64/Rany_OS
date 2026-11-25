@@ -274,7 +274,7 @@ impl KernelServices for KernelServiceHost {
             let fd = crate::net::l4::types::SocketId::from_raw(stream.id() as u32);
             let socket = lookup_socket(fd)?;
             let mut connection = crate::net::l4::tcp::TcpConnection::from_retained_socket(socket);
-            match connection.recv_payload().await {
+            match connection.recv_payload().await.map_err(tcp_error_to_kapi)? {
                 Some(payload) => Ok(kernel_api::resource::net::TcpReceiveOutcome::Payload(
                     payload,
                 )),

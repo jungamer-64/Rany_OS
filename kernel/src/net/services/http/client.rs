@@ -4,10 +4,10 @@
 
 use alloc::boxed::Box;
 
-use super::parser::{HttpParseError, HttpParser};
+use super::parser::{HttpParseError, HttpParser, ResponseInput};
 use super::types::{
     ConnectionDirective, HttpHeader, HttpHeaderName, HttpHeaderValue, HttpInboundResponse,
-    HttpRequest, HttpRequestTarget, HttpRequestUri,
+    HttpMethod, HttpRequest, HttpRequestTarget, HttpRequestUri,
 };
 use crate::net::l4::tcp::{EndpointAddr, TcpConnection};
 use crate::net::runtime::NetRuntimeHandle;
@@ -38,6 +38,7 @@ async fn recv_tls_handshake_payload(
     connection
         .recv_payload()
         .await
+        .map_err(|_| HttpClientError::TlsHandshakeFailed)?
         .ok_or(HttpClientError::TlsHandshakeFailed)
 }
 
@@ -68,74 +69,42 @@ async fn complete_tls_handshake(
     }
 }
 
-async fn receive_plain_response(
-    connection: &mut TcpConnection,
-    parser: &mut HttpParser,
-) -> Result<Option<HttpInboundResponse>, HttpClientError> {
-    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
-    loop {
-        let Some(in_payload) = connection.recv_payload().await else {
-            return Ok(None);
-        };
-
-        parser
-            .push_payload(in_payload)
-            .map_err(HttpClientError::ParseError)?;
-        if let Some(response) = parser.try_parse().map_err(HttpClientError::ParseError)? {
-            return Ok(Some(response));
-        }
-    }
-}
-
-async fn receive_tls_response(
-    tls: &mut TlsEstablishedSession,
-    connection: &mut TcpConnection,
-    parser: &mut HttpParser,
-) -> Result<Option<HttpInboundResponse>, HttpClientError> {
-    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
-    loop {
-        let Some(in_payload) = connection.recv_payload().await else {
-            return Ok(None);
-        };
-
-        let inbound = tls
-            .process_incoming_payload(in_payload)
-            .map_err(|_| HttpClientError::ReadError)?;
-
-        if let KeyUpdateAction::Send(payload) = inbound.key_update {
-            send_payload(connection, payload).await?;
-        }
-
-        let Some(application_data) = inbound.application_data else {
-            continue;
-        };
-        parser
-            .push_payload(application_data)
-            .map_err(HttpClientError::ParseError)?;
-        if let Some(response) = parser.try_parse().map_err(HttpClientError::ParseError)? {
-            return Ok(Some(response));
-        }
-    }
-}
-
 async fn send_over_plain_transport(
     connection: &mut TcpConnection,
     request_payload: PacketPayload,
-    parser: &mut HttpParser,
-) -> Result<Option<HttpInboundResponse>, HttpClientError> {
+    method: HttpMethod,
+) -> Result<HttpInboundResponse, HttpClientError> {
+    let mut parser = HttpParser::new();
     send_payload(connection, request_payload).await?;
-    receive_plain_response(connection, parser).await
+    // LOOP_PROOF: mode=event; reason=Each iteration awaits TCP receive and stops on a final response, EOF, or an error.;
+    loop {
+        let Some(payload) = connection
+            .recv_payload()
+            .await
+            .map_err(|_| HttpClientError::ReadError)?
+        else {
+            return finish_response(&mut parser, method);
+        };
+        parser
+            .push_payload(payload)
+            .map_err(HttpClientError::ParseError)?;
+        if let Some(response) = parser
+            .next_final_response(method, ResponseInput::Open)
+            .map_err(HttpClientError::ParseError)?
+        {
+            return Ok(response);
+        }
+    }
 }
 
 async fn send_over_tls_transport(
     host: &str,
     connection: &mut TcpConnection,
     request_payload: PacketPayload,
-    parser: &mut HttpParser,
-) -> Result<Option<HttpInboundResponse>, HttpClientError> {
+    method: HttpMethod,
+) -> Result<HttpInboundResponse, HttpClientError> {
     let trust_anchors =
         TlsTrustAnchors::system_roots().map_err(|_| HttpClientError::TlsHandshakeFailed)?;
-    // RFC 7301: this client speaks only HTTP/1.1 over the protected stream.
     let tls_config = TlsClientConfig::for_server_name(host, trust_anchors)
         .and_then(|config| config.with_alpn(&["http/1.1"]))
         .map_err(|_| HttpClientError::TlsHandshakeFailed)?;
@@ -149,32 +118,62 @@ async fn send_over_tls_transport(
         .map_err(|_| HttpClientError::WriteError)?;
     send_payload(connection, encrypted_request).await?;
 
-    let response = receive_tls_response(&mut tls, connection, parser).await;
-    // RFC 8446 Section 6.1: announce the end of our writes before closing TCP.
-    // The response is already decided, so a failed alert only skips the notice.
+    let response = receive_tls_response(&mut tls, connection, method).await?;
     if let Ok(close_notify) = tls.send_close_notify() {
-        let _ = send_payload(connection, close_notify).await;
+        // Graceful TCP close drains admitted bytes after this function returns.
+        let _ = connection.send_payload(close_notify).await;
     }
-    response
+    Ok(response)
 }
 
-fn finalize_response_after_eof(
-    parser: &mut HttpParser,
+async fn receive_tls_response(
+    tls: &mut TlsEstablishedSession,
+    connection: &mut TcpConnection,
+    method: HttpMethod,
 ) -> Result<HttpInboundResponse, HttpClientError> {
-    if let Some(response) = parser.try_parse().map_err(HttpClientError::ParseError)? {
-        return Ok(response);
+    let mut parser = HttpParser::new();
+    // LOOP_PROOF: mode=event; reason=Each iteration awaits a transport payload or terminates on a response boundary, closure, or an error.;
+    loop {
+        let payload = connection
+            .recv_payload()
+            .await
+            .map_err(|_| HttpClientError::ReadError)?
+            .ok_or(HttpClientError::ParseError(
+                HttpParseError::IncompleteMessage,
+            ))?;
+        let inbound = tls
+            .process_incoming_payload(payload)
+            .map_err(|_| HttpClientError::ReadError)?;
+        if let Some(data) = inbound.application_data {
+            parser
+                .push_payload(data)
+                .map_err(HttpClientError::ParseError)?;
+        }
+        if inbound.peer_closed {
+            return finish_response(&mut parser, method);
+        }
+        if let KeyUpdateAction::Send(payload) = inbound.key_update {
+            send_payload(connection, payload).await?;
+        }
+        if let Some(response) = parser
+            .next_final_response(method, ResponseInput::Open)
+            .map_err(HttpClientError::ParseError)?
+        {
+            return Ok(response);
+        }
     }
+}
 
-    if let Some(response) = parser
-        .try_parse_response_on_eof()
+fn finish_response(
+    parser: &mut HttpParser,
+    method: HttpMethod,
+) -> Result<HttpInboundResponse, HttpClientError> {
+    parser
+        .next_final_response(method, ResponseInput::Complete)
         .map_err(HttpClientError::ParseError)?
-    {
-        return Ok(response);
-    }
-
-    Err(HttpClientError::ParseError(
-        HttpParseError::IncompleteMessage,
-    ))
+        .ok_or(HttpClientError::ParseError(
+            HttpParseError::IncompleteMessage,
+        ))
 }
 
 fn ensure_host_header(req: &mut HttpRequest, host: &str) -> Result<(), HttpClientError> {
@@ -314,20 +313,15 @@ impl HttpClient {
     async fn exchange(&self, req: HttpRequest) -> Result<HttpInboundResponse, HttpClientError> {
         let (req, host, port, is_https) = Self::prepare_request(req)?;
         let mut connection = self.connect(&host, port).await?;
+        let method = req.method;
         let request_payload = req.into_payload().ok_or(HttpClientError::WriteError)?;
-        let mut parser = HttpParser::new();
-
         let response = if is_https {
-            send_over_tls_transport(&host, &mut connection, request_payload, &mut parser).await?
+            send_over_tls_transport(&host, &mut connection, request_payload, method).await?
         } else {
-            send_over_plain_transport(&mut connection, request_payload, &mut parser).await?
+            send_over_plain_transport(&mut connection, request_payload, method).await?
         };
-
         connection.close();
-        match response {
-            Some(response) => Ok(response),
-            None => finalize_response_after_eof(&mut parser),
-        }
+        Ok(response)
     }
 }
 

@@ -26,12 +26,26 @@ pub enum HttpParseError {
     InvalidFormat,
     IncompleteMessage,
     UnsupportedVersion,
+    UnsupportedUpgrade,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ParseState {
     SearchingHeaders { search_from: usize },
     HeaderFound { header_end: usize },
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum ResponseInput {
+    Open,
+    Complete,
+}
+
+#[derive(Clone, Copy)]
+enum BodyFraming {
+    Request,
+    Response(ResponseInput),
+    Forbidden,
 }
 
 pub struct HttpParser {
@@ -88,7 +102,7 @@ impl HttpParser {
             self.parse_request_line(&full, header_end)?;
 
         let Some((headers, body, consumed_len)) =
-            self.parse_message_payload(&full, request_line_end, header_end, false)?
+            self.parse_message_payload(&full, request_line_end, header_end, BodyFraming::Request)?
         else {
             return Ok(None);
         };
@@ -105,9 +119,26 @@ impl HttpParser {
         }))
     }
 
-    fn try_parse_response_with_mode(
+    pub(super) fn next_final_response(
         &mut self,
-        eof_terminates_body: bool,
+        request_method: HttpMethod,
+        input: ResponseInput,
+    ) -> Result<Option<HttpInboundResponse>, HttpParseError> {
+        // LOOP_PROOF: mode=condition; reason=Every interim response is removed from the finite receive buffer.;
+        while let Some(response) = self.parse_response(request_method, input)? {
+            match response.status_code.as_u16() {
+                101 => return Err(HttpParseError::UnsupportedUpgrade),
+                100..=199 => {}
+                _ => return Ok(Some(response)),
+            }
+        }
+        Ok(None)
+    }
+
+    fn parse_response(
+        &mut self,
+        request_method: HttpMethod,
+        input: ResponseInput,
     ) -> Result<Option<HttpInboundResponse>, HttpParseError> {
         let Some(header_end) = self.read_message_span()? else {
             return Ok(None);
@@ -121,8 +152,15 @@ impl HttpParser {
         let (version, status_code, reason_phrase, status_line_end) =
             self.parse_status_line(&full, header_end)?;
 
+        let framing = if request_method == HttpMethod::Head
+            || matches!(status_code.as_u16(), 100..=199 | 204 | 304)
+        {
+            BodyFraming::Forbidden
+        } else {
+            BodyFraming::Response(input)
+        };
         let Some((headers, body, consumed_len)) =
-            self.parse_message_payload(&full, status_line_end, header_end, eof_terminates_body)?
+            self.parse_message_payload(&full, status_line_end, header_end, framing)?
         else {
             return Ok(None);
         };
@@ -383,7 +421,7 @@ impl HttpParser {
         full: &PayloadSpanRef<'_>,
         first_line_end: usize,
         header_end: usize,
-        eof_terminates_body: bool,
+        framing: BodyFraming,
     ) -> Result<Option<(Vec<HttpHeaderView>, Option<HttpBodyView>, usize)>, HttpParseError> {
         let header_start = first_line_end
             .checked_add(2)
@@ -397,13 +435,8 @@ impl HttpParser {
         let body_start = header_end
             .checked_add(4)
             .ok_or(HttpParseError::InvalidFormat)?;
-        let Some((body, consumed_len)) = self.parse_optional_body(
-            full,
-            body_start,
-            content_length,
-            chunked,
-            eof_terminates_body,
-        )?
+        let Some((body, consumed_len)) =
+            self.parse_optional_body(full, body_start, content_length, chunked, framing)?
         else {
             return Ok(None);
         };
@@ -417,8 +450,11 @@ impl HttpParser {
         body_start: usize,
         content_length: Option<usize>,
         chunked: bool,
-        eof_terminates_body: bool,
+        framing: BodyFraming,
     ) -> Result<Option<(Option<HttpBodyView>, usize)>, HttpParseError> {
+        if matches!(framing, BodyFraming::Forbidden) {
+            return Ok(Some((None, body_start)));
+        }
         if chunked {
             return self.parse_chunked_optional_body(full, body_start);
         }
@@ -427,11 +463,13 @@ impl HttpParser {
             return self.parse_fixed_length_body(full, body_start, len);
         }
 
-        if eof_terminates_body {
-            return self.parse_close_delimited_body(full, body_start);
+        match framing {
+            BodyFraming::Response(ResponseInput::Open) => Ok(None),
+            BodyFraming::Response(ResponseInput::Complete) => {
+                self.parse_close_delimited_body(full, body_start)
+            }
+            BodyFraming::Request | BodyFraming::Forbidden => Ok(Some((None, body_start))),
         }
-
-        Ok(Some((None, body_start)))
     }
 
     fn parse_chunked_optional_body(
@@ -618,5 +656,59 @@ impl HttpParser {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(all(test, any(feature = "std", target_os = "linux")))]
+mod tests {
+    use super::*;
+    use crate::net::l4::test_support::packet_fixture_with_data;
+
+    fn push(parser: &mut HttpParser, bytes: &[u8]) {
+        let packet =
+            PacketPayload::try_single(packet_fixture_with_data(bytes)).expect("fixture payload");
+        parser.push_payload(packet).expect("fixture fits buffer");
+    }
+
+    #[test]
+    fn interim_response_does_not_complete_close_delimited_exchange() {
+        let mut parser = HttpParser::new();
+        push(
+            &mut parser,
+            b"HTTP/1.1 103 Early Hints\r\n\r\nHTTP/1.0 200 OK\r\nServer: test\r\n\r\nfirst ",
+        );
+        assert!(
+            parser
+                .next_final_response(HttpMethod::Get, ResponseInput::Open)
+                .unwrap()
+                .is_none()
+        );
+        push(&mut parser, b"second");
+        let response = parser
+            .next_final_response(HttpMethod::Get, ResponseInput::Complete)
+            .expect("valid framing")
+            .expect("final response");
+        assert_eq!(response.status_code.as_u16(), 200);
+        let body = response.body.expect("close-delimited body");
+        assert!(
+            body.spans(&response.payload)
+                .next()
+                .expect("body span")
+                .eq_bytes(b"first second")
+        );
+    }
+
+    #[test]
+    fn head_completes_at_headers_even_with_content_length() {
+        let mut parser = HttpParser::new();
+        push(
+            &mut parser,
+            b"HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\n",
+        );
+        let response = parser
+            .next_final_response(HttpMethod::Head, ResponseInput::Open)
+            .expect("valid framing")
+            .expect("complete HEAD response");
+        assert!(response.body.is_none());
     }
 }

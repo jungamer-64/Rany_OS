@@ -135,7 +135,7 @@ async fn handle_receive_timeout(
 }
 
 async fn process_receive_result(
-    receive_result: TimeoutResult<Option<PacketPayload>>,
+    receive_result: TimeoutResult<Result<Option<PacketPayload>, crate::net::l4::tcp::TcpError>>,
     runtime: NetRuntimeHandle,
     parser: &mut crate::net::services::http::parser::HttpParser,
     saw_payload: &mut bool,
@@ -149,8 +149,11 @@ async fn process_receive_result(
             task::yield_now().await;
             ReceiveLoopControl::Continue
         }
-        TimeoutResult::Completed(None) => ReceiveLoopControl::Break,
-        TimeoutResult::Completed(Some(payload)) => {
+        TimeoutResult::Completed(Err(_)) => {
+            ReceiveLoopControl::Return(ReadOutcome::CloseConnection)
+        }
+        TimeoutResult::Completed(Ok(None)) => ReceiveLoopControl::Break,
+        TimeoutResult::Completed(Ok(Some(payload))) => {
             process_received_payload(payload, runtime, parser, saw_payload)
         }
     }

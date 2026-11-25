@@ -31,7 +31,7 @@ impl DnsClient {
 
             let question_name = &mut name;
             let reply = async move {
-                // LOOP_PROOF: mode=event; reason=Each receive awaits a datagram; unrelated traffic yields to let the attempt deadline be polled.;
+                // LOOP_PROOF: mode=event; reason=Each receive awaits a datagram and unrelated traffic yields to the attempt deadline.;
                 loop {
                     let Some((_if_id, src, _ttl, packet)) = socket.recv().await else {
                         return None;
@@ -82,7 +82,11 @@ impl DnsClient {
         ) -> Result<Option<kernel_api::resource::net::PacketPayload>, &'static str> {
             // LOOP_PROOF: mode=condition; reason=Each iteration awaits a nonempty owned payload, advancing the requested byte prefix or ending on closure or allocation failure.;
             while stash.as_ref().map_or(0, |payload| payload.total_len()) < len {
-                let Some(payload) = connection.recv_payload().await else {
+                let Some(payload) = connection
+                    .recv_payload()
+                    .await
+                    .map_err(|_| "DNS TCP receive failed")?
+                else {
                     break;
                 };
                 let Some(queued) = stash.take() else {

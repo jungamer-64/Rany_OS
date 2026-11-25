@@ -352,27 +352,24 @@ impl TcpConnection {
         socket_inner_stats(&self.socket)
     }
 
-    pub async fn recv_payload(&mut self) -> Option<PacketPayload> {
+    pub async fn recv_payload(&mut self) -> Result<Option<PacketPayload>, TcpError> {
         RecvPayloadFuture { connection: self }.await
     }
 
-    pub fn poll_recv_payload(&self, cx: &mut Context<'_>) -> Poll<Option<PacketPayload>> {
+    pub fn poll_recv_payload(
+        &self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<Option<PacketPayload>, TcpError>> {
         enum RecvOutcome {
             Payload(PacketPayload, usize),
-            Closed,
+            EndOfStream,
+            Failed(TcpError),
             Pending,
         }
 
         let outcome = self
             .socket
             .with_inner_mut(|inner| {
-                if let Some(err) = inner.last_error.take() {
-                    log::warn!(
-                        "[NET][tcp] payload receive observed socket error: {:?}",
-                        err
-                    );
-                }
-
                 if inner.has_recv_data() {
                     let Some(payload) = inner.recv_payload(None) else {
                         inner.recv_waker.register(cx.waker());
@@ -385,21 +382,25 @@ impl TcpConnection {
                     return RecvOutcome::Payload(payload, delivered_len);
                 }
 
+                if let Some(error) = inner.last_error {
+                    return RecvOutcome::Failed(tcp_error_from_endpoint(error));
+                }
                 if inner.is_tcp_closing_or_closed() {
-                    return RecvOutcome::Closed;
+                    return RecvOutcome::EndOfStream;
                 }
 
                 inner.recv_waker.register(cx.waker());
                 RecvOutcome::Pending
             })
-            .unwrap_or(RecvOutcome::Closed);
+            .unwrap_or(RecvOutcome::Failed(TcpError::InvalidState));
 
         match outcome {
             RecvOutcome::Payload(payload, delivered_len) => {
                 on_recv_progress(self.runtime, self.socket.socket_id(), delivered_len);
-                Poll::Ready(Some(payload))
+                Poll::Ready(Ok(Some(payload)))
             }
-            RecvOutcome::Closed => Poll::Ready(None),
+            RecvOutcome::EndOfStream => Poll::Ready(Ok(None)),
+            RecvOutcome::Failed(error) => Poll::Ready(Err(error)),
             RecvOutcome::Pending => Poll::Pending,
         }
     }
@@ -634,7 +635,7 @@ pub(crate) struct RecvPayloadFuture<'a> {
 }
 
 impl<'a> Future for RecvPayloadFuture<'a> {
-    type Output = Option<PacketPayload>;
+    type Output = Result<Option<PacketPayload>, TcpError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.connection.poll_recv_payload(cx)
