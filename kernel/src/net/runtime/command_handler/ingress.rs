@@ -186,7 +186,7 @@ impl RuntimeCommandHandler {
         }
         let ingress_if_id = if_id;
         let raw_endpoint = crate::net::l4::socket::find_raw_by_scope_in(runtime, ingress_if_id);
-        let view = crate::net::payload::PacketPayloadView::new(&payload);
+        let view = PacketPayloadView::new(&payload);
 
         if view.total_len() >= 20 && view.first_byte().map(|byte| byte >> 4) == Some(4) {
             let Some(fixed) = view.read_array::<20>(0) else {
