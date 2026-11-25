@@ -143,7 +143,7 @@ enum TcpTcbState {
     Closed,
     Listen,
     SynSent(TcpHandshakeData),
-    SynReceived(TcpHandshakeData),
+    SynReceived { data: TcpHandshakeData, origin: SynReceivedOrigin },
     Established(TcpConnectionData),
     FinWait1(TcpConnectionData),
     FinWait2(TcpConnectionData),
