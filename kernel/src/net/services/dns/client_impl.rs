@@ -15,7 +15,6 @@ impl DnsClient {
             ipv6_cache: PoisonLock::new(DnsCache::new(tick_rate)),
             search_domains: PoisonLock::new(Vec::new()),
             stats: DnsStats::new(),
-            pending_ids: PoisonLock::new(BTreeMap::new()),
         }
     }
 }

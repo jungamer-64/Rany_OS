@@ -11,25 +11,6 @@ impl DnsClient {
         Ok(u16::from_le_bytes([random_bytes[0], random_bytes[1]]))
     }
 
-    pub(super) fn register_pending_query_id(&self, id: u16) {
-        self.cleanup_stale_pending_ids(crate::task::current_tick());
-        if let Ok(mut pending) = self.pending_ids.lock() {
-            // LOOP_PROOF: mode=condition; reason=Each removal decreases the exclusively locked pending query table until below its 256-entry admission bound.;
-            while pending.len() >= 256 {
-                let oldest_id = pending
-                    .iter()
-                    .min_by_key(|(_, created_at)| *created_at)
-                    .map(|(pending_id, _)| *pending_id);
-                if let Some(oldest_id) = oldest_id {
-                    pending.remove(&oldest_id);
-                } else {
-                    break;
-                }
-            }
-            pending.insert(id, crate::task::current_tick());
-        }
-    }
-
     fn dns_name_wire_len(name: &DnsNameOwned) -> Option<usize> {
         let mut len = 1usize;
         for label in name.labels() {
@@ -142,19 +123,5 @@ impl DnsClient {
             .ok_or("Incomplete DNS TCP prefix")?
             .try_append(message)
             .map_err(|_| "DNS TCP payload allocation failed")
-    }
-
-    pub(super) fn cleanup_stale_pending_ids(&self, now_tick: u64) {
-        if let Ok(mut pending) = self.pending_ids.lock() {
-            pending.retain(|_, created_at| {
-                now_tick.saturating_sub(*created_at) <= DNS_PENDING_ID_TTL_TICKS
-            });
-        }
-    }
-
-    pub(super) fn retire_pending_query_id_value(&self, id: u16) {
-        if let Ok(mut pending) = self.pending_ids.lock() {
-            pending.remove(&id);
-        }
     }
 }

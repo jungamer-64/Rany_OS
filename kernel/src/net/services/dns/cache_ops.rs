@@ -370,7 +370,6 @@ impl DnsClient {
             if let Ok(mut cache) = self.ipv6_cache.lock() {
                 cache.cleanup(now);
             }
-            self.cleanup_stale_pending_ids(now);
         }
     }
 
