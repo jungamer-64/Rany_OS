@@ -68,7 +68,7 @@ spin = "0.12"
 once_cell = { version = "1.21", default-features = false, features = ["race", "alloc"] }
 
 # UART シリアル出力（デバッグ用）
-uart_16550 = { version = "0.8", optional = true }
+uart_16550 = { version = "0.9", optional = true }
 
 # ビットフィールド操作
 bitflags = "2.13"
