@@ -93,6 +93,7 @@ pub(super) static NETWORK_RUNTIME_CASES: &[(&str, NetworkRuntimeCase)] = &[
     ("net_peripheral_tcp_drop_without_close_resets_connection_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_peripheral_tcp_drop_without_close_resets_connection_smoke)),
     ("net_peripheral_tcp_message_length_field_for_checksum_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_peripheral_tcp_message_length_field_for_checksum_smoke)),
     ("net_peripheral_tcp_ooo_permits_and_bounded_queue_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_peripheral_tcp_ooo_permits_and_bounded_queue_smoke)),
+    ("net_peripheral_tcp_passive_queue_connection_lifetime_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_peripheral_tcp_passive_queue_connection_lifetime_smoke)),
     ("net_peripheral_tcp_retransmit_ack_before_completion_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_peripheral_tcp_retransmit_ack_before_completion_smoke)),
     ("net_peripheral_tcp_retransmit_queue_rejection_and_return_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_peripheral_tcp_retransmit_queue_rejection_and_return_smoke)),
     ("net_peripheral_tcp_segment_builder_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_peripheral_tcp_segment_builder_smoke)),

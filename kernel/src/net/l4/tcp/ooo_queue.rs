@@ -194,6 +194,9 @@ impl ConnectionOooQueue {
         self.prune_outdated(rcv_nxt);
         // LOOP_PROOF: mode=event; reason=Each full delivery removes one contiguous segment from the bounded queue, while no contiguous segment or partial delivery ends the drain.;
         loop {
+            if self.fin_seq == Some(rcv_nxt) {
+                break;
+            }
             let Some(position) = self
                 .segments
                 .iter()
@@ -234,7 +237,7 @@ impl ConnectionOooQueue {
 
         let fin_encountered = self.fin_seq == Some(rcv_nxt);
         if fin_encountered {
-            self.fin_seq = None;
+            self.clear();
         }
         (rcv_nxt, fin_encountered)
     }

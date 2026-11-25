@@ -257,6 +257,10 @@ pub fn net_peripheral_tcp_close_hands_connection_to_runtime_until_fin_ack_smoke(
     crate::net::qemu_tests::tcp_close_hands_connection_to_runtime_until_fin_ack_smoke()
 }
 
+pub fn net_peripheral_tcp_passive_queue_connection_lifetime_smoke() -> bool {
+    crate::net::l4::tcp::tcp_rx::tcp_passive_queue_connection_lifetime_smoke()
+}
+
 pub fn net_peripheral_tcp_drop_without_close_resets_connection_smoke() -> bool {
     crate::net::qemu_tests::tcp_drop_without_close_resets_connection_smoke()
 }

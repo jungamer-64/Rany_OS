@@ -5,9 +5,10 @@
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
+use core::task::{Poll, Waker};
 
 use crate::net::l4::socket::Socket;
-use crate::net::l4::socket::state::SocketState;
+use crate::net::l4::socket::state::{SocketState, TcpSocketState};
 use crate::net::l4::types::{EndpointAddr, EndpointError, SocketId, SocketResult};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::manager::NetIfId;
@@ -523,20 +524,86 @@ impl SocketRegistry {
         select_ephemeral_port(start, |port| ports.has_any_scope_port(port))
     }
 
-    pub fn register(&self, socket: Socket, state: SocketState) {
+    pub fn register(&self, socket: Socket, state: SocketState) -> SocketResult<()> {
         let record = SocketRecord::new(socket.runtime(), state);
-        if self
-            .sockets
+        self.sockets
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .insert(socket.socket_id(), record)
-            .is_err()
-        {
-            log::error!(
-                "[NET] socket registry capacity exhausted while registering {:?}",
-                socket.socket_id()
-            );
+            .map_err(|_| EndpointError::ResourceExhausted)
+    }
+
+    /// Hold the registry read guard once and acquire the listener before the
+    /// child. Termination releases the child lock before editing the backlog.
+    pub(super) fn publish_tcp_accept(
+        &self,
+        listener: SocketId,
+        child: SocketId,
+    ) -> SocketResult<()> {
+        let sockets = self.sockets.read().unwrap_or_else(|e| e.into_inner());
+        let listener_record = sockets.get(listener).ok_or(EndpointError::NotFound)?;
+        let child_record = sockets.get(child).ok_or(EndpointError::NotFound)?;
+        let mut listener_state = listener_record
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let child_state = child_record.state.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(tcp) = listener_state
+            .tcp_mut()
+            .filter(|tcp| tcp.state == TcpSocketState::Listening)
+        else {
+            return Err(EndpointError::InvalidStateTransition);
+        };
+        if child_state.tcp_state() != Some(TcpSocketState::AwaitingAccept { listener }) {
+            return Err(EndpointError::NotConnected);
         }
+        if tcp.accept_queue.len() >= tcp.accept_backlog {
+            return Err(EndpointError::BufferFull);
+        }
+        tcp.accept_queue
+            .try_reserve(1)
+            .map_err(|_| EndpointError::ResourceExhausted)?;
+        tcp.accept_queue.push_back(child);
+        listener_state.accept_waker.wake();
+        Ok(())
+    }
+
+    pub(super) fn poll_tcp_accept(
+        &self,
+        listener: SocketId,
+        waker: &Waker,
+    ) -> Poll<SocketResult<(Socket, EndpointAddr)>> {
+        let sockets = self.sockets.read().unwrap_or_else(|e| e.into_inner());
+        let Some(listener_record) = sockets.get(listener) else {
+            return Poll::Ready(Err(EndpointError::NotFound));
+        };
+        let mut listener_state = listener_record
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let Some(tcp) = listener_state
+            .tcp_mut()
+            .filter(|tcp| tcp.state == TcpSocketState::Listening)
+        else {
+            return Poll::Ready(Err(EndpointError::InvalidStateTransition));
+        };
+        // LOOP_PROOF: mode=condition; reason=Each iteration pops an entry from the exclusively locked listener backlog or returns a connection.;
+        while let Some(id) = tcp.accept_queue.pop_front() {
+            let Some(record) = sockets.get(id) else {
+                continue;
+            };
+            let mut child = record.state.lock().unwrap_or_else(|e| e.into_inner());
+            if child.tcp_state() != Some(TcpSocketState::AwaitingAccept { listener }) {
+                continue;
+            }
+            let Some(remote) = child.remote_addr else {
+                return Poll::Ready(Err(EndpointError::InvalidStateTransition));
+            };
+            child.set_tcp_state(TcpSocketState::Connected)?;
+            return Poll::Ready(Ok((Socket::from_registered(id, record.runtime), remote)));
+        }
+        listener_state.accept_waker.register(waker);
+        Poll::Pending
     }
 
     pub fn unregister(&self, socket_id: SocketId) -> Option<Socket> {

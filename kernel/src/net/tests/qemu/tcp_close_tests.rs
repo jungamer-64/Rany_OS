@@ -140,7 +140,7 @@ impl Fixture {
         segments
     }
 
-    fn peer_segment(&self, seq: u32, ack: u32, fin: bool) {
+    fn peer_segment(&self, seq: u32, ack: u32, fin: bool, payload: Option<PacketPayload>) {
         let mut builder = TcpSegmentBuilder::new(self.remote.port(), self.local.port())
             .seq(seq)
             .ack(ack)
@@ -148,6 +148,9 @@ impl Fixture {
             .window(65535);
         if fin {
             builder = builder.fin();
+        }
+        if let Some(payload) = payload {
+            builder = builder.payload_packet(payload);
         }
         let segment = builder
             .build_checked_packet(self.remote, self.local)
@@ -176,7 +179,25 @@ fn data_payload(data: &[u8]) -> PacketPayload {
 /// The peer's ACK of the FIN ends the TCB and unregisters the socket.
 pub fn tcp_close_hands_connection_to_runtime_until_fin_ack_smoke() -> bool {
     let fixture = Fixture::established(58_100);
-    fixture.peer_segment(PEER_ISN + 1, LOCAL_ISN + 1, true);
+    fixture.peer_segment(
+        PEER_ISN + 1,
+        LOCAL_ISN + 1,
+        true,
+        Some(data_payload(b"last")),
+    );
+    let connection = TcpConnection::from_socket(fixture.socket);
+    let mut cx = core::task::Context::from_waker(core::task::Waker::noop());
+    let core::task::Poll::Ready(Ok(Some(last))) = connection.poll_recv_payload(&mut cx) else {
+        panic!("data preceding EOF must remain readable");
+    };
+    assert_eq!(
+        PacketPayloadView::new(&last).read_array::<4>(0),
+        Some(*b"last")
+    );
+    assert!(matches!(
+        connection.poll_recv_payload(&mut cx),
+        core::task::Poll::Ready(Ok(None))
+    ));
     assert_eq!(fixture.tcb_state(), Some(TcpConnectionState::CloseWait));
     let fin_ack = fixture.take_segments();
     assert_eq!(fin_ack.len(), 1);
@@ -187,7 +208,7 @@ pub fn tcp_close_hands_connection_to_runtime_until_fin_ack_smoke() -> bool {
         .with_inner_mut(|inner| inner.send_payload(data_payload(b"data")))
         .expect("registered connection socket")
         .unwrap_or_else(|_| panic!("send buffer admits the payload"));
-    TcpConnection::from_socket(fixture.socket).close();
+    connection.close();
     assert!(fixture.socket_registered());
     assert_eq!(fixture.tcb_state(), Some(TcpConnectionState::CloseWait));
 
@@ -216,7 +237,7 @@ pub fn tcp_close_hands_connection_to_runtime_until_fin_ack_smoke() -> bool {
     assert!(sent.iter().all(SentSegment::retransmittable));
     drop(sent);
 
-    fixture.peer_segment(PEER_ISN + 2, LOCAL_ISN + 6, false);
+    fixture.peer_segment(PEER_ISN + 6, LOCAL_ISN + 6, false, None);
     assert_eq!(fixture.tcb_state(), None);
     assert!(!fixture.socket_registered());
     assert!(fixture.take_segments().is_empty());

@@ -19,19 +19,22 @@ use super::congestion::CongestionAction;
 use super::ooo_queue;
 use super::retransmit::{
     get_or_create_retransmit_queue, retransmit_queue_ack, retransmit_queue_fast_retransmit,
+    retransmit_queue_remove,
 };
 use super::segment::{TcpSegmentBuilder, send_tcp_segment_payload_in};
 use super::tcb::{
     AckSegment, TcpConnectionState, TcpControlBlock, TcpControlBlockSnapshot, TcpHandshakeOptions,
     tcp_flags,
 };
-use super::termination::{TcpTermination, abort_connection_in, terminate_connection_in};
+use super::termination::{
+    TcpTermination, abort_connection_handle_in, abort_connection_in, terminate_connection_in,
+};
 use super::window_scale::TcpOptionParser;
 use crate::net::l4::socket::{
-    Socket, find_listening_tcp_socket_in, generate_socket_id_in, lookup_socket_in,
+    Socket, find_listening_tcp_socket_in, lookup_socket_in, unregister_socket_in,
 };
 use crate::net::l4::types::{
-    AcceptedConnection, EndpointAddr, EndpointError, SocketId, seq_after, seq_before, seq_leq,
+    EndpointAddr, EndpointError, SocketId, seq_after, seq_before, seq_leq,
 };
 use crate::net::payload::PacketPayloadView;
 use crate::net::runtime::NetRuntimeHandle;
@@ -619,11 +622,12 @@ fn process_parsed_tcp_segment(
                     return;
                 }
 
-                if !complete_passive_open(runtime, ingress_if_id, local, remote) {
+                if !complete_passive_open(runtime, ingress_if_id, local, remote, socket.socket_id())
+                {
                     return;
                 }
 
-                if let Some(data_payload) = data_payload
+                if (data_payload.is_some() || header.flags & tcp_flags::FIN != 0)
                     && let Some(snapshot) =
                         tcp_table_in(runtime).read(ingress_if_id, local, remote, |entry| {
                             TcpControlBlockSnapshot::from(entry)
@@ -638,7 +642,7 @@ fn process_parsed_tcp_segment(
                         header.window,
                         header.urgent_ptr,
                         options,
-                        Some(data_payload),
+                        data_payload,
                     );
                 }
                 return;
@@ -1115,7 +1119,16 @@ fn handle_synchronized_segment(
 
     // 5. Process segment data and FIN (RFC 793)
     if payload_len > 0 || is_fin {
-        handle_data_received_with_delayed_ack(runtime, tcb, seq_num, data_payload, is_fin);
+        if matches!(
+            tcb.state,
+            TcpConnectionState::Established
+                | TcpConnectionState::FinWait1
+                | TcpConnectionState::FinWait2
+        ) {
+            handle_data_received_with_delayed_ack(runtime, tcb, seq_num, data_payload, is_fin);
+        } else {
+            send_ack_for_fast_path(runtime, &tcb, tcb.rcv_nxt);
+        }
     }
 }
 
@@ -1128,6 +1141,9 @@ fn handle_data_received_with_delayed_ack(
     fin: bool,
 ) {
     let mut payload_len = data_payload.as_ref().map_or(0, PacketPayload::total_len) as u32;
+    let fin_at = fin
+        .then(|| seq_num.wrapping_add(payload_len))
+        .filter(|seq| seq.wrapping_sub(tcb.rcv_nxt) < tcb.effective_recv_window());
 
     // --- PARTIAL OVERLAP HANDLING (RFC 793) ---
     // If the segment starts before rcv_nxt but contains new data after it,
@@ -1137,7 +1153,7 @@ fn handle_data_received_with_delayed_ack(
         let skip = diff as usize;
         if skip >= payload_len as usize {
             // All payload is old. Only FIN (if any) might be new.
-            if fin && skip == payload_len as usize {
+            if fin_at == Some(tcb.rcv_nxt) {
                 seq_num = tcb.rcv_nxt;
                 payload_len = 0;
                 data_payload = None;
@@ -1186,14 +1202,13 @@ fn handle_data_received_with_delayed_ack(
             tcb.remote,
             seq_num,
             data_payload,
-            fin,
+            fin_at.is_some(),
         );
         send_ack_for_fast_path(runtime, &tcb, tcb.rcv_nxt);
         return;
     }
 
     let mut new_rcv_nxt = tcb.rcv_nxt;
-    let mut fin_encountered = false;
 
     // ソケットの受信バッファにデータ追加
     if let Some(socket) = get_socket_by_socket_id(runtime, tcb.socket_id) {
@@ -1218,8 +1233,11 @@ fn handle_data_received_with_delayed_ack(
                 send_ack_for_fast_path(runtime, &tcb, new_rcv_nxt);
                 return;
             }
-        } else {
-            // No payload, but maybe a zero-length segment or pure FIN
+        }
+
+        if fin_at == Some(new_rcv_nxt) {
+            handle_fin_in_order(runtime, tcb, new_rcv_nxt);
+            return;
         }
 
         // OOOキューから連続セグメントをドレインしてバッファに追加
@@ -1232,15 +1250,10 @@ fn handle_data_received_with_delayed_ack(
             |_, seg_payload| socket.push_payload_with_remainder(seg_payload),
         );
         new_rcv_nxt = drained_nxt;
-        if ooo_fin || (payload_len == 0 && fin) {
-            fin_encountered = true;
+        if ooo_fin {
+            handle_fin_in_order(runtime, tcb, new_rcv_nxt);
+            return;
         }
-    }
-
-    if fin_encountered {
-        // FINを処理（rcv_nxtをさらに+1し、状態遷移させる）
-        handle_fin_in_order(runtime, tcb, new_rcv_nxt);
-        return;
     }
 
     // Delayed ACK 判定 (RFC 1122 / 5681)
@@ -1350,7 +1363,13 @@ fn process_tcp_with_tcb(
                         },
                     );
                     if !established
-                        || !complete_passive_open(runtime, tcb.if_id, tcb.local, tcb.remote)
+                        || !complete_passive_open(
+                            runtime,
+                            tcb.if_id,
+                            tcb.local,
+                            tcb.remote,
+                            tcb.socket_id,
+                        )
                     {
                         return;
                     }
@@ -1795,44 +1814,45 @@ fn complete_passive_open(
     if_id: NetIfId,
     local: EndpointAddr,
     remote: EndpointAddr,
+    listener_id: SocketId,
 ) -> bool {
-    let admitted = generate_socket_id_in(runtime).is_some_and(|socket_id| {
-        find_listening_tcp_socket_in(runtime, local, if_id).is_some_and(|listener| {
-            listener
-                .with_inner_mut(|inner| {
-                    if !inner.is_tcp_listening() {
-                        return false;
-                    }
-                    let Some(tcp) = inner.tcp_mut() else {
-                        return false;
-                    };
-                    if tcp.accept_queue.len() >= tcp.accept_backlog {
-                        return false;
-                    }
-                    tcp.accept_queue
-                        .push_back(AcceptedConnection::new(socket_id, local, remote, if_id));
-                    inner.accept_waker.wake();
-                    true
-                })
-                .unwrap_or(false)
-                && tcp_table_in(runtime).set_socket_id(if_id, local, remote, socket_id)
-        })
-    });
+    let table = tcp_table_in(runtime);
+    let admission = lookup_socket_in(runtime, listener_id)
+        .ok_or(EndpointError::NotFound)
+        .and_then(|listener| {
+            let child = listener.prepare_passive_child(local, remote, if_id)?;
+            let queue_created = get_or_create_retransmit_queue(runtime, if_id, local, remote);
+            // Register the child before attaching it. Only publish to accept
+            // after the TCB and retransmit queue are ready to serve the handle.
+            if !table.attach_passive_socket(if_id, local, remote, listener_id, child.socket_id()) {
+                if queue_created {
+                    retransmit_queue_remove(runtime, if_id, local, remote);
+                }
+                let _ = unregister_socket_in(runtime, child.socket_id());
+                return Err(EndpointError::NotConnected);
+            }
+            listener.publish_passive_child(child).inspect_err(|_| {
+                abort_connection_handle_in(runtime, child.socket_id());
+            })
+        });
 
-    if admitted {
-        get_or_create_retransmit_queue(runtime, if_id, local, remote);
-        return true;
+    match admission {
+        Ok(()) => true,
+        Err(error) => {
+            log::info!(
+                "[TCP] Passive open rejected {} -> {}: {:?}",
+                remote,
+                local,
+                error
+            );
+            if let Some(removed) =
+                table.remove_unadmitted_passive_open(if_id, local, remote, listener_id)
+            {
+                abort_connection_in(runtime, removed);
+            }
+            false
+        }
     }
-
-    log::info!(
-        "[TCP] Accept queue rejected {} -> {}, resetting connection",
-        remote,
-        local
-    );
-    if let Some(removed) = tcp_table_in(runtime).remove(if_id, local, remote) {
-        abort_connection_in(runtime, removed);
-    }
-    false
 }
 
 /// 順序通りに到達した（またはOOOから復元された）FINを処理
@@ -1856,21 +1876,8 @@ fn handle_fin_in_order(
         send_ack_for_fast_path(runtime, &tcb, final_rcv_nxt);
     }
 
-    // ソケットに接続相手のクローズを通知
-    // recv_wakerを起こして、readがEOFを返せるようにする
-    notify_socket_peer_fin(runtime, tcb.socket_id);
-}
-
-/// ソケットに相手側FIN受信を通知
-///
-/// recv_wakerを起こすことで、アプリケーション側のread操作が
-/// EOF (0バイト読み取り) を返せるようにする。
-fn notify_socket_peer_fin(runtime: NetRuntimeHandle, socket_id: SocketId) {
-    if let Some(socket) = lookup_socket_in(runtime, socket_id) {
-        let _ = socket.with_inner_mut(|inner| {
-            // recv_wakerを起こしてEOFを通知
-            inner.recv_waker.wake();
-        });
+    if let Some(socket) = lookup_socket_in(runtime, tcb.socket_id) {
+        let _ = socket.with_inner_mut(|inner| inner.finish_tcp_receive());
     }
 }
 
@@ -1903,4 +1910,76 @@ fn notify_socket_urgent(runtime: NetRuntimeHandle, socket_id: SocketId) {
     }
 }
 
-// End of file
+#[cfg(feature = "qemu-test-export")]
+pub(crate) fn tcp_passive_queue_connection_lifetime_smoke() -> bool {
+    use crate::net::l4::socket::TcpSocketState;
+    use core::task::{Poll, Waker};
+
+    let runtime = crate::net::runtime::create_runtime().expect("passive open runtime");
+    let if_id = NetIfId(8);
+    let local = EndpointAddr::new([192, 0, 2, 1], 80);
+    let listener = Socket::new_tcp_in(runtime, TcpSocketState::Listening);
+    let table = tcp_table_in(runtime);
+    for remote_port in [52000, 52001] {
+        let remote = EndpointAddr::new([192, 0, 2, 2], remote_port);
+        table
+            .insert(TcpControlBlock::established_from_syncookie(
+                listener.socket_id(),
+                local,
+                remote,
+                AckSegment {
+                    seq: 2001,
+                    ack: 1001,
+                    window: 65535,
+                    occupies_sequence_space: false,
+                },
+                1460,
+                if_id,
+            ))
+            .expect("established passive open");
+        assert!(complete_passive_open(
+            runtime,
+            if_id,
+            local,
+            remote,
+            listener.socket_id()
+        ));
+        let child = table
+            .read(if_id, local, remote, |tcb| {
+                TcpControlBlockSnapshot::from(tcb).socket_id
+            })
+            .expect("live passive child");
+        assert!(lookup_socket_in(runtime, child).is_some());
+        if remote_port == 52000 {
+            assert!(terminate_connection_in(
+                runtime,
+                if_id,
+                local,
+                remote,
+                TcpTermination::Reset
+            ));
+            assert!(lookup_socket_in(runtime, child).is_none());
+            assert!(listener.poll_accept(Waker::noop()).is_pending());
+        } else {
+            let Poll::Ready(Ok((accepted, peer))) = listener.poll_accept(Waker::noop()) else {
+                panic!("live pending child must be accepted");
+            };
+            assert_eq!(peer, remote);
+            assert_eq!(accepted.socket_id(), child);
+            assert!(terminate_connection_in(
+                runtime,
+                if_id,
+                local,
+                remote,
+                TcpTermination::Reset
+            ));
+            assert_eq!(
+                accepted.with_inner(|state| state.last_error),
+                Some(Some(EndpointError::ConnectionReset))
+            );
+            assert!(unregister_socket_in(runtime, child).is_some());
+        }
+    }
+    super::termination::close_listener_in(runtime, listener.socket_id());
+    true
+}

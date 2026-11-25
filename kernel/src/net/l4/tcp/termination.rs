@@ -80,8 +80,21 @@ fn settle_socket_in(runtime: NetRuntimeHandle, socket_id: SocketId, termination:
     let end = socket
         .with_inner_mut(|inner| inner.end_tcp_connection(termination.socket_error()))
         .unwrap_or(TcpConnectionEnd::NotConnection);
-    if end == TcpConnectionEnd::Unregister {
-        let _ = unregister_socket_in(runtime, socket_id);
+    match end {
+        TcpConnectionEnd::Unregister => {
+            let _ = unregister_socket_in(runtime, socket_id);
+        }
+        TcpConnectionEnd::DiscardPending { listener } => {
+            if let Some(listener) = lookup_socket_in(runtime, listener) {
+                let _ = listener.with_inner_mut(|state| {
+                    if let Some(tcp) = state.tcp_mut() {
+                        tcp.accept_queue.retain(|id| *id != socket_id);
+                    }
+                });
+            }
+            let _ = unregister_socket_in(runtime, socket_id);
+        }
+        TcpConnectionEnd::HandleOwned | TcpConnectionEnd::NotConnection => {}
     }
 }
 
@@ -154,14 +167,8 @@ pub(crate) fn close_listener_in(runtime: NetRuntimeHandle, socket_id: SocketId) 
             })
         })
         .unwrap_or_default();
-    for connection in queued {
-        if let Some(removed) = tcp_table_in(runtime).remove(
-            connection.if_id,
-            connection.local_addr,
-            connection.remote_addr,
-        ) {
-            abort_connection_in(runtime, removed);
-        }
+    for child in queued {
+        abort_connection_handle_in(runtime, child);
     }
     abort_socket_connections_in(runtime, socket_id);
     let _ = unregister_socket_in(runtime, socket_id);

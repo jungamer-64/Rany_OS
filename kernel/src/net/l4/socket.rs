@@ -104,7 +104,3 @@ pub(crate) fn find_listening_tcp_socket_in(
 ) -> Option<Socket> {
     registry::find_listening_tcp_socket_in(runtime, local, ingress_if_id)
 }
-
-pub(crate) fn generate_socket_id_in(runtime: NetRuntimeHandle) -> Option<SocketId> {
-    with_socket_registry_in(runtime, SocketRegistry::generate_socket_id)
-}

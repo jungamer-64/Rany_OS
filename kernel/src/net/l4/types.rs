@@ -7,8 +7,6 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use crate::net::runtime::manager::NetIfId;
-
 /// エンドポイントファイルディスクリプタ
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]

@@ -21,11 +21,12 @@ use kernel_api::resource::net::{PacketByteCount, PacketPayload, PacketPayloadFro
 /// connection through a graceful close, after which the runtime unregisters
 /// the socket when the connection's TCB ends. `Closed` records that the TCB
 /// ended while the handle still owned the socket, which the handle's release
-/// then unregisters.
+/// then unregisters. A passive child is owned by the listener until accepted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TcpSocketState {
     Listening,
     Connecting,
+    AwaitingAccept { listener: SocketId },
     Connected,
     Closing,
     Closed,
@@ -50,6 +51,8 @@ pub(crate) enum TcpCloseRequest {
 pub(crate) enum TcpConnectionEnd {
     /// The handle had released the socket: the ending path unregisters it.
     Unregister,
+    /// The listener has not handed this child to a connection handle.
+    DiscardPending { listener: SocketId },
     /// The handle still owns the socket, now `Closed`; its release unregisters
     /// it.
     HandleOwned,
@@ -104,12 +107,19 @@ impl SocketCommon {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TcpReceiveState {
+    Open,
+    PeerFinished,
+}
+
 pub(crate) struct TcpSocketEntry {
     pub state: TcpSocketState,
     pub accept_queue: VecDeque<SocketId>,
     pub accept_backlog: usize,
     pub recv_payload_queue: VecDeque<QueuedPayload>,
     pub recv_payload_bytes: usize,
+    receive: TcpReceiveState,
     pub send_buffer: TcpSendBuffer,
     pub nodelay: bool,
     pub urgent_pending: bool,
@@ -294,6 +304,7 @@ impl TcpSocketEntry {
             accept_backlog: Self::DEFAULT_BACKLOG,
             recv_payload_queue: VecDeque::new(),
             recv_payload_bytes: 0,
+            receive: TcpReceiveState::Open,
             send_buffer: TcpSendBuffer::new(),
             nodelay: false,
             urgent_pending: false,
@@ -492,6 +503,20 @@ impl SocketState {
         )
     }
 
+    pub(crate) fn finish_tcp_receive(&mut self) {
+        if let Some(tcp) = self.tcp_mut() {
+            tcp.receive = TcpReceiveState::PeerFinished;
+            self.recv_waker.wake();
+        }
+    }
+
+    pub(crate) fn tcp_receive_finished(&self) -> bool {
+        self.is_tcp_closing_or_closed()
+            || self
+                .tcp()
+                .is_some_and(|tcp| tcp.receive == TcpReceiveState::PeerFinished)
+    }
+
     #[inline]
     pub fn is_udp_bound(&self) -> bool {
         matches!(self.udp_state(), Some(UdpSocketState::Bound))
@@ -533,7 +558,9 @@ impl SocketState {
                 tcp.state = TcpSocketState::Closing;
                 TcpCloseRequest::Graceful
             }
-            TcpSocketState::Connecting | TcpSocketState::Listening => TcpCloseRequest::Abort,
+            TcpSocketState::Connecting
+            | TcpSocketState::Listening
+            | TcpSocketState::AwaitingAccept { .. } => TcpCloseRequest::Abort,
             TcpSocketState::Closing | TcpSocketState::Closed => TcpCloseRequest::Release,
         }
     }
@@ -545,6 +572,9 @@ impl SocketState {
         let end = match self.tcp_state() {
             None | Some(TcpSocketState::Listening) => return TcpConnectionEnd::NotConnection,
             Some(TcpSocketState::Closing) => TcpConnectionEnd::Unregister,
+            Some(TcpSocketState::AwaitingAccept { listener }) => {
+                TcpConnectionEnd::DiscardPending { listener }
+            }
             Some(TcpSocketState::Connecting | TcpSocketState::Connected) => {
                 if let Some(error) = error {
                     self.last_error = Some(error);
@@ -686,6 +716,17 @@ impl SocketState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn peer_fin_records_receive_end_without_releasing_the_socket() {
+        let mut socket = SocketState::new_tcp(TcpSocketState::Connected);
+        assert!(!socket.tcp_receive_finished());
+        socket.finish_tcp_receive();
+        assert!(socket.tcp_receive_finished());
+        assert_eq!(socket.tcp_state(), Some(TcpSocketState::Connected));
+        assert_eq!(socket.request_tcp_close(), TcpCloseRequest::Graceful);
+    }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]

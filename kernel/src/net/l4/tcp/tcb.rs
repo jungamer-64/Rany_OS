@@ -1644,6 +1644,24 @@ impl TcbTable {
         })
     }
 
+    pub(in crate::net::l4::tcp) fn attach_passive_socket(
+        &self,
+        if_id: NetIfId,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+        listener: SocketId,
+        child: SocketId,
+    ) -> bool {
+        let mut attached = false;
+        self.mutate_entry(if_id, local, remote, |entry| {
+            if entry.socket_id == listener && matches!(entry.state, TcpTcbState::Established(_)) {
+                entry.socket_id = child;
+                attached = true;
+            }
+        });
+        attached
+    }
+
     pub(in crate::net::l4::tcp) fn record_fin_received(
         &self,
         if_id: NetIfId,
@@ -1660,6 +1678,7 @@ impl TcbTable {
                 final_rcv_nxt = seq.rcv_nxt;
             }
 
+            entry.ooo.clear();
             let old = core::mem::replace(&mut entry.state, TcpTcbState::Closed);
             entry.state = match old {
                 TcpTcbState::Established(data) => {
@@ -1779,17 +1798,40 @@ impl TcbTable {
         local: EndpointAddr,
         remote: EndpointAddr,
     ) -> Option<TcpControlBlock> {
+        self.remove_matching(if_id, local, remote, |_| true)
+    }
+
+    pub(in crate::net::l4::tcp) fn remove_unadmitted_passive_open(
+        &self,
+        if_id: NetIfId,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+        listener: SocketId,
+    ) -> Option<TcpControlBlock> {
+        self.remove_matching(if_id, local, remote, |entry| {
+            entry.socket_id == listener && matches!(entry.state, TcpTcbState::Established(_))
+        })
+    }
+
+    fn remove_matching(
+        &self,
+        if_id: NetIfId,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+        matches: impl FnOnce(&TcpControlBlock) -> bool,
+    ) -> Option<TcpControlBlock> {
         let mut shard = self.storage.lock().unwrap_or_else(|e| e.into_inner());
         let storage = shard.as_mut()?;
-        if let Some(entry) = storage.remove(TcpFlowKey::new(if_id, local, remote)) {
-            self.total_count.fetch_sub(1, Ordering::Relaxed);
-            if entry.is_syn_received() {
-                self.syn_recv_count.fetch_sub(1, Ordering::Relaxed);
-            }
-            Some(entry)
-        } else {
-            None
+        let key = TcpFlowKey::new(if_id, local, remote);
+        if !matches(storage.get(key)?) {
+            return None;
         }
+        let entry = storage.remove(key)?;
+        self.total_count.fetch_sub(1, Ordering::Relaxed);
+        if entry.is_syn_received() {
+            self.syn_recv_count.fetch_sub(1, Ordering::Relaxed);
+        }
+        Some(entry)
     }
 
     pub fn remove_by_socket_id(&self, socket_id: SocketId) -> Option<TcpControlBlock> {

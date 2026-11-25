@@ -124,8 +124,8 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 - 各 TCB の out-of-order queue は最大 16 segment とし、runtime 全体では 512 permit を admission 前に予約する。overlap、eviction、prune、connection close の全経路が permit を返す。
 - 送信窓 (SND.WND) は RFC 5961 の ACK 検証を通過したセグメントだけが、SND.WL1 / SND.WL2 より古くない場合に更新する。TS.Recent と SACK scoreboard も同じ検証の後で更新し、fast path も slow path と同じ timestamp admission を通す。
 - 広告する受信窓は、合意した window scale でシフトしてから 16 bit に clamp する。SYN cookie から確立した接続は scale / SACK / timestamp を復元できないため、stateless な SYN-ACK ではこれらを提示しない。
-- passive open で確立した接続は listener の accept queue に受理された時点で接続用の socket id を得る。受理できない場合は RST で中止し、所有者のいない ESTABLISHED TCB を残さない。
-- FIN は close 要求後、送信バッファの全データを再送キューへ渡した後にだけ送り、データと同様に ACK されるまで再送する。
+- passive open で確立した接続は listener の accept queue に公開する前に子 socket を登録し、TCB をその socket に結び付ける。accept queue は子 socket の所有権を保持し、accept でアプリケーションへ渡す。accept 前に TCB が終了した場合は、子 socket を queue と registry から回収する。受理できない場合は RST で中止し、所有者のいない ESTABLISHED TCB を残さない。
+- FIN は close 要求後、送信バッファの全データを再送キューへ渡した後にだけ送り、データと同様に ACK されるまで再送する。相手の FIN を受理した socket は、受信済みのデータを渡し終えた後に EOF を返す。
 - TCP 接続 socket の終了処理を行う所有者は常に一つである。`close` はハンドルを消費して終了処理を runtime へ移し、runtime は TCB が終わった時点で socket を unregister する。close せずにハンドルを破棄することは RFC 9293 の ABORT であり、SYN-RECEIVED、ESTABLISHED、FIN-WAIT-1/2、CLOSE-WAIT では `<SEQ=SND.NXT><CTL=RST>` を送り、TCB と socket を同時に解放する。handshake 中の接続に対する `close` も ABORT とする。listener の解放は、accept queue に残る接続と未確立の接続を ABORT する。
 - TCB の終了（LAST-ACK での FIN の ACK、TIME-WAIT / FIN-WAIT-2 / SYN-RECEIVED の期限切れ、RST の受理、再送の打ち切り）は、TCB をテーブルから取り除いた経路だけが処理する。その経路が再送キューを解放し、close 済みの socket は unregister する。ハンドルが保持している socket には閉じた状態と refused / reset / timeout の区別を記録し、ハンドルの解放時に unregister する。
 - core canonical docs は packet / endpoint / ownership vocabulary を前提に語彙を組み立てる。

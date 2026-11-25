@@ -3,6 +3,8 @@
 // ============================================================================
 //! Socket value handle backed by registry-owned socket state.
 
+use core::task::{Poll, Waker};
+
 use crate::net::l4::types::{EndpointAddr, EndpointError, SocketId, SocketResult};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::command::{RuntimeCommand, TransportCommand, try_enqueue_command_in};
@@ -13,7 +15,18 @@ use kernel_api::resource::net::PacketPayload;
 use super::state::{QueuedPayload, ReceivedDatagram, SocketState, TcpSocketState};
 
 fn register_socket(socket: Socket, state: SocketState) {
-    socket.runtime.context().sockets.register(socket, state);
+    if socket
+        .runtime
+        .context()
+        .sockets
+        .register(socket, state)
+        .is_err()
+    {
+        log::error!(
+            "[NET] socket registry capacity exhausted while registering {:?}",
+            socket.socket_id()
+        );
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -154,6 +167,57 @@ impl Socket {
     #[inline]
     pub fn remote_addr(&self) -> Option<EndpointAddr> {
         self.with_inner(|inner| inner.remote_addr).flatten()
+    }
+
+    pub(crate) fn prepare_passive_child(
+        &self,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+        if_id: NetIfId,
+    ) -> SocketResult<Self> {
+        let (nodelay, priority) = self
+            .with_inner(|inner| {
+                let tcp = inner
+                    .tcp()
+                    .filter(|tcp| tcp.state == TcpSocketState::Listening)
+                    .ok_or(EndpointError::InvalidStateTransition)?;
+                if tcp.accept_queue.len() >= tcp.accept_backlog {
+                    return Err(EndpointError::BufferFull);
+                }
+                Ok((tcp.nodelay, inner.priority))
+            })
+            .ok_or(EndpointError::NotFound)??;
+        let registry = &self.runtime.context().sockets;
+        let id = registry
+            .generate_socket_id()
+            .ok_or(EndpointError::ResourceExhausted)?;
+        let mut state = SocketState::new_tcp(TcpSocketState::AwaitingAccept {
+            listener: self.socket_id,
+        });
+        state.local_addr = Some(local);
+        state.remote_addr = Some(remote);
+        state.scope = crate::net::types::InterfaceScope::Pinned(if_id);
+        state.priority = priority;
+        if let Some(tcp) = state.tcp_mut() {
+            tcp.nodelay = nodelay;
+        }
+        let child = Self::from_registered(id, self.runtime);
+        registry.register(child, state)?;
+        Ok(child)
+    }
+
+    pub(crate) fn publish_passive_child(&self, child: Self) -> SocketResult<()> {
+        self.runtime
+            .context()
+            .sockets
+            .publish_tcp_accept(self.socket_id, child.socket_id)
+    }
+
+    pub(crate) fn poll_accept(&self, waker: &Waker) -> Poll<SocketResult<(Self, EndpointAddr)>> {
+        self.runtime
+            .context()
+            .sockets
+            .poll_tcp_accept(self.socket_id, waker)
     }
 
     pub fn register_recv_waker(&self, waker: &core::task::Waker) {

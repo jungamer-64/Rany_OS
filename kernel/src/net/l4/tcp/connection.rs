@@ -385,7 +385,7 @@ impl TcpConnection {
                 if let Some(error) = inner.last_error {
                     return RecvOutcome::Failed(tcp_error_from_endpoint(error));
                 }
-                if inner.is_tcp_closing_or_closed() {
+                if inner.tcp_receive_finished() {
                     return RecvOutcome::EndOfStream;
                 }
 
@@ -617,16 +617,11 @@ impl<'a> Future for AcceptFuture<'a> {
     type Output = Result<(TcpConnection, EndpointAddr), TcpError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.acceptor.socket.try_next_incoming() {
-            Ok((socket, addr, _if_id)) => {
-                Poll::Ready(Ok((TcpConnection::from_socket(socket), addr)))
-            }
-            Err(EndpointError::Timeout) => {
-                self.acceptor.socket.register_accept_waker(cx.waker());
-                Poll::Pending
-            }
-            Err(err) => Poll::Ready(Err(tcp_error_from_endpoint(err))),
-        }
+        self.acceptor.socket.poll_accept(cx.waker()).map(|result| {
+            result
+                .map(|(socket, addr)| (TcpConnection::from_socket(socket), addr))
+                .map_err(tcp_error_from_endpoint)
+        })
     }
 }
 
