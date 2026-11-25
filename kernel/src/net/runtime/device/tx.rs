@@ -462,9 +462,6 @@ impl NetPortTx {
         let queue = frame
             .flow_hash
             .map_or(0, |hash| hash as usize % self.queue_count());
-        let frame = frame
-            .fit_segments(self.max_segments)
-            .map_err(|frame| TxAdmissionError::new(TxAdmissionCause::TooManySegments, frame))?;
         let mut slab = self.slab.lock().unwrap_or_else(|error| error.into_inner());
         if slab.closed {
             return Err(TxAdmissionError::new(TxAdmissionCause::PortStopped, frame));
@@ -476,7 +473,7 @@ impl NetPortTx {
         if slot.regions.capacity() < self.max_segments
             && slot
                 .regions
-                .try_reserve_exact(self.max_segments - slot.regions.capacity())
+                .try_reserve_exact(self.max_segments - slot.regions.len())
                 .is_err()
         {
             return Err(TxAdmissionError::new(
@@ -484,6 +481,9 @@ impl NetPortTx {
                 frame,
             ));
         }
+        let frame = frame
+            .fit_segments(self.max_segments)
+            .map_err(|frame| TxAdmissionError::new(TxAdmissionCause::TooManySegments, frame))?;
         frame.push_dma_regions(&mut slot.regions);
         slot.meta = NetTxMeta {
             queue_index: Some(queue as u16),

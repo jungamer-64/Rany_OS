@@ -612,6 +612,28 @@ fn small_leading_body_segment_moves_into_header_to_fit_fanout(_runtime: NetRunti
     tx.finish_submission(lease_id, false, &mut scratch);
 }
 
+fn stopped_port_returns_all_original_frame_segments(_runtime: NetRuntimeHandle) {
+    let tx = port_tx(2);
+    tx.close_and_release_queued();
+    let header = packet_fixture(14, 0x1000);
+    let mut small = packet_fixture(4, 0x2000);
+    small.data_mut().copy_from_slice(b"tcph");
+    let body = PacketPayload::try_pair(small, packet_fixture(16, 0x3000))
+        .expect("non-empty body segments");
+    let rejected = tx
+        .admit(
+            TxFrame::with_header(header, TxBody::Owned(body)),
+            NetTxMeta::default(),
+        )
+        .err()
+        .expect("closed port rejects the frame");
+    assert_eq!(rejected.cause(), TxAdmissionCause::PortStopped);
+    let (header, body) = rejected.into_frame().into_parts();
+    assert_eq!(header.as_ref().map(PacketRef::len), Some(14));
+    assert_eq!(body.payload().segments().len(), 2);
+    assert_eq!(body.payload().segments()[0].data(), b"tcph");
+}
+
 fn frame_beyond_fanout_is_returned_unchanged(_runtime: NetRuntimeHandle) {
     let tx = port_tx(1);
     let releases = Arc::new(AtomicUsize::new(0));
@@ -899,6 +921,10 @@ pub(crate) async fn device_ownership() -> bool {
         (
             "small_leading_body_segment_moves_into_header_to_fit_fanout",
             small_leading_body_segment_moves_into_header_to_fit_fanout,
+        ),
+        (
+            "stopped_port_returns_all_original_frame_segments",
+            stopped_port_returns_all_original_frame_segments,
         ),
         (
             "frame_beyond_fanout_is_returned_unchanged",
