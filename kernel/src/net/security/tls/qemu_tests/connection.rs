@@ -7,7 +7,6 @@ use super::super::protocol::ContentType;
 use super::super::{
     CipherSuite, TlsBytes, TlsClientConfig, TlsError, TlsHandshake, TlsTrustAnchors,
 };
-use crate::net::payload::PayloadSpanRef;
 
 fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes<16384> {
     let view = crate::net::payload::PacketPayloadView::new(payload);
@@ -28,7 +27,8 @@ fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes
 }
 
 fn handshake_payload(data: &[u8]) -> kernel_api::resource::net::PacketPayload {
-    test_payload(data)
+    let [hi, lo] = (data.len() as u16).to_be_bytes();
+    test_chained_payload(&[&[ContentType::Handshake as u8, 3, 3, hi, lo], data])
 }
 
 fn server_hello_message(cipher: CipherSuite) -> [u8; 42] {
@@ -81,10 +81,14 @@ fn test_process_handshake_truncated_header() {
     let mut conn =
         TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
 
-    let data = [2u8, 0, 0];
-    let payload = handshake_payload(&data);
-    let result = conn.process_handshake(PayloadSpanRef::from_payload(&payload));
-    assert!(matches!(result, Err(TlsError::DecodeError)));
+    conn.build_client_hello_payload().expect("test ClientHello");
+    let message = server_hello_message(CipherSuite::TLS_AES_256_GCM_SHA384);
+    let first = conn.process_incoming_payload(handshake_payload(&message[..3]));
+    assert!(matches!(first, Ok(None)));
+    let result = conn.process_incoming_payload(handshake_payload(&message[3..]));
+    // The assembled ServerHello reaches the production decoder. The fixture
+    // omits the mandatory extensions, so decoding fails only after assembly.
+    assert!(result.is_err());
 }
 
 fn test_tls_handshake_start_is_constructible() {
@@ -119,7 +123,7 @@ fn test_server_hello_rejects_unoffered_cipher_suite() {
 
     let message = server_hello_message(CipherSuite::TLS_AES_256_GCM_SHA384);
     let payload = handshake_payload(&message);
-    let result = conn.process_handshake(PayloadSpanRef::from_payload(&payload));
+    let result = conn.process_incoming_payload(payload);
 
     assert!(matches!(result, Err(TlsError::UnsolicitedCipherSuite)));
 }
@@ -129,21 +133,20 @@ fn test_process_incoming_payload_accepts_multiple_plain_records() {
         .expect("test server name fits");
     let mut conn =
         TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
+    conn.build_client_hello_payload().expect("test ClientHello");
     let records = [
-        ContentType::Alert as u8,
+        ContentType::ChangeCipherSpec as u8,
         0x03,
         0x03,
         0,
-        2,
         1,
-        0,
-        ContentType::Alert as u8,
-        0x03,
-        0x03,
-        0,
-        2,
         1,
+        ContentType::ChangeCipherSpec as u8,
+        0x03,
+        0x03,
         0,
+        1,
+        1,
     ];
 
     let plaintext = conn
@@ -158,8 +161,9 @@ fn test_process_incoming_payload_keeps_partial_record_buffered() {
         .expect("test server name fits");
     let mut conn =
         TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
-    let first_fragment = [ContentType::Alert as u8, 0x03, 0x03, 0, 2, 1];
-    let second_fragment = [0];
+    conn.build_client_hello_payload().expect("test ClientHello");
+    let first_fragment = [ContentType::ChangeCipherSpec as u8, 0x03, 0x03, 0, 1];
+    let second_fragment = [1];
 
     let pending_plaintext = conn
         .process_incoming_payload(test_payload(&first_fragment))
@@ -177,8 +181,12 @@ fn test_process_incoming_payload_accepts_record_across_packet_segments() {
         .expect("test server name fits");
     let mut conn =
         TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
-    let payload =
-        test_chained_payload(&[&[ContentType::Alert as u8, 0x03], &[0x03, 0, 2], &[1, 0]]);
+    conn.build_client_hello_payload().expect("test ClientHello");
+    let payload = test_chained_payload(&[
+        &[ContentType::ChangeCipherSpec as u8, 0x03],
+        &[0x03, 0, 1],
+        &[1],
+    ]);
 
     let plaintext = conn
         .process_incoming_payload(payload)
@@ -195,7 +203,7 @@ fn test_process_handshake_finished_without_verify_data_rejected() {
 
     let data = [20u8, 0, 0, 0];
     let payload = handshake_payload(&data);
-    let result = conn.process_handshake(PayloadSpanRef::from_payload(&payload));
+    let result = conn.process_incoming_payload(payload);
     assert!(matches!(result, Err(TlsError::UnexpectedMessage)));
 }
 
@@ -207,7 +215,7 @@ fn test_process_handshake_unknown_message_rejected() {
 
     let data = [99u8, 0, 0, 0];
     let payload = handshake_payload(&data);
-    let result = conn.process_handshake(PayloadSpanRef::from_payload(&payload));
+    let result = conn.process_incoming_payload(payload);
     assert!(matches!(result, Err(TlsError::UnexpectedMessage)));
 }
 
@@ -219,7 +227,7 @@ fn test_process_handshake_certificate_before_server_hello_rejected() {
 
     let data = [11u8, 0, 0, 0];
     let payload = handshake_payload(&data);
-    let result = conn.process_handshake(PayloadSpanRef::from_payload(&payload));
+    let result = conn.process_incoming_payload(payload);
     assert!(matches!(result, Err(TlsError::UnexpectedMessage)));
 }
 

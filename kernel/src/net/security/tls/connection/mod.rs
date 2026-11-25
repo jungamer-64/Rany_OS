@@ -56,6 +56,8 @@ pub struct TlsEstablishedSession {
 pub struct TlsInboundPlaintext {
     pub application_data: Option<PacketPayload>,
     pub key_update: KeyUpdateAction,
+    /// An authenticated close_notify ended the peer's application stream.
+    pub peer_closed: bool,
 }
 
 pub enum KeyUpdateAction {
@@ -67,6 +69,7 @@ pub(crate) struct TlsConnectionCore {
     config: TlsClientConfig,
     negotiation: NegotiationState,
     record: RecordProtectionState,
+    handshake_ingress: handshake::HandshakeIngress,
     handshake_secrets: HandshakeSecrets,
     tls13: Tls13State,
     transcript: TranscriptState,
@@ -109,13 +112,18 @@ impl TlsEstablishedSession {
         payload: PacketPayload,
     ) -> TlsResult<TlsInboundPlaintext> {
         let application_data = self.core.process_incoming_payload(payload)?;
-        let key_update = match self.core.take_key_update_response_payload()? {
-            Some(payload) => KeyUpdateAction::Send(payload),
-            None => KeyUpdateAction::None,
+        let key_update = if self.core.record.peer_closed {
+            KeyUpdateAction::None
+        } else {
+            match self.core.take_key_update_response_payload()? {
+                Some(payload) => KeyUpdateAction::Send(payload),
+                None => KeyUpdateAction::None,
+            }
         };
         Ok(TlsInboundPlaintext {
             application_data,
             key_update,
+            peer_closed: self.core.record.peer_closed,
         })
     }
 
@@ -138,6 +146,7 @@ impl TlsConnectionCore {
             config,
             negotiation: NegotiationState::new(client_random),
             record: RecordProtectionState::default(),
+            handshake_ingress: handshake::HandshakeIngress::default(),
             handshake_secrets: HandshakeSecrets::new(local_ecdh_keypair),
             tls13: Tls13State::default(),
             transcript: TranscriptState::default(),

@@ -235,6 +235,15 @@ impl TlsRecordPacket {
         Ok(TlsRecordBody { span })
     }
 
+    fn into_handshake_fragment(self) -> TlsResult<PacketPayload> {
+        let length = self.header.body_len.get();
+        TlsPlaintextLen::new(length)?;
+        OwnedPayloadBounds::checked(&self.payload, Self::HEADER_LEN, length)
+            .and_then(|bounds| bounds.take_from(self.payload))
+            .and_then(|window| window.into_payload().ok())
+            .ok_or(TlsError::DecodeError)
+    }
+
     fn into_encrypted_payload(self) -> TlsResult<TlsEncryptedRecordPayload> {
         let body = TlsEncryptedRecordBody::from_record_body(
             &self.payload,
@@ -476,30 +485,56 @@ impl TlsConnectionCore {
         let header = record.header();
 
         match header.content_type {
-            ContentType::Handshake => self.process_handshake(record.body()?.span())?,
-            ContentType::Alert => self.handle_alert_payload(record.body()?.span())?,
+            ContentType::Handshake
+                if matches!(
+                    self.negotiation.progress,
+                    TlsHandshakeProgress::ClientHelloSent
+                ) =>
+            {
+                self.receive_handshake_fragment(record.into_handshake_fragment()?)?;
+            }
+            ContentType::ChangeCipherSpec
+                if !matches!(
+                    self.negotiation.progress,
+                    TlsHandshakeProgress::Initial
+                        | TlsHandshakeProgress::Established(_)
+                        | TlsHandshakeProgress::Closing(_)
+                        | TlsHandshakeProgress::Failed
+                ) && record.body()?.span().eq_bytes(&[1]) => {}
+            ContentType::Alert
+                if matches!(
+                    self.negotiation.progress,
+                    TlsHandshakeProgress::ClientHelloSent
+                ) =>
+            {
+                self.reject_plaintext_alert(record.body()?.span())?;
+            }
             ContentType::ApplicationData => {
                 let mut encrypted = record.into_encrypted_payload()?;
                 let inner = self.decrypt_tls13_record_payload(&mut encrypted)?;
+                if inner.content_type() != ContentType::Handshake
+                    && self.handshake_ingress.is_pending()
+                {
+                    return Err(TlsError::UnexpectedMessage);
+                }
                 match inner.content_type() {
-                    ContentType::ApplicationData => {
-                        let owned = encrypted.into_plaintext_payload(inner)?;
-                        append_plaintext(plaintext, owned)?;
-                    }
-                    ContentType::Handshake => {
-                        let inner_span = encrypted.plaintext_span(inner)?;
-                        if self.negotiation.progress.is_established() {
-                            self.tls13_process_post_handshake(inner_span)?;
-                        } else {
-                            self.process_handshake(inner_span)?;
+                    ContentType::ApplicationData
+                        if self.negotiation.progress.has_application_keys() =>
+                    {
+                        if inner.content_len() != 0 {
+                            append_plaintext(plaintext, encrypted.into_plaintext_payload(inner)?)?;
                         }
                     }
-                    ContentType::Alert => {
-                        let inner_span = encrypted.plaintext_span(inner)?;
-                        self.handle_alert_payload(inner_span)?;
+                    ContentType::Handshake => {
+                        self.receive_handshake_fragment(encrypted.into_plaintext_payload(inner)?)?;
                     }
+                    ContentType::Alert => {
+                        self.handle_authenticated_alert(encrypted.plaintext_span(inner)?)?;
+                    }
+                    _ => return Err(TlsError::UnexpectedMessage),
                 }
             }
+            _ => return Err(TlsError::UnexpectedMessage),
         }
         Ok(())
     }
@@ -508,34 +543,46 @@ impl TlsConnectionCore {
         &mut self,
         payload: PacketPayload,
     ) -> TlsResult<Option<PacketPayload>> {
+        if self.record.peer_closed {
+            return Ok(None);
+        }
         self.record.ingress.push(payload)?;
         let mut plaintext = None;
 
-        // LOOP_PROOF: mode=event; reason=Each ready record is removed from the exclusively borrowed ingress buffer, and incomplete input or a decode failure ends processing.;
-        loop {
-            let Some(record) = self.record.ingress.pop_ready_record()? else {
-                break;
-            };
+        // LOOP_PROOF: mode=condition; reason=Each iteration removes a ready record from the finite buffer and stops on peer closure.;
+        while let Some(record) = self.record.ingress.pop_ready_record()? {
             self.consume_tls_record_payload(record, &mut plaintext)?;
+            if self.record.peer_closed {
+                self.record.ingress = Default::default();
+                break;
+            }
         }
         Ok(plaintext)
     }
 
-    pub(super) fn handle_alert_payload(&mut self, payload: PayloadSpanRef<'_>) -> TlsResult<()> {
+    fn alert_description(payload: PayloadSpanRef<'_>) -> TlsResult<u8> {
         if payload.total_len() != 2 {
             return Err(TlsError::DecodeError);
         }
-        let description_wire = payload.read_u8(1).ok_or(TlsError::DecodeError)?;
-        match AlertDescription::parse_wire(description_wire) {
-            Some(AlertDescription::CloseNotify) => {
-                self.negotiation.progress = TlsHandshakeProgress::Closed;
-            }
-            None => {
-                self.negotiation.progress = TlsHandshakeProgress::Failed;
-                return Err(TlsError::Alert(description_wire));
-            }
+        payload.read_u8(1).ok_or(TlsError::DecodeError)
+    }
+
+    fn reject_plaintext_alert(&mut self, payload: PayloadSpanRef<'_>) -> TlsResult<()> {
+        let description = Self::alert_description(payload)?;
+        self.negotiation.progress = TlsHandshakeProgress::Failed;
+        Err(TlsError::Alert(description))
+    }
+
+    fn handle_authenticated_alert(&mut self, payload: PayloadSpanRef<'_>) -> TlsResult<()> {
+        let description = Self::alert_description(payload)?;
+        if self.negotiation.progress.has_application_keys()
+            && AlertDescription::parse_wire(description) == Some(AlertDescription::CloseNotify)
+        {
+            self.record.peer_closed = true;
+            return Ok(());
         }
-        Ok(())
+        self.negotiation.progress = TlsHandshakeProgress::Failed;
+        Err(TlsError::Alert(description))
     }
 
     pub(super) fn build_tls13_nonce_and_aad(
@@ -654,34 +701,6 @@ impl TlsConnectionCore {
             }
         }
         None
-    }
-
-    pub(crate) fn tls13_process_post_handshake(
-        &mut self,
-        data: PayloadSpanRef<'_>,
-    ) -> TlsResult<()> {
-        let mut offset = 0usize;
-        // LOOP_PROOF: mode=condition; reason=Each post-handshake message advances offset by its four-byte header and body within the finite input, while malformed input returns an error.;
-        while offset < data.total_len() {
-            if data.total_len() - offset < 4 {
-                return Err(TlsError::DecodeError);
-            }
-            let msg_type = data.read_u8(offset).ok_or(TlsError::DecodeError)?;
-            let length = data.read_u24_be(offset + 1).ok_or(TlsError::DecodeError)? as usize;
-            let body_start = offset + 4;
-            let body_end = body_start + length;
-            if body_end > data.total_len() {
-                return Err(TlsError::DecodeError);
-            }
-            let payload = data
-                .subspan(body_start, length)
-                .ok_or(TlsError::DecodeError)?;
-            if msg_type == 24 {
-                self.tls13_process_key_update(payload)?;
-            }
-            offset = body_end;
-        }
-        Ok(())
     }
 
     pub(super) fn tls13_process_key_update(&mut self, data: PayloadSpanRef<'_>) -> TlsResult<()> {
@@ -954,9 +973,50 @@ impl TlsConnectionCore {
             assert!(matches!(conn.record.read_seq.current(), Ok(1)));
         }
 
+        fn only_an_authenticated_alert_ends_the_application_stream() {
+            let config = crate::net::security::tls::TlsClientConfig::for_server_name(
+                "example.com",
+                crate::net::security::tls::TlsTrustAnchors::empty(),
+            )
+            .expect("test server name fits");
+            let mut conn = TlsConnectionCore::new(config).expect("test TLS connection");
+            establish_loopback_record_keys(&mut conn);
+            let plaintext_alert = test_payload(&[ContentType::Alert as u8, 3, 3, 0, 2, 1, 0]);
+            assert!(matches!(
+                conn.process_incoming_payload(plaintext_alert),
+                Err(TlsError::UnexpectedMessage)
+            ));
+            assert!(!conn.record.peer_closed);
+
+            let body = conn
+                .tls13_encrypt_application_payload(test_payload(b"body"))
+                .expect("body record encrypts");
+            let alert = conn
+                .tls13_encrypt_record(
+                    &[
+                        1,
+                        AlertDescription::CloseNotify.wire(),
+                        ContentType::Alert as u8,
+                    ],
+                    TlsRecordEpoch::Application,
+                )
+                .expect("alert record encrypts");
+            let combined = body
+                .try_append(alert)
+                .expect("body and authenticated alert");
+            let plaintext = conn
+                .process_incoming_payload(combined)
+                .expect("valid records")
+                .expect("application data");
+            assert!(payload_matches(&plaintext, b"body"));
+            assert!(conn.record.peer_closed);
+            assert!(conn.send_close_notify().is_ok());
+        }
+
         encrypted_application_records_are_processed_from_one_ingress_payload();
         encrypted_records_inside_one_packet_ref_split_without_copy_fallback();
         encrypted_record_body_and_tag_windows_cross_packet_segments();
+        only_an_authenticated_alert_ends_the_application_stream();
         true
     }
 }

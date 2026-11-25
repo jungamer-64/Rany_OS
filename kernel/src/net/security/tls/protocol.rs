@@ -145,6 +145,7 @@ impl NamedGroup {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ContentType {
+    ChangeCipherSpec = 20,
     Alert = 21,
     Handshake = 22,
     ApplicationData = 23,
@@ -153,6 +154,7 @@ pub(crate) enum ContentType {
 impl ContentType {
     pub(crate) fn parse_wire(v: u8) -> Option<Self> {
         match v {
+            20 => Some(Self::ChangeCipherSpec),
             21 => Some(Self::Alert),
             22 => Some(Self::Handshake),
             23 => Some(Self::ApplicationData),
@@ -165,6 +167,7 @@ impl ContentType {
 pub(crate) enum HandshakeType {
     ClientHello = 1,
     ServerHello = 2,
+    NewSessionTicket = 4,
     EncryptedExtensions = 8,
     Certificate = 11,
     CertificateRequest = 13,
@@ -179,6 +182,7 @@ impl HandshakeType {
         match value {
             1 => Some(Self::ClientHello),
             2 => Some(Self::ServerHello),
+            4 => Some(Self::NewSessionTicket),
             8 => Some(Self::EncryptedExtensions),
             11 => Some(Self::Certificate),
             13 => Some(Self::CertificateRequest),

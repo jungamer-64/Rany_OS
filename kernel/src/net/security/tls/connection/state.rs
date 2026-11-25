@@ -67,7 +67,6 @@ pub(super) enum TlsHandshakeProgress {
     ServerFinishedReceived(SelectedTls13Parameters),
     Established(SelectedTls13Parameters),
     Closing(SelectedTls13Parameters),
-    Closed,
     Failed,
 }
 
@@ -83,9 +82,7 @@ impl TlsHandshakeProgress {
             | Self::ServerFinishedReceived(selected)
             | Self::Established(selected)
             | Self::Closing(selected) => Ok(selected),
-            Self::Initial | Self::ClientHelloSent | Self::Closed | Self::Failed => {
-                Err(TlsError::HandshakeFailure)
-            }
+            Self::Initial | Self::ClientHelloSent | Self::Failed => Err(TlsError::HandshakeFailure),
         }
     }
 
@@ -102,6 +99,10 @@ impl TlsHandshakeProgress {
 
     pub(super) const fn is_established(self) -> bool {
         matches!(self, Self::Established(_))
+    }
+
+    pub(super) const fn has_application_keys(self) -> bool {
+        matches!(self, Self::Established(_) | Self::Closing(_))
     }
 
     pub(super) const fn is_server_finished_received(self) -> bool {
@@ -147,6 +148,7 @@ pub(super) struct RecordProtectionState {
     pub(super) read_seq: TlsSeqNo,
     pub(super) write_seq: TlsSeqNo,
     pub(super) ingress: TlsRecordIngressQueue,
+    pub(super) peer_closed: bool,
 }
 
 impl Default for RecordProtectionState {
@@ -159,6 +161,7 @@ impl Default for RecordProtectionState {
             read_seq: TlsSeqNo::new(),
             write_seq: TlsSeqNo::new(),
             ingress: TlsRecordIngressQueue::default(),
+            peer_closed: false,
         }
     }
 }

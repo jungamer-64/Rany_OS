@@ -3,13 +3,68 @@
 // ============================================================================
 
 use super::state::TlsHandshakeProgress;
-use super::{HandshakeType, TlsConnectionCore};
+use super::{HandshakeType, PacketPayload, PacketPayloadView, TlsConnectionCore};
 use crate::net::payload::PayloadSpanRef;
 use crate::net::security::tls::error::{TlsError, TlsResult};
+use kernel_api::resource::net::{PacketByteCount, PacketPayloadFront};
 
 mod certificate;
 mod server_hello;
 mod tls13;
+
+const MAX_HANDSHAKE_BODY: usize = 131_072;
+const HANDSHAKE_HEADER_LEN: usize = 4;
+
+#[derive(Default)]
+pub(super) struct HandshakeIngress(Option<PacketPayload>);
+
+impl HandshakeIngress {
+    pub(super) const fn is_pending(&self) -> bool {
+        self.0.is_some()
+    }
+
+    fn push(&mut self, fragment: PacketPayload) -> TlsResult<()> {
+        self.0 = Some(match self.0.take() {
+            Some(buffered) => buffered
+                .try_append(fragment)
+                .map_err(|_| TlsError::DecodeError)?,
+            None => fragment,
+        });
+        Ok(())
+    }
+
+    fn pop_message(&mut self) -> TlsResult<Option<PacketPayload>> {
+        let Some(buffered) = &self.0 else {
+            return Ok(None);
+        };
+        let view = PacketPayloadView::new(buffered);
+        let Some([_, hi, mid, lo]) = view.read_array::<4>(0) else {
+            return Ok(None);
+        };
+        let len = u32::from_be_bytes([0, hi, mid, lo]) as usize;
+        if len > MAX_HANDSHAKE_BODY {
+            return Err(TlsError::DecodeError);
+        }
+        let total = HANDSHAKE_HEADER_LEN + len;
+        if view.total_len() < total {
+            return Ok(None);
+        }
+        let count = PacketByteCount::new(total).ok_or(TlsError::DecodeError)?;
+        match self
+            .0
+            .take()
+            .ok_or(TlsError::DecodeError)?
+            .try_take_front(count)
+        {
+            Ok(PacketPayloadFront::Whole(message)) => Ok(Some(message)),
+            Ok(PacketPayloadFront::Prefix { front, remainder }) => {
+                self.0 = Some(remainder);
+                Ok(Some(front))
+            }
+            Err(_) => Err(TlsError::DecodeError),
+        }
+    }
+}
 
 enum Tls13ServerHandshakeMessage<'a> {
     ServerHello(PayloadSpanRef<'a>),
@@ -89,4 +144,74 @@ impl TlsConnectionCore {
         Ok(())
     }
 
+    pub(super) fn receive_handshake_fragment(&mut self, fragment: PacketPayload) -> TlsResult<()> {
+        self.handshake_ingress.push(fragment)?;
+        // LOOP_PROOF: mode=condition; reason=Each iteration removes a complete handshake message from the finite receive buffer.;
+        while let Some(message) = self.handshake_ingress.pop_message()? {
+            let frame = PayloadSpanRef::from_payload(&message);
+            let kind = frame.read_u8(0).ok_or(TlsError::DecodeError)?;
+            let body = frame
+                .subspan(
+                    HANDSHAKE_HEADER_LEN,
+                    frame.total_len() - HANDSHAKE_HEADER_LEN,
+                )
+                .ok_or(TlsError::DecodeError)?;
+            if self.negotiation.progress.has_application_keys() {
+                match HandshakeType::parse_wire(kind) {
+                    Some(HandshakeType::NewSessionTicket) => {}
+                    Some(HandshakeType::KeyUpdate)
+                        if !self.handshake_ingress.is_pending() && body.total_len() == 1 =>
+                    {
+                        self.tls13_process_key_update(body)?
+                    }
+                    _ => return Err(TlsError::UnexpectedMessage),
+                }
+            } else {
+                self.dispatch_handshake_message(kind, body)?;
+                self.record_and_update_handshake(frame, kind)?;
+                // A message that changes the protection epoch must end its record.
+                if matches!(
+                    HandshakeType::parse_wire(kind),
+                    Some(HandshakeType::ServerHello | HandshakeType::Finished)
+                ) && self.handshake_ingress.is_pending()
+                {
+                    return Err(TlsError::UnexpectedMessage);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(all(test, any(feature = "std", target_os = "linux")))]
+mod tests {
+    use super::*;
+    use crate::net::l4::test_support::packet_fixture_with_data;
+
+    fn fragment(bytes: &[u8]) -> PacketPayload {
+        PacketPayload::try_single(packet_fixture_with_data(bytes)).expect("fixture payload")
+    }
+
+    #[test]
+    fn reconstructs_header_and_body_split_across_records() {
+        let mut ingress = HandshakeIngress::default();
+        ingress.push(fragment(&[11, 0, 0])).expect("partial header");
+        assert!(ingress.pop_message().expect("partial header").is_none());
+        ingress.push(fragment(&[2, 1])).expect("partial body");
+        assert!(ingress.pop_message().expect("partial body").is_none());
+        ingress
+            .push(fragment(&[2, 20, 0, 0, 0]))
+            .expect("two messages");
+        let body = ingress
+            .pop_message()
+            .expect("valid frame")
+            .expect("complete frame");
+        assert!(PayloadSpanRef::from_payload(&body).eq_bytes(&[11, 0, 0, 2, 1, 2]));
+        let next = ingress
+            .pop_message()
+            .expect("valid frame")
+            .expect("complete frame");
+        assert!(PayloadSpanRef::from_payload(&next).eq_bytes(&[20, 0, 0, 0]));
+        assert!(!ingress.is_pending());
+    }
 }
