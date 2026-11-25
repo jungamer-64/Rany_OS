@@ -746,8 +746,6 @@ impl NetworkStack {
                 router_lifetime_secs,
                 prefixes,
             } => {
-                use crate::net::l3::ndp::NdpOption;
-
                 match crate::net::runtime::manager::learn_ipv6_ra_in(
                     self.runtime,
                     if_id,
@@ -767,15 +765,6 @@ impl NetworkStack {
                     }
                 }
 
-                for option in prefixes {
-                    if let NdpOption::RecursiveDnsServer { lifetime, servers } = option
-                        && lifetime > 0
-                    {
-                        for server in servers {
-                            crate::net::services::dns::add_ipv6_server_in(self.runtime, server);
-                        }
-                    }
-                }
             }
             NdpResult::Redirect {
                 target,
