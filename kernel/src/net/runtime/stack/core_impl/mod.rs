@@ -1048,13 +1048,16 @@ impl NetworkStack {
         &mut self,
         if_id: NetIfId,
         addr: Ipv6Address,
-    ) -> Result<(), NetworkError> {
+    ) -> Result<(), crate::net::types::NetworkError> {
         let changed = crate::net::runtime::manager::update_interface_config_in(
             self.runtime,
             if_id,
             |config| {
-                let ipv6 = config.ipv6.as_mut().ok_or(NetworkError::InvalidAddress)?;
-                Ok::<_, NetworkError>(ipv6.global.replace(addr) != Some(addr))
+                let ipv6 = config
+                    .ipv6
+                    .as_mut()
+                    .ok_or(crate::net::types::NetworkError::InvalidAddress)?;
+                Ok::<_, crate::net::types::NetworkError>(ipv6.global.replace(addr) != Some(addr))
             },
         )??;
         self.refresh_interface_topology();
