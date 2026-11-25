@@ -185,7 +185,12 @@ impl NetworkStack {
 
         match explicit_src {
             Some(src_ip) if !src_ip.is_unspecified() => {
-                if ipv6_cfg.global == Some(src_ip) || ipv6_cfg.link_local == src_ip {
+                if ipv6_cfg
+                    .addresses
+                    .assigned()
+                    .any(|address| address == src_ip)
+                    || ipv6_cfg.link_local == src_ip
+                {
                     Ok(src_ip)
                 } else {
                     Err(crate::net::types::NetworkError::InvalidAddress)
@@ -195,7 +200,7 @@ impl NetworkStack {
                 let candidate = if dst_ip.is_link_local() {
                     ipv6_cfg.link_local
                 } else {
-                    ipv6_cfg.global.unwrap_or(ipv6_cfg.link_local)
+                    ipv6_cfg.addresses.source().unwrap_or(ipv6_cfg.link_local)
                 };
                 if candidate.is_unspecified() {
                     Err(crate::net::types::NetworkError::NetworkUnreachable)
@@ -222,21 +227,28 @@ impl NetworkStack {
         Ok((config, src_ip))
     }
 
-    pub(crate) fn resolve_ipv6_egress_on(
+    pub(crate) fn resolve_ipv6_egress(
         &self,
-        if_id: NetIfId,
+        scope: crate::net::types::InterfaceScope,
         explicit_src: Option<Ipv6Address>,
         dst_ip: Ipv6Address,
-    ) -> Result<(NetworkConfig, Ipv6Address), crate::net::types::NetworkError> {
-        if !crate::net::runtime::manager::is_interface_operational_in(self.runtime, if_id) {
-            return Err(crate::net::types::NetworkError::NetworkUnreachable);
-        }
+    ) -> Result<
+        (
+            crate::net::runtime::manager::Ipv6Path,
+            NetworkConfig,
+            Ipv6Address,
+        ),
+        crate::net::types::NetworkError,
+    > {
+        let path = crate::net::runtime::manager::resolve_ipv6_path_in(self.runtime, scope, dst_ip)?;
         let config = self
-            .interface_config_or_runtime(if_id)
+            .interface_config_or_runtime(path.if_id)
             .ok_or(crate::net::types::NetworkError::NetworkUnreachable)?;
-
         let src_ip = self.select_ipv6_source(config, explicit_src, dst_ip)?;
-        Ok((config, src_ip))
+        if path.next_hop != dst_ip && src_ip.is_link_local() {
+            return Err(crate::net::types::NetworkError::InvalidAddress);
+        }
+        Ok((path, config, src_ip))
     }
 
     pub fn send_raw_ip_payload_on(
@@ -459,37 +471,25 @@ impl NetworkStack {
         ]);
         let next_header = header[6];
 
-        let (config, _) = match self.resolve_ipv6_egress_on(if_id, Some(src_ip), dst_ip) {
+        let (path, config, _) = match self.resolve_ipv6_egress(
+            crate::net::types::InterfaceScope::Pinned(if_id),
+            Some(src_ip),
+            dst_ip,
+        ) {
             Ok(egress) => egress,
             Err(cause) => {
                 return Err(crate::net::types::NetworkPayloadError::new(cause, payload));
             }
         };
-        let dst_mac = if dst_ip.is_multicast() {
-            MacAddress::new(dst_ip.multicast_mac())
-        } else {
-            match self.resolve_ndp_for_send(
-                if_id,
-                &dst_ip,
-                self.current_time.load(Ordering::Relaxed),
-                |_| {},
-            ) {
-                Some(Ok(mac)) => MacAddress::new(mac),
-                Some(Err((ns_if_id, our_ll, ns_msg))) => {
-                    let solicited = dst_ip.solicited_node();
-                    self.send_ipv6_icmpv6_raw_on(ns_if_id, &our_ll, &solicited, ns_msg);
-                    return Err(crate::net::types::NetworkPayloadError::new(
-                        crate::net::types::NetworkError::ArpResolutionPending,
-                        payload,
-                    ));
-                }
-                None => {
-                    return Err(crate::net::types::NetworkPayloadError::new(
-                        crate::net::types::NetworkError::NetworkUnreachable,
-                        payload,
-                    ));
-                }
+        let dst_mac = match self.resolve_ipv6_neighbor(path) {
+            Ok(Some(mac)) => mac,
+            Ok(None) => {
+                return Err(crate::net::types::NetworkPayloadError::new(
+                    crate::net::types::NetworkError::ArpResolutionPending,
+                    payload,
+                ));
             }
+            Err(error) => return Err(crate::net::types::NetworkPayloadError::new(error, payload)),
         };
 
         let transport_offset = IPV6_HEADER_SIZE;
@@ -1041,6 +1041,53 @@ impl NetworkStack {
         self.expire_arp_pending();
         self.expire_ndp_pending();
         self.expire_fragment_reassembly(now);
+    }
+
+    pub(crate) fn maintain_ipv6_addresses(
+        &mut self,
+        now: u64,
+    ) -> Result<(), crate::net::types::NetworkError> {
+        use crate::net::l3::ipv6::address_state::LocalAddressState;
+        use crate::net::runtime::manager::{self, DadEvent};
+        use crate::net::types::NetworkError;
+
+        manager::maintain_ipv6_in(self.runtime, now)?;
+        self.refresh_interface_topology();
+        let mut pending = Vec::new();
+        for (&if_id, interface) in &self.interfaces {
+            let Some(config) = interface.config.ipv6 else {
+                continue;
+            };
+            for address in config.addresses.entries.into_iter().flatten() {
+                if address.state == LocalAddressState::AwaitingProbe {
+                    pending
+                        .try_reserve(1)
+                        .map_err(|_| NetworkError::ResourceExhausted)?;
+                    pending.push((if_id, address.address));
+                }
+            }
+        }
+        for (if_id, address) in pending {
+            let mut nonce = [0; 6];
+            crate::net::runtime::entropy::fill_secure_random(&mut nonce)
+                .map_err(|_| NetworkError::ResourceExhausted)?;
+            let packet = NdpProcessor::build_dad_ns(address, &nonce)
+                .ok_or(NetworkError::ResourceExhausted)?;
+            if manager::update_ipv6_dad_in(self.runtime, if_id, address, DadEvent::Reserve(nonce))?
+            {
+                let event = match self.send_ndp_multicast(
+                    if_id,
+                    Ipv6Address::UNSPECIFIED,
+                    address.solicited_node(),
+                    packet,
+                ) {
+                    Ok(()) => DadEvent::Submitted(now),
+                    Err(_) => DadEvent::Rejected,
+                };
+                manager::update_ipv6_dad_in(self.runtime, if_id, address, event)?;
+            }
+        }
+        Ok(())
     }
 
     /// Expire timed-out NDP pending packets

@@ -24,4 +24,4 @@ pub(crate) use self::v4::{
 pub use self::v4::{DhcpAckResult, DhcpLease, DhcpState};
 #[cfg(feature = "qemu-test-export")]
 pub(crate) use self::v6::tests as qemu_v6_tests;
-pub use self::v6::{DhcpV6AppliedConfig, DhcpV6State};
+pub use self::v6::{DhcpV6ReplyOutcome, DhcpV6State};

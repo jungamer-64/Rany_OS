@@ -227,7 +227,7 @@ pub(crate) enum ControlCommand {
     },
     DhcpV6ApplyLease {
         if_id: NetIfId,
-        config: crate::net::services::dhcp::DhcpV6AppliedConfig,
+        outcome: crate::net::services::dhcp::DhcpV6ReplyOutcome,
     },
     GetPrimaryInterfaceConfig {
         reply: CommandReplyTicket<Option<crate::net::api::config::InterfaceConfigSnapshot>>,

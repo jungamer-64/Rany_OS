@@ -36,6 +36,8 @@ pub(super) fn endpoint_error_from_network(error: crate::net::types::NetworkError
         crate::net::types::NetworkError::Timer(cause) => EndpointError::Timer(cause),
         crate::net::types::NetworkError::InvalidAddress => EndpointError::InvalidArgument,
         crate::net::types::NetworkError::NetworkUnreachable => EndpointError::NetworkUnreachable,
+        crate::net::types::NetworkError::ResourceExhausted => EndpointError::ResourceExhausted,
+        crate::net::types::NetworkError::PermissionDenied => EndpointError::PermissionDenied,
         _ => EndpointError::Internal,
     }
 }

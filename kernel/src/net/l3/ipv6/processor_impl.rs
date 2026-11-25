@@ -287,19 +287,7 @@ impl Ipv6Processor {
             return self.config.link_local.is_loopback();
         }
 
-        // Global address and its solicited-node multicast
-        if let Some(ref global) = self.config.global
-            && (addr == global || *addr == global.solicited_node())
-        {
-            return true;
-        }
-
-        false
-    }
-
-    /// Update gateway (from RA)
-    pub fn set_gateway(&mut self, addr: Ipv6Address) {
-        self.config.gateway = Some(addr);
+        self.config.addresses.for_destination(*addr)
     }
 }
 

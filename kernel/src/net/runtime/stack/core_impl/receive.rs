@@ -324,10 +324,8 @@ impl NetworkStack {
                     .interface_config_or_runtime(ingress_if_id)
                     .and_then(|cfg| cfg.ipv6)
                 {
-                    if let Some(global) = config.global
-                        && dst == global
-                    {
-                        reply_src = Some(global);
+                    if config.addresses.assigned().any(|address| address == dst) {
+                        reply_src = Some(dst);
                     }
                     if reply_src.is_none() {
                         reply_src = Some(config.link_local);
@@ -388,7 +386,11 @@ impl NetworkStack {
                 if let Some(config) = self
                     .interface_config_or_runtime(ingress_if_id)
                     .and_then(|cfg| cfg.ipv6)
-                    && (quoted_src == config.link_local || config.global == Some(quoted_src))
+                    && (quoted_src == config.link_local
+                        || config
+                            .addresses
+                            .assigned()
+                            .any(|address| address == quoted_src))
                 {
                     is_our_packet = true;
                 }
@@ -533,6 +535,90 @@ impl NetworkStack {
         }
     }
 
+    /// ND may report a duplicate while an address is still unavailable to IP.
+    fn process_tentative_neighbor_message(
+        &mut self,
+        if_id: NetIfId,
+        kind: Icmpv6Type,
+        payload: &PacketPayload,
+        src: Ipv6Address,
+        dst: Ipv6Address,
+    ) -> bool {
+        use crate::net::runtime::manager::{self, DadEvent};
+
+        if !matches!(
+            kind,
+            Icmpv6Type::NeighborSolicitation | Icmpv6Type::NeighborAdvertisement
+        ) {
+            return false;
+        }
+        let view = PacketPayloadView::new(payload);
+        let Some(target) = view.read_array::<16>(8).map(Ipv6Address::new) else {
+            return false;
+        };
+        if !self
+            .interface_config(if_id)
+            .and_then(|config| config.ipv6)
+            .is_some_and(|ipv6| {
+                ipv6.addresses
+                    .entries
+                    .iter()
+                    .flatten()
+                    .any(|entry| entry.address == target && !entry.assigned())
+            })
+        {
+            return false;
+        }
+        if view.read_array::<1>(1) != Some([0]) || target.is_multicast() {
+            return true;
+        }
+
+        let solicitation = kind == Icmpv6Type::NeighborSolicitation;
+        if solicitation {
+            if !src.is_unspecified() || dst != target.solicited_node() {
+                return true;
+            }
+        } else if src.is_unspecified()
+            || (dst.is_multicast()
+                && view
+                    .read_array::<1>(4)
+                    .is_some_and(|[flags]| flags & 0x40 != 0))
+        {
+            return true;
+        }
+
+        let mut nonce = None;
+        let mut offset = 24;
+        // LOOP_PROOF: mode=bounded; reason=Each valid ND option advances by at least eight bytes within the payload.;
+        while offset < view.total_len() {
+            let Some([option, units]) = view.read_array::<2>(offset) else {
+                return true;
+            };
+            let len = usize::from(units) * 8;
+            if len == 0 || len > view.total_len() - offset || (solicitation && option == 1) {
+                return true;
+            }
+            if solicitation && option == 14 && units == 1 {
+                nonce = view.read_array::<6>(offset + 2);
+            }
+            offset += len;
+        }
+
+        if manager::update_ipv6_dad_in(
+            self.runtime,
+            if_id,
+            target,
+            DadEvent::Conflict {
+                received_nonce: nonce,
+            },
+        )
+        .is_ok_and(|changed| changed)
+        {
+            self.refresh_interface_topology();
+        }
+        true
+    }
+
     /// Process NDP message
     pub(crate) fn process_ndp_message(
         &mut self,
@@ -553,6 +639,9 @@ impl NetworkStack {
             return;
         }
 
+        if self.process_tentative_neighbor_message(if_id, msg_type, &payload, src, dst) {
+            return;
+        }
         let ingress_if_id = if_id;
         let result = {
             let Some(state) = self.interfaces.get_mut(&ingress_if_id) else {
@@ -616,20 +705,6 @@ impl NetworkStack {
                     );
                 }
             }
-            NdpResult::SendNeighborSolicitation { src, dst, target } => {
-                let Some(src_mac) = self
-                    .interface_config_or_runtime(ingress_if_id)
-                    .map(|cfg| *cfg.mac.as_bytes())
-                else {
-                    return;
-                };
-                let Some(ns_msg) = NdpProcessor::build_ns(&src, &dst, &target, &src_mac) else {
-                    self.record_dropped_on(ingress_if_id);
-                    return;
-                };
-                self.send_ipv6_icmpv6_on(ingress_if_id, &src, &dst, ns_msg);
-                log::info!("NDP: Sent NS from {} to {} for target {}", src, dst, target);
-            }
             NdpResult::NeighborUpdated { ip, mac } => {
                 log::info!(
                     "NDP: Neighbor {} -> {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
@@ -674,30 +749,15 @@ impl NetworkStack {
             } => {
                 use crate::net::l3::ndp::NdpOption;
 
-                let autonomous_prefix = prefixes.iter().rev().find_map(|option| match option {
-                    NdpOption::PrefixInfo {
-                        prefix_len: 64,
-                        autonomous: true,
-                        valid_lifetime,
-                        prefix,
-                        ..
-                    } if *valid_lifetime > 0 && !prefix.is_link_local() => Some(*prefix),
-                    _ => None,
-                });
-                match crate::net::runtime::manager::apply_ipv6_router_advertisement_in(
+                match crate::net::runtime::manager::learn_ipv6_ra_in(
                     self.runtime,
                     if_id,
                     router,
                     router_lifetime_secs,
-                    autonomous_prefix,
+                    &prefixes,
                     current_time,
                 ) {
-                    Ok(new_address) => {
-                        self.refresh_interface_topology();
-                        if let Some(address) = new_address {
-                            self.initiate_ipv6_dad_on(if_id, address);
-                        }
-                    }
+                    Ok(()) => self.refresh_interface_topology(),
                     Err(error) => {
                         log::warn!(
                             "[NET] IPv6 router advertisement on if{} rejected: {:?}",

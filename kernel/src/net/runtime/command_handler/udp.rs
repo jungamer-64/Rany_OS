@@ -106,24 +106,18 @@ impl RuntimeCommandHandler {
                 .unwrap_or(crate::net::l3::ipv6::Ipv6Address::UNSPECIFIED);
             let dst_v6 = crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6());
 
-            let if_id = match crate::net::runtime::manager::resolve_ipv6_interface_in(
-                runtime, scope, dst_v6,
-            ) {
-                Ok(if_id) => if_id,
-                Err(error) => {
-                    return EventHandleResult::ProtocolError(endpoint_error_from_network(error));
-                }
+            let result = stack.send_udp_v6_payload(
+                scope,
+                src_v6,
+                dst_v6,
+                UdpPorts::new(local_port, remote.port()),
+                payload,
+                64,
+            );
+            return match result {
+                Ok(()) => EventHandleResult::Success,
+                Err(error) => EventHandleResult::ProtocolError(endpoint_error_from_network(error)),
             };
-            stack
-                .send_udp_v6_payload_on_with_ttl(
-                    if_id,
-                    src_v6,
-                    dst_v6,
-                    UdpPorts::new(local_port, remote.port()),
-                    payload,
-                    64,
-                )
-                .is_ok()
         } else {
             false
         };

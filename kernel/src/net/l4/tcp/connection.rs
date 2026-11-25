@@ -372,8 +372,10 @@ impl TcpConnection {
                     if let Some(tcp) = inner.tcp_mut() {
                         tcp.stats.record_rx_delivered(delivered_len);
                     }
-                    let _ = tcp_table_in(self.runtime)
-                        .record_data_consumed_by_socket_id(self.socket.socket_id(), delivered_len as u32);
+                    let _ = tcp_table_in(self.runtime).record_data_consumed_by_socket_id(
+                        self.socket.socket_id(),
+                        delivered_len as u32,
+                    );
                     return RecvOutcome::Payload(payload);
                 }
 

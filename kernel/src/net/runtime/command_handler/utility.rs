@@ -28,14 +28,28 @@ impl RuntimeCommandHandler {
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::DhcpV6ApplyLease { if_id, config },
+                crate::net::runtime::command::ControlCommand::DhcpV6ApplyLease { if_id, outcome },
             ) => {
-                let crate::net::services::dhcp::DhcpV6AppliedConfig {
-                    addr: ipv6_addr,
+                let crate::net::services::dhcp::DhcpV6ReplyOutcome {
+                    lease,
                     dns_servers,
                     domain_search,
-                } = config;
-                if let Err(error) = stack.apply_ipv6_global_address_on(if_id, ipv6_addr) {
+                } = outcome;
+                let ipv6_addr = lease.addr;
+                let Some(lifetimes) = crate::net::l3::ipv6::address_state::AddressLifetimes::new(
+                    lease.obtained_at,
+                    lease.preferred_lifetime,
+                    lease.valid_lifetime,
+                ) else {
+                    return EventHandleResult::ProtocolError(EndpointError::InvalidArgument);
+                };
+                if let Err(error) = crate::net::runtime::manager::stage_dhcp_ipv6_in(
+                    runtime,
+                    if_id,
+                    ipv6_addr,
+                    lifetimes,
+                    crate::task::current_tick(),
+                ) {
                     return EventHandleResult::ProtocolError(
                         crate::net::runtime::command_handler::common::endpoint_error_from_network(
                             error,

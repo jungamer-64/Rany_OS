@@ -36,31 +36,10 @@ pub struct DhcpV6Lease {
 }
 
 #[derive(Debug)]
-pub struct DhcpV6AppliedConfig {
-    pub addr: Ipv6Address,
-    pub dns_servers: Vec<Ipv6Address>,
-    /// Domain Search List option (RFC 3646 Section 4).
-    pub domain_search: Vec<crate::net::services::dns::DnsNormalizedName>,
-}
-
-impl DhcpV6AppliedConfig {
-    pub fn new(
-        addr: Ipv6Address,
-        dns_servers: Vec<Ipv6Address>,
-        domain_search: Vec<crate::net::services::dns::DnsNormalizedName>,
-    ) -> Self {
-        Self {
-            addr,
-            dns_servers,
-            domain_search,
-        }
-    }
-}
-
-#[derive(Debug)]
 pub struct DhcpV6ReplyOutcome {
     pub lease: DhcpV6Lease,
-    pub applied: DhcpV6AppliedConfig,
+    pub dns_servers: Vec<Ipv6Address>,
+    pub domain_search: Vec<crate::net::services::dns::DnsNormalizedName>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

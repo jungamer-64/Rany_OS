@@ -59,7 +59,8 @@ fn resolve_raw_interface(
                 header[31], header[32], header[33], header[34], header[35], header[36], header[37],
                 header[38], header[39],
             ]);
-            crate::net::runtime::manager::resolve_ipv6_interface_in(runtime, scope, dst)
+            crate::net::runtime::manager::resolve_ipv6_path_in(runtime, scope, dst)
+                .map(|path| path.if_id)
         }
         _ => Err(NetworkError::InvalidAddress),
     }

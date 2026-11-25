@@ -1167,8 +1167,7 @@ fn handle_data_received_with_delayed_ack(
                 payload_len,
             )
             .and_then(|bounds| bounds.take_from(payload))
-            .and_then(|window| window.into_payload().ok())
-            else {
+            .and_then(|window| window.into_payload().ok()) else {
                 send_ack_for_fast_path(runtime, &tcb, tcb.rcv_nxt);
                 return;
             };

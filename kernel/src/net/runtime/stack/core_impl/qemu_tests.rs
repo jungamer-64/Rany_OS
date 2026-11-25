@@ -318,22 +318,138 @@ fn ipv6_router_advertisement_reaches_route_lookup_and_peer_stacks() {
     );
 
     assert_eq!(
-        manager::resolve_ipv6_interface_in(runtime, InterfaceScope::Any, remote),
-        Ok(if_id)
+        manager::resolve_ipv6_path_in(runtime, InterfaceScope::Any, remote),
+        Ok(manager::Ipv6Path {
+            if_id,
+            next_hop: router
+        }),
     );
     peer_stack.refresh_interface_topology();
     let learned = peer_stack
         .interface_config(if_id)
         .and_then(|config| config.ipv6)
         .expect("peer stack IPv6 topology");
-    assert_eq!(learned.gateway, Some(router));
-    assert_eq!(
-        learned.global,
-        Some(Ipv6Address::from_prefix_eui64(
-            &prefix,
-            config.mac.as_bytes()
-        ))
+    let address = Ipv6Address::from_prefix_eui64(&prefix, config.mac.as_bytes());
+    assert!(learned.addresses.assigned().next().is_none());
+    assert!(learned.addresses.for_destination(address.solicited_node()));
+    assert!(!learned.addresses.for_destination(address));
+}
+
+fn ipv6_udp_waits_for_the_gateway_and_preserves_the_ip_destination() {
+    use crate::net::l3::ipv6::Ipv6Config;
+    use crate::net::l3::ipv6::address_state::AddressLifetimes;
+    use crate::net::l4::udp::UdpPorts;
+    use crate::net::payload::{GeneratedPacketWriter, PacketPayloadView};
+    use crate::net::runtime::device::{TxAdmissionError, TxFrame};
+    use crate::net::runtime::manager::{self, PrimaryPreference};
+    use crate::net::types::InterfaceScope;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use kernel_api::service::netdev::NetTxMeta;
+
+    const ROUTER: Ipv6Address =
+        Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+    const ROUTER_MAC: [u8; 6] = [2, 4, 6, 8, 10, 12];
+    const SOURCE: Ipv6Address =
+        Ipv6Address::new([0x20, 1, 0x0d, 0xb8, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4]);
+    const DESTINATION: Ipv6Address =
+        Ipv6Address::new([0x20, 1, 0x0d, 0xb8, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5]);
+    static DATAGRAMS: AtomicUsize = AtomicUsize::new(0);
+
+    fn capture(
+        _: NetRuntimeHandle,
+        _: NetIfId,
+        frame: TxFrame,
+        _: NetTxMeta,
+    ) -> Result<(), TxAdmissionError> {
+        let (header, body) = frame.into_parts();
+        let packet = header
+            .as_ref()
+            .map_or_else(
+                || PacketPayloadView::new(body.payload()).read_array::<54>(0),
+                |header| {
+                    header
+                        .data()
+                        .get(..54)
+                        .and_then(|bytes| bytes.try_into().ok())
+                },
+            )
+            .expect("Ethernet and IPv6 header");
+        assert_eq!(&packet[12..14], &[0x86, 0xdd]);
+        match packet[20] {
+            58 if packet[22..38] == [0; 16] => {
+                assert_eq!(&packet[38..54], SOURCE.solicited_node().as_bytes());
+            }
+            58 => assert_eq!(&packet[38..54], ROUTER.solicited_node().as_bytes()),
+            17 => {
+                assert_eq!(&packet[..6], &ROUTER_MAC);
+                assert_eq!(&packet[22..38], SOURCE.as_bytes());
+                assert_eq!(&packet[38..54], DESTINATION.as_bytes());
+                DATAGRAMS.fetch_add(1, Ordering::Relaxed);
+            }
+            protocol => panic!("unexpected IPv6 protocol {protocol}"),
+        }
+        Ok(())
+    }
+
+    let runtime = crate::net::runtime::create_runtime().expect("isolated IPv6 runtime");
+    manager::init_network_manager_in(runtime);
+    let mut config = NetworkConfig::default();
+    config.ipv6 = Some(Ipv6Config::from_mac(config.mac.as_bytes()));
+    let if_id =
+        register_operational_interface(runtime, "ipv6-egress", PrimaryPreference::Auto, config);
+    manager::set_default_route_v6_in(runtime, if_id, ROUTER, 10).expect("default route");
+    manager::stage_dhcp_ipv6_in(
+        runtime,
+        if_id,
+        SOURCE,
+        AddressLifetimes::new(0, 60, 60).unwrap(),
+        0,
+    )
+    .expect("stage address");
+    assert!(
+        manager::update_ipv6_dad_in(runtime, if_id, SOURCE, DadEvent::Reserve([1; 6])).unwrap()
     );
+    let mut stack = NetworkStack::new_in(runtime);
+    stack.transmit_fn = capture;
+    stack
+        .maintain_ipv6_addresses(0)
+        .expect("admit the DAD probe");
+    let assigned = |stack: &NetworkStack| {
+        stack
+            .interface_config(if_id)
+            .unwrap()
+            .ipv6
+            .unwrap()
+            .addresses
+            .source()
+    };
+    assert_eq!(assigned(&stack), None);
+    stack.maintain_ipv6_addresses(999).unwrap();
+    assert_eq!(assigned(&stack), None);
+    stack.maintain_ipv6_addresses(1000).unwrap();
+    assert_eq!(assigned(&stack), Some(SOURCE));
+
+    let mut writer =
+        GeneratedPacketWriter::new(4, kernel_api::resource::net::DEFAULT_PACKET_HEADROOM)
+            .expect("UDP payload");
+    writer.write_generated_bytes(b"data").unwrap();
+    DATAGRAMS.store(0, Ordering::Relaxed);
+    assert_eq!(
+        stack.send_udp_v6_payload(
+            InterfaceScope::Any,
+            Ipv6Address::UNSPECIFIED,
+            DESTINATION,
+            UdpPorts::new(5000, 5001),
+            writer.finish().unwrap(),
+            64,
+        ),
+        Ok(()),
+    );
+    assert_eq!(DATAGRAMS.load(Ordering::Relaxed), 0);
+    stack.ndp_cache_insert_on(if_id, &ROUTER, ROUTER_MAC, 1000);
+    stack.drain_ndp_pending_on(if_id, &ROUTER);
+    stack.drain_ndp_pending_on(if_id, &ROUTER);
+    assert_eq!(DATAGRAMS.load(Ordering::Relaxed), 1);
 }
 
 fn reassembled_ipv6_uses_extension_header_transport_window() {
@@ -431,6 +547,7 @@ pub(crate) fn interface_topology() -> bool {
     timeout_retries_after_queue_loss_and_manager_contention();
     ipv4_pmtu_remains_available_with_echo_disabled();
     ipv6_router_advertisement_reaches_route_lookup_and_peer_stacks();
+    ipv6_udp_waits_for_the_gateway_and_preserves_the_ip_destination();
     reassembled_ipv6_uses_extension_header_transport_window();
     true
 }

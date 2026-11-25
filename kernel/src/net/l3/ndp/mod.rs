@@ -622,12 +622,6 @@ pub enum NdpResult {
     },
     /// Neighbor info learned (from NA or NS source)
     NeighborUpdated { ip: Ipv6Address, mac: [u8; 6] },
-    /// Send a Neighbor Solicitation (e.g. for DAD)
-    SendNeighborSolicitation {
-        src: Ipv6Address,
-        dst: Ipv6Address,
-        target: Ipv6Address,
-    },
     /// Router Advertisement received (prefix/gateway info)
     RouterAdvertisement {
         router: Ipv6Address,
@@ -652,8 +646,7 @@ pub struct NdpProcessor {
     cache: NeighborCache,
     /// Our link-local address
     pub(crate) our_link_local: Ipv6Address,
-    /// Our global addresses (SLAAC / manual)
-    pub(crate) global_addresses: Vec<Ipv6Address>,
+    addresses: crate::net::l3::ipv6::address_state::Ipv6AddressSet,
     /// Our MAC address
     our_mac: [u8; 6],
     /// Statistics

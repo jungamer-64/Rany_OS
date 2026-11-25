@@ -22,8 +22,9 @@ use super::ipv4::IpProtocol;
 // IPv6 Address
 // =====================================================
 
-pub mod fragment;
 /// IPv6 address (16 bytes)
+pub(crate) mod address_state;
+pub mod fragment;
 mod header_chain;
 pub(crate) use header_chain::{Ipv6HeaderChain, Ipv6PacketBytes};
 mod processor_impl;
@@ -790,6 +791,7 @@ pub fn is_header_chain_complete(mut next_header: u8, mut data: &[u8]) -> bool {
 pub struct Ipv6Config {
     /// Link-local address (fe80::/10, auto-generated from MAC)
     pub link_local: Ipv6Address,
+    pub(crate) addresses: address_state::Ipv6AddressSet,
     /// Default gateway (link-local of router)
     pub gateway: Option<Ipv6Address>,
     /// Default hop limit (default 64)
@@ -801,6 +803,7 @@ impl Ipv6Config {
     pub fn from_mac(mac: &[u8; 6]) -> Self {
         Self {
             link_local: Ipv6Address::from_eui64(mac),
+            addresses: address_state::Ipv6AddressSet::default(),
             gateway: None,
             hop_limit: 64,
         }
@@ -811,6 +814,7 @@ impl Default for Ipv6Config {
     fn default() -> Self {
         Self {
             link_local: Ipv6Address::UNSPECIFIED,
+            addresses: address_state::Ipv6AddressSet::default(),
             gateway: None,
             hop_limit: 64,
         }

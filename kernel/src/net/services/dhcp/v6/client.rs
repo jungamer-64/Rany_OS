@@ -760,12 +760,11 @@ impl DhcpV6Client {
                     t2,
                     obtained_at: current_time,
                 };
-                let applied = crate::net::services::dhcp::DhcpV6AppliedConfig::new(
-                    addr,
+                Ok(Some(DhcpV6ReplyOutcome {
+                    lease,
                     dns_servers,
                     domain_search,
-                );
-                Ok(Some(DhcpV6ReplyOutcome { lease, applied }))
+                }))
             }
             None => Ok(None),
         }
@@ -851,22 +850,23 @@ impl DhcpV6Client {
         }
 
         if let Ok(Some(outcome)) = parsed_reply {
+            let lease = outcome.lease;
+            let command = crate::net::runtime::command::RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::DhcpV6ApplyLease {
+                    if_id: self.if_id,
+                    outcome,
+                },
+            );
+            if crate::net::runtime::command::try_enqueue_command_in(self.runtime, command).is_err()
+            {
+                return false;
+            }
+
             if let Ok(mut sd) = self.server_addr.lock() {
                 *sd = Some(src);
             }
-
-            let _ = crate::net::runtime::command::try_enqueue_command_in(
-                self.runtime,
-                crate::net::runtime::command::RuntimeCommand::Control(
-                    crate::net::runtime::command::ControlCommand::DhcpV6ApplyLease {
-                        if_id: self.if_id,
-                        config: outcome.applied,
-                    },
-                ),
-            );
-
             if let Ok(mut g) = self.lease.lock() {
-                *g = Some(outcome.lease);
+                *g = Some(lease);
             }
 
             if let Ok(mut st) = self.state.lock() {
@@ -1757,9 +1757,9 @@ pub(crate) mod tests {
         assert!(parsed.is_some());
         let lease = parsed.unwrap();
         assert_eq!(lease.lease.addr, addr);
-        assert_eq!(lease.applied.dns_servers.len(), 2);
-        assert_eq!(lease.applied.dns_servers[0], dns1);
-        assert_eq!(lease.applied.dns_servers[1], dns2);
+        assert_eq!(lease.dns_servers.len(), 2);
+        assert_eq!(lease.dns_servers[0], dns1);
+        assert_eq!(lease.dns_servers[1], dns2);
     }
 
     #[cfg(feature = "qemu-test-export")]

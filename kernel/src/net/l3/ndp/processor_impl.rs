@@ -13,27 +13,21 @@ impl NdpProcessor {
         Self {
             cache: NeighborCache::new(),
             our_link_local,
-            global_addresses: Vec::new(),
+            addresses: Default::default(),
             our_mac,
             stats: NdpStats::default(),
         }
     }
 
-    /// Add a global address that this node responds to for NDP
-    pub fn add_global_address(&mut self, addr: Ipv6Address) {
-        if !self.global_addresses.contains(&addr) {
-            self.global_addresses.push(addr);
-        }
+    pub(crate) fn set_addresses(
+        &mut self,
+        addresses: crate::net::l3::ipv6::address_state::Ipv6AddressSet,
+    ) {
+        self.addresses = addresses;
     }
 
-    /// Remove a global address
-    pub fn remove_global_address(&mut self, addr: &Ipv6Address) {
-        self.global_addresses.retain(|a| a != addr);
-    }
-
-    /// Check if the given address is one of our addresses (link-local or global)
     pub fn is_our_address(&self, addr: &Ipv6Address) -> bool {
-        *addr == self.our_link_local || self.global_addresses.contains(addr)
+        *addr == self.our_link_local || self.addresses.assigned().any(|address| address == *addr)
     }
 
     /// Get neighbor cache reference
@@ -724,7 +718,28 @@ impl NdpProcessor {
         target: &Ipv6Address,
         src_mac: &[u8; 6],
     ) -> Option<PacketPayload> {
-        // NS: type(1) + code(1) + checksum(2) + reserved(4) + target(16) + SLLA option(8) = 32
+        Self::build_ns_with_option(src, dst, target, 1, src_mac)
+    }
+
+    pub(crate) fn build_dad_ns(target: Ipv6Address, nonce: &[u8; 6]) -> Option<PacketPayload> {
+        // RFC 7527 uses the SEND Nonce option for DAD loopback detection.
+        Self::build_ns_with_option(
+            &Ipv6Address::UNSPECIFIED,
+            &target.solicited_node(),
+            &target,
+            14,
+            nonce,
+        )
+    }
+
+    fn build_ns_with_option(
+        src: &Ipv6Address,
+        dst: &Ipv6Address,
+        target: &Ipv6Address,
+        option: u8,
+        data: &[u8; 6],
+    ) -> Option<PacketPayload> {
+        // ICMPv6 header, target, and one eight-byte option.
         let total_len = 32;
         let mut packet = alloc_packet_with_headroom(total_len, 0)?;
         let msg = &mut packet.data_mut()[..total_len];
@@ -736,10 +751,9 @@ impl NdpProcessor {
         // Target address: bytes 8-23
         msg[8..24].copy_from_slice(target.as_bytes());
 
-        // Source Link-Layer Address option
-        msg[24] = 1; // type = Source Link-Layer Address
-        msg[25] = 1; // length = 1 (in 8-byte units)
-        msg[26..32].copy_from_slice(src_mac);
+        msg[24] = option;
+        msg[25] = 1;
+        msg[26..32].copy_from_slice(data);
 
         // Compute checksum
         let pseudo = ipv6_pseudo_header_checksum(src, dst, IpProtocol::Icmpv6, total_len as u32);
@@ -862,17 +876,6 @@ impl NdpProcessor {
         // Build NS targeting the solicited-node multicast address
         let sn_mcast = target.solicited_node();
         Self::build_ns(&self.our_link_local, &sn_mcast, target, &self.our_mac)
-    }
-
-    /// Initiate Duplicate Address Detection (DAD) for a new address (RFC 4862)
-    pub fn initiate_dad(&self, target: &Ipv6Address) -> NdpResult {
-        log::info!("[NET-NDP] Initiating DAD for address {} (RFC 4862)", target);
-        let mcast_dst = target.solicited_node();
-        NdpResult::SendNeighborSolicitation {
-            src: Ipv6Address::UNSPECIFIED,
-            dst: mcast_dst,
-            target: *target,
-        }
     }
 
     /// Run periodic maintenance (expire entries + NUD timer processing)

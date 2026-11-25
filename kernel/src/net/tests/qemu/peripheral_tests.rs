@@ -762,8 +762,8 @@ fn verify_unavailable_egress_rejection(
     ))
     .then_some(())?;
     let payload = PacketPayload::try_single(allocate_frame(runtime, 8)?).ok()?;
-    (core_stack.send_udp_v6_payload_on_with_ttl(
-        unavailable,
+    (core_stack.send_udp_v6_payload(
+        crate::net::types::InterfaceScope::Pinned(unavailable),
         Ipv6Address::LOOPBACK,
         Ipv6Address::LOOPBACK,
         UdpPorts::new(40_000, 40_001),

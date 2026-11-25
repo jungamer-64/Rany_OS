@@ -296,9 +296,7 @@ impl InterfaceStackState {
         let ip = config.ipv4.address;
         let (ipv6_proc, icmpv6_proc, ndp_proc) = if let Some(ref ipv6_config) = config.ipv6 {
             let mut ndp = NdpProcessor::new(ipv6_config.link_local, *mac.as_bytes());
-            if let Some(address) = ipv6_config.global {
-                ndp.add_global_address(address);
-            }
+            ndp.set_addresses(ipv6_config.addresses);
             (
                 Some(Ipv6Processor::new(*ipv6_config)),
                 Some(Icmpv6Processor::new(config.icmp_echo_enabled)),
@@ -351,12 +349,7 @@ impl InterfaceStackState {
                 ));
             }
             if let Some(ndp) = &mut self.ndp {
-                if let Some(previous) = previous.and_then(|old| old.global) {
-                    ndp.remove_global_address(&previous);
-                }
-                if let Some(address) = ipv6_config.global {
-                    ndp.add_global_address(address);
-                }
+                ndp.set_addresses(ipv6_config.addresses);
             }
         } else {
             self.ipv6 = None;
@@ -436,6 +429,7 @@ pub(crate) enum PendingIpv6Payload {
 pub(crate) struct PendingIpv6Packet {
     /// 送信先IPv6アドレス
     dst: Ipv6Address,
+    next_hop: Ipv6Address,
     /// 送信元IPv6アドレス
     src: Ipv6Address,
     /// 保留中の上位レイヤーペイロード
@@ -456,77 +450,34 @@ impl NdpPendingQueue {
         }
     }
 
-    /// パケットをキューに追加
-    fn enqueue(
+    fn try_enqueue(
         &mut self,
+        next_hop: Ipv6Address,
         src: Ipv6Address,
         dst: Ipv6Address,
-        icmpv6_data: PacketPayload,
+        payload: PendingIpv6Payload,
         current_time: u64,
-    ) {
-        if self.packets.len() >= NDP_PENDING_QUEUE_SIZE {
-            // VecDeque provides efficient pop_front
-            self.packets.pop_front();
+    ) -> Result<(), crate::net::types::NetworkError> {
+        if self.packets.len() >= NDP_PENDING_QUEUE_SIZE || self.packets.try_reserve(1).is_err() {
+            return Err(crate::net::types::NetworkError::ResourceExhausted);
         }
         self.packets.push_back(PendingIpv6Packet {
             dst,
+            next_hop,
             src,
-            payload: PendingIpv6Payload::Icmpv6(icmpv6_data),
+            payload,
             queued_at: current_time,
         });
-    }
-
-    fn enqueue_udp(
-        &mut self,
-        src: Ipv6Address,
-        dst: Ipv6Address,
-        src_port: u16,
-        dst_port: u16,
-        hop_limit: u8,
-        data: PacketPayload,
-        current_time: u64,
-    ) {
-        if self.packets.len() >= NDP_PENDING_QUEUE_SIZE {
-            self.packets.pop_front();
-        }
-        self.packets.push_back(PendingIpv6Packet {
-            dst,
-            src,
-            payload: PendingIpv6Payload::Udp {
-                src_port,
-                dst_port,
-                hop_limit,
-                data,
-            },
-            queued_at: current_time,
-        });
-    }
-
-    fn enqueue_tcp(
-        &mut self,
-        src: Ipv6Address,
-        dst: Ipv6Address,
-        segment: crate::net::runtime::device::TxBody,
-        current_time: u64,
-    ) {
-        if self.packets.len() >= NDP_PENDING_QUEUE_SIZE {
-            self.packets.pop_front();
-        }
-        self.packets.push_back(PendingIpv6Packet {
-            dst,
-            src,
-            payload: PendingIpv6Payload::Tcp { segment },
-            queued_at: current_time,
-        });
+        Ok(())
     }
 
     /// 指定アドレス宛のパケットを取り出す
-    fn drain_for(&mut self, dst: &Ipv6Address) -> Vec<PendingIpv6Packet> {
+    fn drain_for(&mut self, next_hop: &Ipv6Address) -> Vec<PendingIpv6Packet> {
         let mut matched = Vec::new();
         let mut i = 0;
         // LOOP_PROOF: mode=bounded; reason=Each iteration removes one matching pending IPv6 packet or advances the index, exhausting the exclusively borrowed finite deque.;
         while i < self.packets.len() {
-            if self.packets[i].dst == *dst {
+            if self.packets[i].next_hop == *next_hop {
                 if let Some(pkt) = self.packets.remove(i) {
                     matched.push(pkt);
                 }

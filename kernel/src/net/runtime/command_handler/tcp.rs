@@ -366,18 +366,10 @@ impl RuntimeCommandHandler {
                 }
             };
             let remote_v6 = crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6());
-            let resolved_if = match crate::net::runtime::manager::resolve_ipv6_interface_in(
-                runtime, scope, remote_v6,
-            ) {
-                Ok(if_id) => if_id,
-                Err(error) => {
-                    return EventHandleResult::ProtocolError(endpoint_error_from_network(error));
-                }
-            };
-            match stack.resolve_ipv6_egress_on(resolved_if, explicit_src, remote_v6) {
-                Ok((_, src_ip)) => (
+            match stack.resolve_ipv6_egress(scope, explicit_src, remote_v6) {
+                Ok((path, _, src_ip)) => (
                     EndpointAddr::new_v6(src_ip.octets(), local_port),
-                    resolved_if,
+                    path.if_id,
                 ),
                 Err(error) => {
                     return EventHandleResult::ProtocolError(endpoint_error_from_network(error));

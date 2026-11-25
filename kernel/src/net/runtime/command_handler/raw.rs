@@ -89,38 +89,18 @@ impl RuntimeCommandHandler {
                 transport,
             } => {
                 let dst = Ipv6Address::new(dst);
-                match crate::net::runtime::manager::resolve_ipv6_interface_in(runtime, scope, dst) {
-                    Err(_) => Err(EndpointError::NetworkUnreachable),
-                    Ok(if_id) => match transport {
-                        RawIpv6Transport::Udp {
-                            src,
-                            ports,
-                            ttl,
-                            payload,
-                        } => stack
-                            .send_udp_v6_payload_on_with_ttl(
-                                if_id,
-                                Ipv6Address::new(src),
-                                dst,
-                                ports,
-                                payload,
-                                ttl,
-                            )
-                            .map_err(|_| EndpointError::ResourceExhausted),
-                        RawIpv6Transport::Tcp { src, segment } => {
-                            let src = Ipv6Address::new(src);
-                            match stack.resolve_ipv6_egress_on(
-                                if_id,
-                                (!src.is_unspecified()).then_some(src),
-                                dst,
-                            ) {
-                                Err(_) => Err(EndpointError::NetworkUnreachable),
-                                Ok((_, resolved_src)) => stack
-                                    .send_tcp_v6_payload_on(if_id, resolved_src, dst, segment)
-                                    .map_err(|_| EndpointError::NetworkUnreachable),
-                            }
-                        }
-                    },
+                match transport {
+                    RawIpv6Transport::Udp {
+                        src,
+                        ports,
+                        ttl,
+                        payload,
+                    } => stack
+                        .send_udp_v6_payload(scope, Ipv6Address::new(src), dst, ports, payload, ttl)
+                        .map_err(super::common::endpoint_error_from_network),
+                    RawIpv6Transport::Tcp { src, segment } => stack
+                        .send_tcp_v6_payload(scope, Ipv6Address::new(src), dst, segment)
+                        .map_err(super::common::endpoint_error_from_network),
                 }
             }
         };

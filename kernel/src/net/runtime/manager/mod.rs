@@ -6,6 +6,12 @@ use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l3::ipv6::Ipv6Address;
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::stack::NetworkConfig;
+mod ipv6_discovery;
+use ipv6_discovery::Ipv6Discovery;
+pub(crate) use ipv6_discovery::{
+    DadEvent, learn_ipv6_ra_in, maintain_ipv6_in, stage_dhcp_ipv6_in, update_ipv6_dad_in,
+};
+
 use crate::net::types::{InterfaceScope, NetworkError};
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
@@ -127,10 +133,11 @@ pub struct NetworkInterfaceInfo {
     pub config: Option<NetworkConfig>,
     primary_preference: PrimaryPreference,
     was_operational: bool,
+    ipv6_discovery: Ipv6Discovery,
 }
 
 impl NetworkInterfaceInfo {
-    pub const fn is_operational(self) -> bool {
+    pub const fn is_operational(&self) -> bool {
         matches!(self.administrative_state, AdministrativeState::Enabled)
             && matches!(self.link_state, LinkState::Up)
             && self.config.is_some()
@@ -212,6 +219,7 @@ impl NetworkManager {
                 config: None,
                 primary_preference,
                 was_operational: false,
+                ipv6_discovery: Ipv6Discovery::default(),
             },
         );
         Ok(if_id)
@@ -233,9 +241,12 @@ impl NetworkManager {
                 .iter()
                 .filter(|(_, interface)| interface.is_operational())
                 .filter_map(|(&if_id, interface)| {
-                    interface
-                        .config
-                        .map(|config| ActiveInterfaceConfig { if_id, config })
+                    interface.config.map(|mut config| {
+                        if let Some(ipv6) = &mut config.ipv6 {
+                            ipv6.addresses = interface.ipv6_discovery.snapshot();
+                        }
+                        ActiveInterfaceConfig { if_id, config }
+                    })
                 }),
         );
         Some(active)
@@ -305,6 +316,9 @@ impl NetworkManager {
         if iface.config == Some(config) {
             return Ok(TopologyChange::Unchanged);
         }
+        if iface.config.map(|previous| previous.mac) != Some(config.mac) || config.ipv6.is_none() {
+            iface.ipv6_discovery = Ipv6Discovery::default();
+        }
         iface.config = Some(config);
         self.refresh_managed_routes_for_interface(if_id, config);
         let first_operational = self.note_first_operational(if_id);
@@ -349,6 +363,9 @@ impl NetworkManager {
             return Ok(TopologyChange::Unchanged);
         }
         iface.administrative_state = state;
+        if !iface.is_operational() {
+            iface.ipv6_discovery.suspend_dad();
+        }
         let first_operational = self.note_first_operational(if_id);
         self.reconcile_primary(first_operational);
         Ok(TopologyChange::Changed)
@@ -367,6 +384,9 @@ impl NetworkManager {
             return Ok(TopologyChange::Unchanged);
         }
         iface.link_state = state;
+        if !iface.is_operational() {
+            iface.ipv6_discovery.suspend_dad();
+        }
         let first_operational = self.note_first_operational(if_id);
         self.reconcile_primary(first_operational);
         Ok(TopologyChange::Changed)
@@ -478,23 +498,51 @@ impl NetworkManager {
         self.routes_v6.iter().copied().collect()
     }
 
-    fn lookup_ipv6_route(&self, dst: Ipv6Address) -> RouteLookupResultV6 {
-        for route in &self.routes_v6 {
-            if !route.admin_enabled {
-                continue;
-            }
-            if let Some(iface) = self.interfaces.get(&route.if_id) {
-                if !iface.is_operational() {
-                    continue;
+    fn lookup_ipv6_route(&self, dst: Ipv6Address, scope: InterfaceScope) -> RouteLookupResultV6 {
+        self.routes_v6.iter().copied().find(|route| {
+            route.admin_enabled
+                && (matches!(scope, InterfaceScope::Any)
+                    || matches!(scope, InterfaceScope::Pinned(id) if id == route.if_id))
+                && self.ipv6_enabled(route.if_id)
+                && ipv6_prefix_match(dst, route.destination, route.prefix_len)
+        })
+    }
+
+    fn ipv6_path(&self, scope: InterfaceScope, dst: Ipv6Address) -> Result<Ipv6Path, NetworkError> {
+        if dst.is_link_local() || dst.is_multicast() {
+            let if_id = match scope {
+                InterfaceScope::Pinned(id) => Some(id),
+                InterfaceScope::Any => {
+                    self.primary
+                        .filter(|id| self.ipv6_enabled(*id))
+                        .or_else(|| {
+                            self.interfaces
+                                .keys()
+                                .copied()
+                                .find(|id| self.ipv6_enabled(*id))
+                        })
                 }
-            } else {
-                continue;
             }
-            if ipv6_prefix_match(dst, route.destination, route.prefix_len) {
-                return Some(*route);
-            }
+            .filter(|id| self.ipv6_enabled(*id))
+            .ok_or(NetworkError::NetworkUnreachable)?;
+            return Ok(Ipv6Path {
+                if_id,
+                next_hop: dst,
+            });
         }
-        None
+        let route = self
+            .lookup_ipv6_route(dst, scope)
+            .ok_or(NetworkError::NetworkUnreachable)?;
+        Ok(Ipv6Path {
+            if_id: route.if_id,
+            next_hop: route.gateway.unwrap_or(dst),
+        })
+    }
+
+    fn ipv6_enabled(&self, id: NetIfId) -> bool {
+        self.interfaces.get(&id).is_some_and(|iface| {
+            iface.is_operational() && iface.config.is_some_and(|config| config.ipv6.is_some())
+        })
     }
 
     fn set_default_route_v4(
@@ -557,8 +605,6 @@ impl NetworkManager {
     fn refresh_managed_routes_for_interface(&mut self, if_id: NetIfId, config: NetworkConfig) {
         self.routes_v4
             .retain(|r| !(r.if_id == if_id && r.managed_by_interface));
-        self.routes_v6
-            .retain(|r| !(r.if_id == if_id && r.managed_by_interface));
 
         if !config.ipv4.address.is_any() {
             if let Some(prefix_len) = ipv4_mask_to_prefix_len(config.ipv4.subnet_mask) {
@@ -587,20 +633,8 @@ impl NetworkManager {
             }
         }
 
-        if let Some(ipv6_cfg) = config.ipv6 {
-            if let Some(gateway) = ipv6_cfg.gateway {
-                self.routes_v6.push(Ipv6Route {
-                    destination: Ipv6Address::UNSPECIFIED,
-                    prefix_len: 0,
-                    gateway: Some(gateway),
-                    if_id,
-                    metric: 100,
-                    flags: RouteFlags::default_static(),
-                    admin_enabled: true,
-                    managed_by_interface: true,
-                });
-            }
-        }
+        let discovery = self.interfaces[&if_id].ipv6_discovery;
+        self.refresh_managed_ipv6_routes(if_id, config, discovery);
         self.sort_ipv4_routes();
         self.sort_ipv6_routes();
     }
@@ -942,7 +976,7 @@ pub fn is_interface_operational_in(runtime: NetRuntimeHandle, if_id: NetIfId) ->
         manager
             .get_interface(if_id)
             .copied()
-            .is_some_and(NetworkInterfaceInfo::is_operational)
+            .is_some_and(|interface| interface.is_operational())
     })
     .unwrap_or(false)
 }
@@ -1011,7 +1045,22 @@ pub fn lookup_ipv6_route_in(
     runtime: NetRuntimeHandle,
     dst: Ipv6Address,
 ) -> Result<RouteLookupResultV6, NetworkError> {
-    with_manager_in(runtime, |m| m.lookup_ipv6_route(dst))
+    with_manager_in(runtime, |m| m.lookup_ipv6_route(dst, InterfaceScope::Any))
+}
+
+/// The device and the neighbor that will receive an IPv6 packet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Ipv6Path {
+    pub(crate) if_id: NetIfId,
+    pub(crate) next_hop: Ipv6Address,
+}
+
+pub(crate) fn resolve_ipv6_path_in(
+    runtime: NetRuntimeHandle,
+    scope: InterfaceScope,
+    dst: Ipv6Address,
+) -> Result<Ipv6Path, NetworkError> {
+    with_manager_in(runtime, |manager| manager.ipv6_path(scope, dst))?
 }
 
 pub fn list_ipv6_routes_in(runtime: NetRuntimeHandle) -> Result<Vec<Ipv6Route>, NetworkError> {
@@ -1055,62 +1104,6 @@ mod tests {
             .set_link_state(if_id, LinkState::Up)
             .expect("raise link");
         if_id
-    }
-
-    #[test]
-    fn router_advertisement_publishes_ipv6_topology_and_expires_its_default() {
-        let mut manager = NetworkManager::new();
-        let if_id = configured_manager_interface(&mut manager, "ipv6", PrimaryPreference::Auto);
-        let mut config = NetworkConfig::default();
-        config.ipv6 = Some(crate::net::l3::ipv6::Ipv6Config::from_mac(
-            config.mac.as_bytes(),
-        ));
-        manager
-            .set_interface_config(if_id, config)
-            .expect("enable IPv6");
-        let router = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
-        let prefix = Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-        let remote = Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
-
-        let (address, _) = manager
-            .apply_ipv6_router_advertisement(if_id, router, 2, Some(prefix), 1000)
-            .expect("publish SLAAC address and default route");
-        let active = manager.try_active_interfaces().expect("active topology");
-        let ipv6 = active[0].config.ipv6.expect("IPv6 configuration");
-        assert_eq!(ipv6.global, address);
-        assert_eq!(ipv6.gateway, Some(router));
-        assert_eq!(
-            manager
-                .lookup_ipv6_route(prefix)
-                .expect("connected route")
-                .gateway,
-            None
-        );
-        assert_eq!(
-            manager
-                .lookup_ipv6_route(remote)
-                .expect("learned default")
-                .gateway,
-            Some(router)
-        );
-
-        manager.expire_ipv6_routers(2999);
-        assert!(manager.lookup_ipv6_route(remote).is_some());
-        manager.expire_ipv6_routers(3000);
-        assert!(manager.lookup_ipv6_route(remote).is_none());
-        assert!(manager.lookup_ipv6_route(prefix).is_some());
-
-        manager
-            .apply_ipv6_router_advertisement(if_id, router, 0, None, 3000)
-            .expect("prefix-only advertisement");
-        assert!(manager.lookup_ipv6_route(remote).is_none());
-        manager
-            .apply_ipv6_router_advertisement(if_id, router, 10, None, 3000)
-            .expect("learned router");
-        manager
-            .apply_ipv6_router_advertisement(if_id, router, 0, None, 3001)
-            .expect("withdraw router");
-        assert!(manager.lookup_ipv6_route(remote).is_none());
     }
 
     #[test]

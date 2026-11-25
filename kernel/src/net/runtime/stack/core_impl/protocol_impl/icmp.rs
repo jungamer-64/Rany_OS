@@ -597,11 +597,7 @@ impl NetworkStack {
     /// Helper to get the best IPv6 source address for a destination
     fn get_ipv6_source_on(&self, if_id: NetIfId) -> Option<Ipv6Address> {
         let config = self.interfaces.get(&if_id)?.ipv6.as_ref()?.config();
-        if let Some(global) = config.global {
-            Some(global)
-        } else {
-            Some(config.link_local)
-        }
+        Some(config.addresses.source().unwrap_or(config.link_local))
     }
 
     /// Check if an ICMPv6 error message should be sent (RFC 4443 Section 2.4(e))

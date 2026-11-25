@@ -56,16 +56,17 @@ impl RuntimeCommandHandler {
                     return EventHandleResult::Success;
                 }
 
-                let current_time = stack.current_time();
-                match stack.resolve_ndp_for_send(if_id, &ip, current_time, |_| {}) {
-                    Some(Ok(mac)) => {
-                        crate::net::l3::ndp::notify_ndp_resolved_in(runtime, if_id, target_ip, mac);
-                    }
-                    Some(Err((ns_if_id, our_ll, ns_msg))) => {
-                        let sn_mcast = ip.solicited_node();
-                        stack.send_ipv6_icmpv6_raw_on(ns_if_id, &our_ll, &sn_mcast, ns_msg);
-                    }
-                    None => {}
+                let path = crate::net::runtime::manager::Ipv6Path {
+                    if_id,
+                    next_hop: ip,
+                };
+                if let Ok(Some(mac)) = stack.resolve_ipv6_neighbor(path) {
+                    crate::net::l3::ndp::notify_ndp_resolved_in(
+                        runtime,
+                        if_id,
+                        target_ip,
+                        *mac.as_bytes(),
+                    );
                 }
                 EventHandleResult::Success
             }
@@ -137,11 +138,8 @@ impl RuntimeCommandHandler {
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::ProcessGlobalTimeouts,
             ) => {
-                if let Err(error) = crate::net::runtime::manager::expire_ipv6_routers_in(
-                    runtime,
-                    crate::task::current_tick(),
-                ) {
-                    log::warn!("[NET] IPv6 router expiry failed: {:?}", error);
+                if let Err(error) = stack.maintain_ipv6_addresses(crate::task::current_tick()) {
+                    log::warn!("[NET] IPv6 topology maintenance failed: {:?}", error);
                 }
                 // --- RFC Compliance: Process TCP periodic tasks ---
                 // 1. TCB table maintenance (RTO, TimeWait, FinWait2, etc.)
