@@ -1043,22 +1043,25 @@ impl NetworkStack {
         self.expire_fragment_reassembly(now);
     }
 
-    /// Apply a DHCPv6-obtained global IPv6 address to the stack
-    pub fn apply_ipv6_global_address_on(
+    /// Publish a DHCPv6 address through the same topology as SLAAC.
+    pub(crate) fn apply_ipv6_global_address_on(
         &mut self,
         if_id: NetIfId,
-        addr: crate::net::l3::ipv6::Ipv6Address,
-    ) {
-        let Some(state) = self.interfaces.get_mut(&if_id) else {
-            return;
-        };
-        if let Some(ref mut ipv6_proc) = state.ipv6 {
-            ipv6_proc.set_global_address(addr);
+        addr: Ipv6Address,
+    ) -> Result<(), NetworkError> {
+        let changed = crate::net::runtime::manager::update_interface_config_in(
+            self.runtime,
+            if_id,
+            |config| {
+                let ipv6 = config.ipv6.as_mut().ok_or(NetworkError::InvalidAddress)?;
+                Ok::<_, NetworkError>(ipv6.global.replace(addr) != Some(addr))
+            },
+        )??;
+        self.refresh_interface_topology();
+        if changed {
+            self.initiate_ipv6_dad_on(if_id, addr);
         }
-        if let Some(ref mut ndp_proc) = state.ndp {
-            ndp_proc.add_global_address(addr);
-        }
-        self.initiate_ipv6_dad_on(if_id, addr);
+        Ok(())
     }
 
     /// Initiate DAD for an IPv6 address

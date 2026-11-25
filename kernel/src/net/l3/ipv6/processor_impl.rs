@@ -43,10 +43,8 @@ impl Ipv6Processor {
         &self.config
     }
 
-    /// Get mutable config reference
-    #[inline]
-    pub fn config_mut(&mut self) -> &mut Ipv6Config {
-        &mut self.config
+    pub(crate) fn set_config(&mut self, config: Ipv6Config) {
+        self.config = config;
     }
 
     /// Get stats reference
@@ -368,11 +366,6 @@ impl Ipv6Processor {
         }
 
         false
-    }
-
-    /// Update global address (e.g. from SLAAC/RA)
-    pub fn set_global_address(&mut self, addr: Ipv6Address) {
-        self.config.global = Some(addr);
     }
 
     /// Update gateway (from RA)

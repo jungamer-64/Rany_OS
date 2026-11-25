@@ -685,107 +685,53 @@ impl NetworkStack {
             NdpResult::RouterAdvertisement {
                 router,
                 router_mac: _,
+                router_lifetime_secs,
                 prefixes,
             } => {
-                log::info!(
-                    "NDP: Router Advertisement from {}, {} prefixes",
+                use crate::net::l3::ndp::NdpOption;
+
+                let autonomous_prefix = prefixes.iter().rev().find_map(|option| match option {
+                    NdpOption::PrefixInfo {
+                        prefix_len: 64,
+                        autonomous: true,
+                        valid_lifetime,
+                        prefix,
+                        ..
+                    } if *valid_lifetime > 0 && !prefix.is_link_local() => Some(*prefix),
+                    _ => None,
+                });
+                match crate::net::runtime::manager::apply_ipv6_router_advertisement_in(
+                    self.runtime,
+                    if_id,
                     router,
-                    prefixes.len()
-                );
-                {
-                    let if_id = ingress_if_id;
-                    let mut dad_messages = Vec::new();
-                    if let Some(state) = self.interfaces.get_mut(&if_id) {
-                        let mac_bytes = *state.config.mac.as_bytes();
-
-                        for prefix_opt in &prefixes {
-                            if let crate::net::l3::ndp::NdpOption::PrefixInfo {
-                                prefix_len,
-                                on_link: _,
-                                autonomous,
-                                valid_lifetime,
-                                preferred_lifetime: _,
-                                prefix,
-                            } = prefix_opt
-                            {
-                                if *autonomous && *prefix_len == 64 && *valid_lifetime > 0 {
-                                    let global_addr =
-                                        Ipv6Address::from_prefix_eui64(prefix, &mac_bytes);
-
-                                    if let Some(ref mut ipv6) = state.ipv6
-                                        && ipv6.config().global != Some(global_addr)
-                                    {
-                                        ipv6.set_global_address(global_addr);
-                                        if let Some(ref mut cfg) = state.config.ipv6 {
-                                            cfg.global = Some(global_addr);
-                                        }
-                                        log::info!(
-                                            "SLAAC: Configured interface {} global address {} from prefix {}",
-                                            if_id.0,
-                                            global_addr,
-                                            prefix
-                                        );
-
-                                        if let Some(ref mut ndp_proc) = state.ndp
-                                            && let NdpResult::SendNeighborSolicitation {
-                                                src,
-                                                dst,
-                                                target,
-                                            } = ndp_proc.initiate_dad(&global_addr)
-                                        {
-                                            let Some(ns_msg) = NdpProcessor::build_ns(
-                                                &src, &dst, &target, &mac_bytes,
-                                            ) else {
-                                                state.stats.record_dropped();
-                                                continue;
-                                            };
-                                            dad_messages.push((src, dst, ns_msg, target));
-                                        }
-                                    }
-
-                                    if let Some(ref mut ndp) = state.ndp {
-                                        ndp.add_global_address(global_addr);
-                                    }
-                                }
-                            } else if let crate::net::l3::ndp::NdpOption::RecursiveDnsServer {
-                                lifetime,
-                                servers,
-                            } = prefix_opt
-                                && *lifetime > 0
-                            {
-                                for server in servers {
-                                    crate::net::services::dns::add_ipv6_server_in(
-                                        self.runtime,
-                                        *server,
-                                    );
-                                    log::info!(
-                                        "NDP: Added DNS server {} from RDNSS option",
-                                        server
-                                    );
-                                }
-                            }
-                        }
-
-                        if let Some(ref mut ipv6) = state.ipv6
-                            && ipv6.config().gateway.is_none()
-                        {
-                            ipv6.config_mut().gateway = Some(router);
-                            if let Some(ref mut cfg) = state.config.ipv6 {
-                                cfg.gateway = Some(router);
-                            }
-                            log::info!(
-                                "SLAAC: Set interface {} default gateway to {}",
-                                if_id.0,
-                                router
-                            );
+                    router_lifetime_secs,
+                    autonomous_prefix,
+                    current_time,
+                ) {
+                    Ok(new_address) => {
+                        self.refresh_interface_topology();
+                        if let Some(address) = new_address {
+                            self.initiate_ipv6_dad_on(if_id, address);
                         }
                     }
-
-                    for (src, dst, ns_msg, target) in dad_messages {
-                        self.send_ipv6_icmpv6_on(if_id, &src, &dst, ns_msg);
-                        log::info!("NDP: Sent DAD NS for target {}", target);
+                    Err(error) => {
+                        log::warn!(
+                            "[NET] IPv6 router advertisement on if{} rejected: {:?}",
+                            if_id.0,
+                            error
+                        );
+                        return;
                     }
-                    return;
+                }
+
+                for option in prefixes {
+                    if let NdpOption::RecursiveDnsServer { lifetime, servers } = option
+                        && lifetime > 0
+                    {
+                        for server in servers {
+                            crate::net::services::dns::add_ipv6_server_in(self.runtime, server);
+                        }
+                    }
                 }
             }
             NdpResult::Redirect {

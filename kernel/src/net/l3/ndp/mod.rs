@@ -632,6 +632,7 @@ pub enum NdpResult {
     RouterAdvertisement {
         router: Ipv6Address,
         router_mac: Option<[u8; 6]>,
+        router_lifetime_secs: u16,
         prefixes: Vec<NdpOption>,
     },
     /// Redirect received (RFC 4861)

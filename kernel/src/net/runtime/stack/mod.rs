@@ -295,11 +295,14 @@ impl InterfaceStackState {
         let mac = config.mac;
         let ip = config.ipv4.address;
         let (ipv6_proc, icmpv6_proc, ndp_proc) = if let Some(ref ipv6_config) = config.ipv6 {
-            let mac_bytes = mac.as_bytes();
+            let mut ndp = NdpProcessor::new(ipv6_config.link_local, *mac.as_bytes());
+            if let Some(address) = ipv6_config.global {
+                ndp.add_global_address(address);
+            }
             (
                 Some(Ipv6Processor::new(*ipv6_config)),
                 Some(Icmpv6Processor::new(config.icmp_echo_enabled)),
-                Some(NdpProcessor::new(ipv6_config.link_local, *mac_bytes)),
+                Some(ndp),
             )
         } else {
             (None, None, None)
@@ -330,16 +333,31 @@ impl InterfaceStackState {
         self.arp.set_local(config.mac, config.ipv4.address);
         self.igmp.set_local_ip(config.ipv4.address);
         if let Some(ref ipv6_config) = config.ipv6 {
-            if self.ipv6.is_none() {
+            let previous = self.config.ipv6;
+            if let Some(ipv6) = &mut self.ipv6 {
+                ipv6.set_config(*ipv6_config);
+            } else {
                 self.ipv6 = Some(Ipv6Processor::new(*ipv6_config));
-            } else if let Some(ref mut ipv6) = self.ipv6 {
-                *ipv6 = Ipv6Processor::new(*ipv6_config);
             }
-            if self.icmpv6.is_none() {
+            if self.icmpv6.is_none() || self.config.icmp_echo_enabled != config.icmp_echo_enabled {
                 self.icmpv6 = Some(Icmpv6Processor::new(config.icmp_echo_enabled));
             }
-            let mac_bytes = config.mac.as_bytes();
-            self.ndp = Some(NdpProcessor::new(ipv6_config.link_local, *mac_bytes));
+            if previous.is_none_or(|old| old.link_local != ipv6_config.link_local)
+                || self.config.mac != config.mac
+            {
+                self.ndp = Some(NdpProcessor::new(
+                    ipv6_config.link_local,
+                    *config.mac.as_bytes(),
+                ));
+            }
+            if let Some(ndp) = &mut self.ndp {
+                if let Some(previous) = previous.and_then(|old| old.global) {
+                    ndp.remove_global_address(&previous);
+                }
+                if let Some(address) = ipv6_config.global {
+                    ndp.add_global_address(address);
+                }
+            }
         } else {
             self.ipv6 = None;
             self.icmpv6 = None;

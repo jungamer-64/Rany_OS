@@ -500,6 +500,7 @@ impl NdpProcessor {
         NdpResult::RouterAdvertisement {
             router: src,
             router_mac,
+            router_lifetime_secs: u16::from_be_bytes([data[6], data[7]]),
             prefixes: prefix_options,
         }
     }
@@ -517,9 +518,9 @@ impl NdpProcessor {
         }
 
         let view = PacketPayloadView::new(payload);
-        if view.total_len() < 16 {
+        let Some(header) = view.read_array::<16>(0) else {
             return NdpResult::Error;
-        }
+        };
 
         self.stats.ra_received.fetch_add(1, Ordering::Relaxed);
 
@@ -552,6 +553,7 @@ impl NdpProcessor {
         NdpResult::RouterAdvertisement {
             router: src,
             router_mac,
+            router_lifetime_secs: u16::from_be_bytes([header[6], header[7]]),
             prefixes: prefix_options,
         }
     }

@@ -137,6 +137,12 @@ impl RuntimeCommandHandler {
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::ProcessGlobalTimeouts,
             ) => {
+                if let Err(error) = crate::net::runtime::manager::expire_ipv6_routers_in(
+                    runtime,
+                    crate::task::current_tick(),
+                ) {
+                    log::warn!("[NET] IPv6 router expiry failed: {:?}", error);
+                }
                 // --- RFC Compliance: Process TCP periodic tasks ---
                 // 1. TCB table maintenance (RTO, TimeWait, FinWait2, etc.)
                 tcp_table_in(runtime).tick(runtime);

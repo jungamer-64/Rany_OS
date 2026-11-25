@@ -417,7 +417,7 @@ pub fn test_ra_processing() {
     let mut ra = alloc::vec![0u8; 16];
     ra[0] = u8::from(Icmpv6Type::RouterAdvertisement);
     ra[4] = 64; // Hop limit
-    // bytes 8-23 are router info... for RA processing it's just raw bytes
+    ra[6..8].copy_from_slice(&1800u16.to_be_bytes());
 
     // Add SLLA option
     ra.push(1); // type=SourceLinkLayerAddress
@@ -437,10 +437,12 @@ pub fn test_ra_processing() {
         NdpResult::RouterAdvertisement {
             router,
             router_mac: learned_mac,
+            router_lifetime_secs,
             ..
         } => {
             assert_eq!(router, router_ip);
             assert_eq!(learned_mac, Some(router_mac));
+            assert_eq!(router_lifetime_secs, 1800);
         }
         _ => panic!("Expected RouterAdvertisement result"),
     }

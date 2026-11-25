@@ -35,7 +35,13 @@ impl RuntimeCommandHandler {
                     dns_servers,
                     domain_search,
                 } = config;
-                stack.apply_ipv6_global_address_on(if_id, ipv6_addr);
+                if let Err(error) = stack.apply_ipv6_global_address_on(if_id, ipv6_addr) {
+                    return EventHandleResult::ProtocolError(
+                        crate::net::runtime::command_handler::common::endpoint_error_from_network(
+                            error,
+                        ),
+                    );
+                }
 
                 let is_primary =
                     crate::net::runtime::manager::primary_interface_in(runtime) == Some(if_id);
