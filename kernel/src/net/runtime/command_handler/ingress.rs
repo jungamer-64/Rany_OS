@@ -338,9 +338,8 @@ impl RuntimeCommandHandler {
                 header[31], header[32], header[33], header[34], header[35], header[36], header[37],
                 header[38], header[39],
             ]);
-            let headers = Ipv6HeaderChain::parse(Ipv6PacketBytes::Segmented(
-                PayloadSpanRef::from_payload(&payload),
-            ));
+            let headers =
+                Ipv6HeaderChain::parse_reassembled(PayloadSpanRef::from_payload(&payload));
             let Ipv6HeaderChain::UpperLayer {
                 protocol,
                 offset: payload_offset,

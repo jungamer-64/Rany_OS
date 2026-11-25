@@ -51,6 +51,14 @@ impl Ipv6HeaderChain {
     /// Resolve offsets against the IPv6 Payload Length, including when
     /// extension or transport headers cross packet segments.
     pub(crate) fn parse(bytes: Ipv6PacketBytes<'_>) -> Self {
+        Self::parse_with_fragment_history(bytes, false)
+    }
+
+    pub(crate) fn parse_reassembled(bytes: PayloadSpanRef<'_>) -> Self {
+        Self::parse_with_fragment_history(Ipv6PacketBytes::Segmented(bytes), true)
+    }
+
+    fn parse_with_fragment_history(bytes: Ipv6PacketBytes<'_>, reassembled: bool) -> Self {
         let Some([version, _, _, _, len_hi, len_lo, mut next_header]) = bytes.read(0) else {
             return Self::Discard;
         };
@@ -89,7 +97,7 @@ impl Ipv6HeaderChain {
                     offset += length;
                 }
                 EXT_HEADER_FRAGMENT => {
-                    if saw_fragment || offset + Ipv6FragmentHeader::SIZE > end {
+                    if saw_fragment || reassembled || offset + Ipv6FragmentHeader::SIZE > end {
                         return Self::Discard;
                     }
                     let Some(header) = bytes
@@ -114,6 +122,18 @@ impl Ipv6HeaderChain {
                     offset += Ipv6FragmentHeader::SIZE;
                 }
                 _ => {
+                    // RFC 6980 section 5 also applies to atomic fragments.
+                    // Reassembly removes the Fragment Header before this walk.
+                    const CERTIFICATION_PATH_SOLICITATION: u8 = 148;
+                    if (saw_fragment || reassembled)
+                        && IpProtocol::from(next_header) == IpProtocol::Icmpv6
+                        && offset < end
+                        && bytes.read(offset).is_some_and(|[kind]| {
+                            matches!(kind, 133..=137 | CERTIFICATION_PATH_SOLICITATION)
+                        })
+                    {
+                        return Self::Discard;
+                    }
                     return Self::UpperLayer {
                         protocol: IpProtocol::from(next_header),
                         offset,
@@ -198,5 +218,47 @@ mod tests {
             Ipv6HeaderChain::parse(Ipv6PacketBytes::Contiguous(&packet)),
             Ipv6HeaderChain::Discard
         ));
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn fragment_history_applies_only_to_neighbor_discovery_messages() {
+    use crate::net::l4::test_support::packet_fixture_with_data;
+    use kernel_api::resource::net::PacketPayload;
+
+    let mut packet = [0; 48];
+    packet[0] = 0x60;
+    packet[5] = 8;
+    packet[6] = u8::from(IpProtocol::Icmpv6);
+    for (kind, discard) in [(128, false), (134, true)] {
+        packet[40] = kind;
+        let payload =
+            PacketPayload::try_single(packet_fixture_with_data(&packet)).expect("ICMPv6 fixture");
+        assert_eq!(
+            matches!(
+                Ipv6HeaderChain::parse_reassembled(PayloadSpanRef::from_payload(&payload)),
+                Ipv6HeaderChain::Discard
+            ),
+            discard
+        );
+        assert!(matches!(
+            Ipv6HeaderChain::parse(Ipv6PacketBytes::Contiguous(&packet)),
+            Ipv6HeaderChain::UpperLayer { .. }
+        ));
+
+        let mut atomic_fragment = [0; 56];
+        atomic_fragment[..40].copy_from_slice(&packet[..40]);
+        atomic_fragment[5] = 16;
+        atomic_fragment[6] = EXT_HEADER_FRAGMENT;
+        atomic_fragment[40] = u8::from(IpProtocol::Icmpv6);
+        atomic_fragment[48..].copy_from_slice(&packet[40..]);
+        assert_eq!(
+            matches!(
+                Ipv6HeaderChain::parse(Ipv6PacketBytes::Contiguous(&atomic_fragment)),
+                Ipv6HeaderChain::Discard
+            ),
+            discard,
+        );
     }
 }
