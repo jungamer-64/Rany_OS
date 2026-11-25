@@ -3,7 +3,7 @@
 // ============================================================================
 //! # 基本型定義 - L4 公開型と internal socket id
 //!
-//! SocketId, EndpointError, EndpointAddr, AcceptedConnection 等
+//! SocketId, EndpointError, EndpointAddr 等
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -330,40 +330,6 @@ impl core::fmt::Display for EndpointAddr {
                 crate::net::l3::ipv6::Ipv6Address::new(ip),
                 port
             ),
-        }
-    }
-}
-
-// =====================================================
-// AcceptedConnection - Accept待ちの接続情報
-// =====================================================
-
-/// ハンドシェイク完了済みの接続（Acceptキュー用）
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct AcceptedConnection {
-    /// 新規作成されたエンドポイントFD
-    pub socket_id: SocketId,
-    /// ローカルアドレス
-    pub local_addr: EndpointAddr,
-    /// リモートアドレス
-    pub remote_addr: EndpointAddr,
-    /// 着信インターフェース
-    pub if_id: NetIfId,
-}
-
-impl AcceptedConnection {
-    /// 新規作成
-    pub fn new(
-        socket_id: SocketId,
-        local_addr: EndpointAddr,
-        remote_addr: EndpointAddr,
-        if_id: NetIfId,
-    ) -> Self {
-        Self {
-            socket_id,
-            local_addr,
-            remote_addr,
-            if_id,
         }
     }
 }

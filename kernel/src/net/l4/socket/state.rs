@@ -8,7 +8,7 @@ use alloc::collections::VecDeque;
 use core::ops::{Deref, DerefMut};
 
 use crate::net::l4::tcp::TcpStats;
-use crate::net::l4::types::{AcceptedConnection, EndpointAddr, EndpointError, SocketResult};
+use crate::net::l4::types::{EndpointAddr, EndpointError, SocketId, SocketResult};
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
 use crate::sync::atomic_waker::AtomicWaker;
@@ -106,7 +106,7 @@ impl SocketCommon {
 
 pub(crate) struct TcpSocketEntry {
     pub state: TcpSocketState,
-    pub accept_queue: VecDeque<AcceptedConnection>,
+    pub accept_queue: VecDeque<SocketId>,
     pub accept_backlog: usize,
     pub recv_payload_queue: VecDeque<QueuedPayload>,
     pub recv_payload_bytes: usize,

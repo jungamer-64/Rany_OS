@@ -94,16 +94,6 @@ impl Socket {
         Self::new_tcp_in(runtime, state)
     }
 
-    pub fn new_tcp_with_socket_id_in(
-        socket_id: SocketId,
-        runtime: NetRuntimeHandle,
-        state: TcpSocketState,
-    ) -> Self {
-        let socket = Self::from_registered(socket_id, runtime);
-        register_socket(socket, SocketState::new_tcp(state));
-        socket
-    }
-
     pub fn new_udp_in(runtime: NetRuntimeHandle) -> Self {
         let socket = Self::from_registered(Self::next_socket_id_in(runtime), runtime);
         register_socket(socket, SocketState::new_udp());
@@ -164,46 +154,6 @@ impl Socket {
     #[inline]
     pub fn remote_addr(&self) -> Option<EndpointAddr> {
         self.with_inner(|inner| inner.remote_addr).flatten()
-    }
-
-    pub fn try_next_incoming(&self) -> SocketResult<(Socket, EndpointAddr, NetIfId)> {
-        self.with_inner_mut(|inner| {
-            if !inner.is_tcp_listening() {
-                return Err(EndpointError::InvalidStateTransition);
-            }
-
-            let Some(conn) = inner.tcp_mut().and_then(|tcp| tcp.accept_queue.pop_front()) else {
-                return Err(EndpointError::Timeout);
-            };
-            let listener_nodelay = inner.tcp().is_some_and(|tcp| tcp.nodelay);
-            let listener_priority = inner.priority;
-            let socket = Self::new_tcp_with_socket_id_in(
-                conn.socket_id,
-                self.runtime,
-                TcpSocketState::Connected,
-            );
-            let configured = socket.with_inner_mut(|new_inner| {
-                new_inner.local_addr = Some(conn.local_addr);
-                new_inner.remote_addr = Some(conn.remote_addr);
-                new_inner.scope = crate::net::types::InterfaceScope::Pinned(conn.if_id);
-                if let Some(new_tcp) = new_inner.tcp_mut() {
-                    new_tcp.nodelay = listener_nodelay;
-                }
-                new_inner.priority = listener_priority;
-            });
-            if configured.is_none() {
-                return Err(EndpointError::NotFound);
-            }
-
-            Ok((socket, conn.remote_addr, conn.if_id))
-        })
-        .unwrap_or(Err(EndpointError::NotFound))
-    }
-
-    pub fn register_accept_waker(&self, waker: &core::task::Waker) {
-        let _ = self.with_inner_mut(|inner| {
-            inner.accept_waker.register(waker);
-        });
     }
 
     pub fn register_recv_waker(&self, waker: &core::task::Waker) {

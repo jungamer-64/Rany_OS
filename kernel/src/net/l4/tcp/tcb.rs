@@ -1644,18 +1644,6 @@ impl TcbTable {
         })
     }
 
-    pub(in crate::net::l4::tcp) fn set_socket_id(
-        &self,
-        if_id: NetIfId,
-        local: EndpointAddr,
-        remote: EndpointAddr,
-        socket_id: SocketId,
-    ) -> bool {
-        self.mutate_entry(if_id, local, remote, |entry| {
-            entry.socket_id = socket_id;
-        })
-    }
-
     pub(in crate::net::l4::tcp) fn record_fin_received(
         &self,
         if_id: NetIfId,
