@@ -580,11 +580,8 @@ impl Future for DeviceQueueWaitFuture<'_> {
 
 /// Submit the leases of one TX queue of a port, in admission order.
 async fn tx_worker(handle: Arc<NetDeviceHandle>, queue: usize) {
+    // begin_submission moves the admitted lease's descriptor allocation here.
     let mut scratch = Vec::new();
-    if scratch.try_reserve_exact(handle.max_tx_segments()).is_err() {
-        log::error!(target: "net::device", "failed to reserve TX descriptor scratch");
-        return;
-    }
     // LOOP_PROOF: mode=event; reason=The worker awaits its port's lease queue when empty and returns once the port's stop closes admission.;
     loop {
         if !handle.active.load(Ordering::Acquire) {
@@ -937,6 +934,10 @@ pub fn register_port_in(
         guard.handles.insert(if_id, handle);
     }
 
+    if let Err(error) = start_workers_for_port_in(runtime, if_id) {
+        return Err(finish_failed_registration(runtime, if_id, error));
+    }
+
     // Seed link state before start can report a fresher hardware observation.
     // Start callbacks own subsequent updates, including synchronous link-up.
     let initial_link_state = if info.flags & NETDEV_FLAG_LINK_UP != 0 {
@@ -964,10 +965,6 @@ pub fn register_port_in(
             if_id,
             "device handle missing after registration",
         ));
-    }
-
-    if let Err(error) = start_workers_for_port_in(runtime, if_id) {
-        return Err(finish_failed_registration(runtime, if_id, error));
     }
 
     if let Err(err) =
