@@ -29,29 +29,51 @@ pub(super) enum Checkpoint {
     KernelHandoffReady,
 }
 
-/// Owns the bounded text of the current attempt. A checkpoint replaces the
-/// previous status in the serialized variable and can be written after the
-/// firmware allocator has been retired.
-pub(super) struct BootLog {
+pub(super) struct BootLog(Option<CurrentAttempt>);
+
+/// Holds permission to replace CURRENT once the preceding attempt has been
+/// preserved. Checkpoints remain writable after the firmware allocator retires.
+struct CurrentAttempt {
     bytes: [u8; CAPACITY],
     len: usize,
 }
 
 impl BootLog {
     pub(super) fn start() -> Self {
-        if let Err(status) = rotate() {
-            serial_println!("[BootLog] Log rotation incomplete: {status:?}");
+        match rotate() {
+            Ok(()) => {
+                let mut attempt = CurrentAttempt {
+                    bytes: [0; CAPACITY],
+                    len: 0,
+                };
+                attempt.note(format_args!("=== ExoRust Boot Log ==="));
+                attempt.publish(Checkpoint::Started);
+                Self(Some(attempt))
+            }
+            Err(status) => {
+                serial_println!(
+                    "[BootLog] Log rotation failed; current record preserved: {status:?}"
+                );
+                Self(None)
+            }
         }
-        let mut log = Self {
-            bytes: [0; CAPACITY],
-            len: 0,
-        };
-        log.note(format_args!("=== ExoRust Boot Log ==="));
-        log.publish(Checkpoint::Started);
-        log
     }
 
     pub(super) fn note(&mut self, args: fmt::Arguments<'_>) {
+        if let Some(attempt) = &mut self.0 {
+            attempt.note(args);
+        }
+    }
+
+    pub(super) fn publish(&mut self, checkpoint: Checkpoint) {
+        if let Some(attempt) = &mut self.0 {
+            attempt.publish(checkpoint);
+        }
+    }
+}
+
+impl CurrentAttempt {
+    fn note(&mut self, args: fmt::Arguments<'_>) {
         let mut writer = BufferWriter {
             bytes: &mut self.bytes[self.len..CAPACITY - CHECKPOINT_SPACE],
             len: 0,
@@ -61,7 +83,7 @@ impl BootLog {
         }
     }
 
-    pub(super) fn publish(&mut self, checkpoint: Checkpoint) {
+    fn publish(&mut self, checkpoint: Checkpoint) {
         let mut writer = BufferWriter {
             bytes: &mut self.bytes[self.len..],
             len: 0,
