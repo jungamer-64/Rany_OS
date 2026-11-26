@@ -7,6 +7,10 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
 
+// Limits for the runner's CPU hotplug queries and pending completion events.
+const MAX_QMP_FRAME_BYTES: usize = 1024 * 1024;
+const MAX_PENDING_CPU_EVENTS: usize = 64;
+
 #[derive(Debug)]
 pub enum QmpError {
     Io {
@@ -99,10 +103,16 @@ impl HotpluggableCpu {
         Ok(Self {
             driver: Box::from(driver),
             properties,
-            qom_path: object
-                .get("qom-path")
-                .and_then(Value::as_str)
-                .map(Box::from),
+            qom_path: match object.get("qom-path") {
+                None => None,
+                Some(Value::String(path)) => Some(path.as_str().into()),
+                Some(_) => {
+                    return Err(QmpError::Protocol {
+                        operation: "query-hotpluggable-cpus",
+                        detail: "CPU entry has a non-string 'qom-path'".into(),
+                    });
+                }
+            },
         })
     }
 
@@ -376,8 +386,23 @@ impl QmpClient {
         // LOOP_PROOF: mode=event; reason=Each deadline-bound read delivers a queued event or the matching command response, and malformed responses or deadline expiry return an error.;
         loop {
             let response = self.read_message(deadline, "command response")?;
-            if response.get("event").is_some() {
-                self.events.push_back(response);
+            if let Some(event) = response.get("event") {
+                let name = event.as_str().ok_or_else(|| QmpError::Protocol {
+                    operation: "command response",
+                    detail: "event name is not a string".into(),
+                })?;
+                if matches!(
+                    name,
+                    "DEVICE_DELETED" | "DEVICE_UNPLUG_GUEST_ERROR" | "ACPI_DEVICE_OST"
+                ) {
+                    if self.events.len() == MAX_PENDING_CPU_EVENTS {
+                        return Err(QmpError::Protocol {
+                            operation: "command response",
+                            detail: "too many pending CPU hotplug events".into(),
+                        });
+                    }
+                    self.events.push_back(response);
+                }
                 continue;
             }
             if response.get("id").and_then(Value::as_u64) != Some(command_id) {
@@ -417,32 +442,56 @@ impl QmpClient {
         deadline: Instant,
         operation: &'static str,
     ) -> Result<Value, QmpError> {
-        let remaining = deadline
-            .checked_duration_since(Instant::now())
-            .ok_or(QmpError::TimedOut { operation })?;
-        self.reader
-            .get_mut()
-            .set_read_timeout(Some(remaining))
-            .map_err(|source| QmpError::Io { operation, source })?;
-        let mut line = String::new();
-        match self.reader.read_line(&mut line) {
-            Ok(0) => Err(QmpError::Protocol {
-                operation,
-                detail: String::from("transport closed before a complete message").into_boxed_str(),
-            }),
-            Ok(_) => {
-                serde_json::from_str(&line).map_err(|source| QmpError::Json { operation, source })
+        let mut frame = Vec::new();
+        // LOOP_PROOF: mode=event; reason=Each read consumes bytes within the frame limit or ends at the deadline, delimiter, or EOF.;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(QmpError::TimedOut { operation });
             }
-            Err(source)
-                if matches!(
-                    source.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) =>
-            {
-                Err(QmpError::TimedOut { operation })
+            self.reader
+                .get_mut()
+                .set_read_timeout(Some(remaining))
+                .map_err(|source| QmpError::Io { operation, source })?;
+            let chunk = self
+                .reader
+                .fill_buf()
+                .map_err(|source| match source.kind() {
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
+                        QmpError::TimedOut { operation }
+                    }
+                    _ => QmpError::Io { operation, source },
+                })?;
+            if chunk.is_empty() {
+                return Err(QmpError::Protocol {
+                    operation,
+                    detail: "transport closed before a complete message".into(),
+                });
             }
-            Err(source) => Err(QmpError::Io { operation, source }),
+            let newline = chunk.iter().position(|&b| b == b'\n');
+            let take = newline.map_or(chunk.len(), |index| index + 1);
+            let available = MAX_QMP_FRAME_BYTES - frame.len();
+            if take > available || (take == available && newline.is_none()) {
+                return Err(QmpError::Protocol {
+                    operation,
+                    detail: "message exceeds the QMP frame limit".into(),
+                });
+            }
+            frame.extend_from_slice(&chunk[..take]);
+            self.reader.consume(take);
+            if newline.is_some() {
+                break;
+            }
         }
+        let payload = frame
+            .strip_suffix(b"\r\n")
+            .ok_or_else(|| QmpError::Protocol {
+                operation,
+                detail: "message is missing its CRLF terminator".into(),
+            })?;
+        serde_json::from_slice::<Map<String, Value>>(payload)
+            .map(Value::Object)
+            .map_err(|source| QmpError::Json { operation, source })
     }
 }
 
@@ -520,6 +569,82 @@ fn qom_path_is_within(path: &str, parent: &str) -> bool {
 mod tests {
     use super::*;
     use std::net::TcpListener;
+
+    fn connected_pair() -> (QmpClient, TcpStream) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let writer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (peer, _) = listener.accept().unwrap();
+        (
+            QmpClient {
+                reader: BufReader::new(writer.try_clone().unwrap()),
+                writer,
+                events: VecDeque::new(),
+                next_command_id: 1,
+            },
+            peer,
+        )
+    }
+
+    #[test]
+    fn qmp_frame_limit_includes_the_delimiter_and_preserves_the_next_frame() {
+        let (mut client, mut peer) = connected_pair();
+        let sender = thread::spawn(move || {
+            let mut frame = b"{}".to_vec();
+            frame.resize(MAX_QMP_FRAME_BYTES - 2, b' ');
+            frame.extend_from_slice(b"\r\n");
+            peer.write_all(&frame).unwrap();
+            peer.write_all(b"{\"id\":2}\r\n").unwrap();
+            frame.insert(0, b' ');
+            peer.write_all(&frame).unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        assert_eq!(client.read_message(deadline, "test").unwrap(), json!({}));
+        assert_eq!(
+            client.read_message(deadline, "test").unwrap(),
+            json!({"id":2})
+        );
+        assert!(matches!(
+            client.read_message(deadline, "test"),
+            Err(QmpError::Protocol { .. })
+        ));
+        sender.join().unwrap();
+    }
+
+    #[test]
+    fn qmp_requires_a_complete_object_frame() {
+        for payload in [b"{}".as_slice(), b"{}\n", b"[]\r\n"] {
+            let (mut client, mut peer) = connected_pair();
+            peer.write_all(payload).unwrap();
+            peer.shutdown(std::net::Shutdown::Write).unwrap();
+            assert!(
+                client
+                    .read_message(Instant::now() + Duration::from_secs(2), "test")
+                    .is_err()
+            );
+        }
+        assert!(
+            HotpluggableCpu::decode(json!({"type":"cpu","props":{},"qom-path":false})).is_err()
+        );
+    }
+
+    #[test]
+    fn pending_event_limit_applies_only_to_cpu_events() {
+        let (mut client, mut peer) = connected_pair();
+        for _ in 0..=MAX_PENDING_CPU_EVENTS {
+            write_json(&mut peer, &json!({"event":"RESET"}));
+        }
+        for _ in 0..MAX_PENDING_CPU_EVENTS {
+            write_json(&mut peer, &json!({"event":"DEVICE_DELETED"}));
+        }
+        write_json(&mut peer, &json!({"return":{}, "id":1}));
+        write_json(&mut peer, &json!({"event":"DEVICE_DELETED"}));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        assert!(client.execute("first", Map::new(), deadline).is_ok());
+        assert!(matches!(
+            client.execute("second", Map::new(), deadline),
+            Err(QmpError::Protocol { .. })
+        ));
+    }
 
     fn read_json(reader: &mut BufReader<TcpStream>) -> Value {
         let mut line = String::new();
