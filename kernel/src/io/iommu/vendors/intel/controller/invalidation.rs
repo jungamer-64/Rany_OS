@@ -44,20 +44,6 @@ impl IommuController {
             }
             InvalidateKind::Domain => self.invalidate_domain_nosync(req.domain_id, any_ats),
             InvalidateKind::Global => self.invalidate_global_nosync(),
-            InvalidateKind::Context { source_id } => self.invalidate_context_nosync(source_id),
-            InvalidateKind::Iec { global, index } => self.invalidate_iec_nosync(global, index),
-            InvalidateKind::PasidIotlb { pasid } => {
-                if self.is_queued_invalidation_enabled() {
-                    self.qi_invalidate_pasid_iotlb(req.domain_id, pasid)?;
-                }
-                Ok(())
-            }
-            InvalidateKind::PasidCache { pasid: _ } => {
-                if self.is_queued_invalidation_enabled() {
-                    self.qi_invalidate_pasid_cache_domain(req.domain_id)?;
-                }
-                Ok(())
-            }
         }
     }
 
@@ -197,19 +183,6 @@ impl IommuController {
             // SAFETY: this controller owns the register resource, and the
             // direct routine observes global IOTLB completion before returning.
             unsafe { self.invalidate_iotlb_global()? };
-        }
-        Ok(())
-    }
-
-    pub(crate) fn invalidate_context_nosync(&self, source_id: u16) -> Result<(), IommuError> {
-        if self.is_queued_invalidation_enabled() {
-            if source_id != 0 {
-                // VT-d §6.5.2.1: For device-selective (granularity=3), DID is ignored;
-                // only the SID matters. Pass domain_id=0 as it is unused.
-                self.qi_invalidate_context_device(source_id, 0)?;
-            } else {
-                self.qi_invalidate_context_global()?;
-            }
         }
         Ok(())
     }

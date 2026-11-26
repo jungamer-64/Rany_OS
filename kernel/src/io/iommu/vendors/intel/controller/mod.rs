@@ -499,22 +499,9 @@ impl IommuController {
     /// exhaustion leave pending IOVAs quarantined. Submission is not completion.
     #[deny(unsafe_code)]
     pub fn invalidate_iotlb_global_sync(&self) -> Result<(), IommuError> {
-        use crate::io::iommu::vendors::intel::controller::qi_ops::InvalidationOps;
+        use crate::io::iommu::common::domain::{InvalidateRequest, IommuInvalidator};
 
-        let flush = self.begin_iova_global_flush()?;
-        self.invalidate_global_nosync()?;
-        if self.is_queued_invalidation_enabled() {
-            self.qi_wait_sync()?;
-        }
-        if let Some(flush) = flush {
-            // SAFETY: the global path invalidates IOTLB and every enabled ATS
-            // device, then observes hardware completion before releasing IOVAs.
-            #[expect(unsafe_code, reason = "global IOTLB/ATS completion was observed above")]
-            unsafe {
-                flush.complete_after_global_invalidation()
-            };
-        }
-        Ok(())
+        self.invalidate(InvalidateRequest::global())
     }
 
     /// Invalidate context cache globally (synchronous).
@@ -649,18 +636,6 @@ impl IommuController {
             set = true;
             notifier
         });
-        if set && let Some(notifier) = self.security_notifier.get() {
-            match self.domains.lock() {
-                Ok(domains) => {
-                    for domain in domains.values() {
-                        let _ = domain.set_security_notifier(Arc::clone(notifier));
-                    }
-                }
-                Err(_) => {
-                    log::error!("[IOMMU] Domains map poisoned while propagating security notifier");
-                }
-            }
-        }
         set
     }
 

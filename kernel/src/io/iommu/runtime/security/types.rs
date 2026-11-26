@@ -30,12 +30,6 @@ pub enum SecurityEvent {
         reason: IsolationReason,
     },
 
-    /// Quarantine queue has been poisoned (fatal error)
-    QuarantinePoisoned {
-        /// Affected domain ID
-        domain_id: u16,
-    },
-
     /// Security events were dropped due to overflow
     EventsDropped {
         /// Number of events dropped since last report
@@ -131,7 +125,6 @@ impl Default for IsolationDecision {
 pub enum EventAggregateKey {
     DmaViolation { source_id: u16 },
     DeviceIsolated { source_id: u16 },
-    QuarantinePoisoned { domain_id: u16 },
     FaultStorm { source_id: u16 },
     Other,
 }
@@ -145,11 +138,6 @@ impl From<&SecurityEvent> for EventAggregateKey {
             SecurityEvent::DeviceIsolated { source_id, .. } => EventAggregateKey::DeviceIsolated {
                 source_id: *source_id,
             },
-            SecurityEvent::QuarantinePoisoned { domain_id, .. } => {
-                EventAggregateKey::QuarantinePoisoned {
-                    domain_id: *domain_id,
-                }
-            }
             SecurityEvent::FaultStormDetected { source_id, .. } => EventAggregateKey::FaultStorm {
                 source_id: *source_id,
             },

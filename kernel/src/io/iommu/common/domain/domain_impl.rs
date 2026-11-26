@@ -58,8 +58,6 @@ impl IommuDomain {
             pt_levels,
             page_table_pool,
             pte_format,
-            security_notifier: crate::sync::InitOnce::new(),
-            poisoned: AtomicBool::new(false),
             dma_registry: DmaResourceRegistry::new(),
             pending_pt_release: PoisonLock::new(
                 crate::io::iommu::common::dma::page_table_pool::TableRetirement::default(),
@@ -205,22 +203,6 @@ mod tests {
 }
 
 impl IommuDomain {
-    /// Attach a security notifier for fatal domain errors (best-effort, one-time).
-    pub(crate) fn set_security_notifier(&self, notifier: Arc<dyn SecurityNotifier>) -> bool {
-        let mut set = false;
-        self.security_notifier.call_once(|| {
-            set = true;
-            notifier
-        });
-        set
-    }
-
-    pub(super) fn notify_security(&self, event: SecurityEvent) {
-        if let Some(notifier) = self.security_notifier.get() {
-            notifier.notify(event);
-        }
-    }
-
     /// The returned guards protect ledger removal through the PTE commit.
     pub(super) fn verify_and_lock_for_clear(
         &self,
@@ -233,9 +215,6 @@ impl IommuDomain {
         ),
         IommuError,
     > {
-        if self.poisoned.load(Ordering::Acquire) {
-            return Err(IommuError::Poisoned);
-        }
         let (start_shard, end_shard) = self.shard_range(iova, size)?;
         let guards = self.lock_shards(start_shard, end_shard)?;
         let mapping = guards[0]
@@ -365,10 +344,6 @@ impl IommuDomain {
         phys: u64,
         size: u64,
     ) -> Result<(), IommuError> {
-        if self.poisoned.load(Ordering::Acquire) {
-            return Err(IommuError::Poisoned);
-        }
-
         if iova & 0xFFF != 0 || phys & 0xFFF != 0 || size & 0xFFF != 0 {
             return Err(IommuError::InvalidAlignment);
         }
@@ -452,10 +427,6 @@ impl IommuDomain {
         read: bool,
         write: bool,
     ) -> Result<(), IommuError> {
-        if self.poisoned.load(Ordering::Acquire) {
-            return Err(IommuError::Poisoned);
-        }
-
         // SECURITY: Still perform basic alignment and width checks for stability and safety.
         // Privileged mappings must still be page-aligned to prevent unexpected hardware behavior.
         if (iova | phys | size) & 0xFFF != 0 {

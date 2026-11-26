@@ -196,6 +196,7 @@ impl<'a> PageTableScope<'a> {
             parent_phys: None,
         })
     }
+    #[cfg(feature = "qemu-test-export")]
     pub(in crate::io::iommu) fn ptr(&self) -> *mut SlPte {
         self.allocation
             .as_ref()
@@ -349,14 +350,9 @@ pub fn phys_to_virt_usize(phys: u64) -> usize {
 pub struct HardwareTable<T: Sized + Copy> {
     /// Virtual address (NonNull for null safety)
     ptr: NonNull<T>,
-    /// Physical address (required by VT-d hardware)
-    phys: u64,
     /// Number of entries in the table
     count: usize,
-    /// Allocation size in bytes (rounded to page size)
-    alloc_bytes: usize,
-    /// Number of 4KiB frames backing the table
-    backing: Option<crate::mm::phys::frame_allocator::PhysicalAllocation>,
+    backing: crate::mm::phys::frame_allocator::PhysicalAllocation,
     /// PhantomData for T
     _marker: PhantomData<T>,
 }
@@ -433,10 +429,8 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
 
         Ok(Self {
             ptr,
-            phys,
             count,
-            alloc_bytes,
-            backing: Some(backing),
+            backing,
             _marker: PhantomData,
         })
     }
@@ -469,7 +463,7 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
     /// pointers, etc.
     #[inline]
     pub fn phys_addr(&self) -> u64 {
-        self.phys
+        self.backing.as_u64()
     }
 
     /// Get the number of valid entries
@@ -505,17 +499,18 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
     }
 }
 
+#[cfg(feature = "qemu-test-export")]
 impl<T: Sized + Copy> HardwareTable<T> {
     /// Release a hardware table only after its last translation user retires.
     /// # Safety
     /// Every device/controller reference to this table has been removed, and
     /// required context, paging-structure, IOTLB and ATS invalidations completed
     /// after removal. No CPU borrower remains. Submission is insufficient.
-    pub(in crate::io::iommu) unsafe fn retire_after_invalidation(mut self) {
-        crate::security::dma::unregister_protected_range(self.phys, self.alloc_bytes as u64);
-        let Some(backing) = self.backing.take() else {
-            return;
-        };
-        backing.release();
+    pub(in crate::io::iommu) unsafe fn retire_after_invalidation(self) {
+        crate::security::dma::unregister_protected_range(
+            self.backing.as_u64(),
+            self.backing.size_bytes(),
+        );
+        self.backing.release();
     }
 }

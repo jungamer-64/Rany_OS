@@ -37,7 +37,7 @@ pub struct PanicDmaRecordInfo {
 }
 
 struct PanicDmaPool {
-    backing: crate::mm::phys::frame_allocator::PhysicalAllocation,
+    _backing: crate::mm::phys::frame_allocator::PhysicalAllocation,
     base_phys: u64,
     size: u64,
     virt_base: usize,
@@ -104,7 +104,7 @@ pub fn init_panic_dma_pool(bytes: usize) -> Result<(), IommuError> {
     }
 
     let pool = PanicDmaPool {
-        backing: phys,
+        _backing: phys,
         base_phys: phys_addr.as_u64(),
         size,
         virt_base,

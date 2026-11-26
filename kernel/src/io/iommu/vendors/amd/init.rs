@@ -121,12 +121,11 @@ pub(super) fn init_command_state(unit: &AmdIommuUnit) -> Result<AmdCommandState,
 
     let sync_address = sync_phys.as_u64();
     let mut state = AmdCommandState {
-        backing: Some(phys_base),
-        sync_backing: Some(sync_phys),
+        _backing: phys_base,
+        _sync_backing: sync_phys,
         buffer,
         sync_ptr,
         sync_phys: sync_address,
-        frame_count,
         seq: AtomicU64::new(0),
     };
 

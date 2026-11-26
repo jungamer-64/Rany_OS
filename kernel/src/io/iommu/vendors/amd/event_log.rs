@@ -48,7 +48,7 @@ impl AmdEventEntry {
 
 #[derive(Debug)]
 pub(crate) struct AmdEventLog {
-    backing: crate::mm::phys::frame_allocator::PhysicalAllocation,
+    _backing: crate::mm::phys::frame_allocator::PhysicalAllocation,
     phys_base: u64,
     virt_base: NonNull<u32>,
     size_bytes: u64,
@@ -84,7 +84,7 @@ impl AmdEventLog {
 
         Ok(Self {
             phys_base: phys_base.as_u64(),
-            backing: phys_base,
+            _backing: phys_base,
             virt_base: entry_ptr,
             size_bytes,
             processing: AtomicBool::new(false),

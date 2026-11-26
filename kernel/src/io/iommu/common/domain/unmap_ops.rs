@@ -42,16 +42,6 @@ impl IommuDomain {
         self.mapped_size.load(Ordering::Relaxed)
     }
 
-    pub(crate) fn poison(&self) {
-        if !self.poisoned.swap(true, Ordering::AcqRel) {
-            self.notify_security(SecurityEvent::QuarantinePoisoned { domain_id: self.id });
-            log::error!(
-                "[IommuDomain] domain {} poisoned due to rollback failure",
-                self.id
-            );
-        }
-    }
-
     /// Lookup a mapping by its IOVA base.
     pub fn mapping(&self, iova: u64) -> Option<DmaMapping> {
         let shard = self.shard_for_iova(iova);

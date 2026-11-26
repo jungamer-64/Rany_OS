@@ -94,12 +94,12 @@ impl AmdCommandWaitToken {
 
 #[derive(Debug)]
 pub(crate) struct AmdCommandState {
-    pub(super) backing: Option<crate::mm::phys::frame_allocator::PhysicalAllocation>,
-    pub(super) sync_backing: Option<crate::mm::phys::frame_allocator::PhysicalAllocation>,
+    // Kept published for the lifetime of the command unit.
+    pub(super) _backing: crate::mm::phys::frame_allocator::PhysicalAllocation,
+    pub(super) _sync_backing: crate::mm::phys::frame_allocator::PhysicalAllocation,
     pub(super) buffer: cmd::AmdCommandBuffer,
     pub(super) sync_ptr: NonNull<u64>,
     pub(super) sync_phys: u64,
-    pub(super) frame_count: usize,
     pub(super) seq: AtomicU64,
 }
 
@@ -671,22 +671,6 @@ impl IommuInvalidator for AmdIommuDriver {
                 InvalidateKind::Global => {
                     self.invalidate_iotlb_global()?;
                 }
-                InvalidateKind::Context { source_id } => {
-                    let device = Self::device_id_from_devid(0, source_id);
-                    self.invalidate_device_entry(device)?;
-                    if ats {
-                        // For context invalidation with ATS, flush the entire device IOTLB
-                        self.invalidate_iotlb_pages(device, 0, u64::MAX)?;
-                    }
-                }
-                _ => {
-                    // IEC, PasidIotlb, etc. are not yet fully supported on AMD backend
-                    // Fall back to global flush for safety if requested and unsupported
-                    if ats {
-                        self.invalidate_all_entries()?;
-                        self.invalidate_global_device_tlbs()?;
-                    }
-                }
             }
         }
 
@@ -723,10 +707,6 @@ impl IommuInvalidator for AmdIommuDriver {
                 InvalidateKind::Global => {
                     // Fall back to sync path for now as global is rare
                     self.invalidate_iotlb_global()?;
-                }
-                _ => {
-                    // Fall back to sync path for context for now
-                    self.invalidate(request)?;
                 }
             }
             Ok(())

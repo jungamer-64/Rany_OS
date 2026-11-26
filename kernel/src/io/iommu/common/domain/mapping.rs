@@ -102,10 +102,6 @@ impl IommuDomain {
 
     /// Unmap a DMA region
     pub fn unmap(&self, iova: u64) -> Result<DmaMapping, IommuError> {
-        if self.poisoned.load(Ordering::Acquire) {
-            return Err(IommuError::Poisoned);
-        }
-
         let _paging_guard = self.paging_lock.lock();
         self.unmap_locked(iova)
     }

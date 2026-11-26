@@ -7,16 +7,14 @@ use crate::io::iommu::common::dma::page_table_pool::{dec_ref, get_ref_count};
 use crate::io::iommu::common::tables::{
     PT_ENTRIES, PageTableScope, SlPte, phys_to_virt_usize, virt_ptr_to_phys,
 };
-use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};
 use crate::io::iommu::types::{DmaMapping, IommuDomainType, IommuError, PteFormat};
-use crate::sync::InitOnce;
 use crate::sync::RwLock;
 use crate::sync::{IrqMutex, PoisonLock, PoisonLockGuard};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitflags::bitflags;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 mod domain_impl;
 mod leaf_walk;
 mod mapping;
@@ -61,28 +59,6 @@ pub enum InvalidateKind {
     Domain,
     /// Global invalidation (all domains)
     Global,
-    /// Context cache invalidation for device
-    Context {
-        /// Source ID (bus << 8 | devfn)
-        source_id: u16,
-    },
-    /// Interrupt Entry Cache invalidation
-    Iec {
-        /// Global (true) or indexed (false with index)
-        global: bool,
-        /// Index for non-global invalidation
-        index: u16,
-    },
-    /// PASID-based IOTLB invalidation (Scalable Mode)
-    PasidIotlb {
-        /// Target PASID
-        pasid: u32,
-    },
-    /// PASID cache invalidation (Scalable Mode)
-    PasidCache {
-        /// Target PASID (None = domain-wide)
-        pasid: Option<u32>,
-    },
 }
 
 bitflags! {
@@ -133,16 +109,6 @@ impl InvalidateRequest {
         }
     }
 
-    /// Create a context cache invalidation request
-    #[inline]
-    pub fn context(domain_id: u16, source_id: u16) -> Self {
-        Self {
-            domain_id,
-            kind: InvalidateKind::Context { source_id },
-            flags: InvalidateFlags::empty(),
-        }
-    }
-
     /// Add ATS-aware flag
     #[inline]
     pub fn with_ats(mut self) -> Self {
@@ -155,26 +121,6 @@ impl InvalidateRequest {
     pub fn with_drain(mut self) -> Self {
         self.flags |= InvalidateFlags::DRAIN_READ | InvalidateFlags::DRAIN_WRITE;
         self
-    }
-
-    /// Create a PASID-based IOTLB invalidation request (Scalable Mode)
-    #[inline]
-    pub fn pasid_iotlb(domain_id: u16, pasid: u32) -> Self {
-        Self {
-            domain_id,
-            kind: InvalidateKind::PasidIotlb { pasid },
-            flags: InvalidateFlags::empty(),
-        }
-    }
-
-    /// Create a PASID cache invalidation request (Scalable Mode)
-    #[inline]
-    pub fn pasid_cache(domain_id: u16, pasid: Option<u32>) -> Self {
-        Self {
-            domain_id,
-            kind: InvalidateKind::PasidCache { pasid },
-            flags: InvalidateFlags::empty(),
-        }
     }
 }
 
@@ -706,10 +652,6 @@ pub struct IommuDomain {
     page_table_pool: Arc<crate::io::iommu::common::dma::page_table_pool::PageTablePool>,
     /// PTE format (Intel or AMD)
     pte_format: PteFormat,
-    /// Optional security notifier for fatal domain errors
-    security_notifier: InitOnce<Arc<dyn SecurityNotifier>>,
-    /// Fatal error flag; once set, the domain rejects new map/unmap operations.
-    poisoned: AtomicBool,
     /// Registered mapping extents keep teardown busy until their completion
     /// owners return them. Registry observation cannot release their backing.
     dma_registry: DmaResourceRegistry,

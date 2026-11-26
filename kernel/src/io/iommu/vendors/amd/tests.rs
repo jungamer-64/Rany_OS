@@ -12,7 +12,6 @@ use crate::io::iommu::common::dma::iova_allocator::IovaAllocator;
 use crate::io::iommu::common::dma::page_table_pool::PageTablePool;
 use crate::io::iommu::common::domain::IommuDomain as DomainState;
 use crate::io::iommu::runtime::command::queue::{CommandQueue, IommuCommandKind};
-use crate::io::iommu::runtime::security::SecurityNotifier;
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 use crate::mm::types::PAGE_SIZE_4K;
 use acpi_driver::ivrs::IvhdDeviceEntry;
@@ -207,13 +206,6 @@ fn test_map_for_device_rejects_exclusion_range() {
 // Wave1 test support
 // ---------------------------------------------------------------------------
 
-#[derive(Debug)]
-struct TestMockNotifier;
-
-impl SecurityNotifier for TestMockNotifier {
-    fn notify(&self, _event: crate::io::iommu::runtime::security::SecurityEvent) {}
-}
-
 fn make_domain() -> DomainState {
     DomainState::new(
         1,
@@ -336,16 +328,6 @@ fn test_dma_mask_respects_32bit_limit() {
         .unwrap();
     assert!(iova < 0x1_0000_0000, "IOVA {:#x} exceeds 32-bit mask", iova);
     allocator.free(iova, size).unwrap();
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_security_notifier_dispatch() {
-    let domain = make_domain();
-    let notifier: alloc::sync::Arc<dyn SecurityNotifier> = alloc::sync::Arc::new(TestMockNotifier);
-
-    assert!(domain.set_security_notifier(alloc::sync::Arc::clone(&notifier)));
-    assert!(!domain.set_security_notifier(alloc::sync::Arc::clone(&notifier)));
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

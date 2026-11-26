@@ -57,7 +57,7 @@ pub(crate) struct AmdDeviceTableEntry {
 
 #[derive(Debug)]
 pub(crate) struct AmdDeviceTable {
-    backing: crate::mm::phys::frame_allocator::PhysicalAllocation,
+    _backing: crate::mm::phys::frame_allocator::PhysicalAllocation,
     phys_base: u64,
     virt_base: NonNull<AmdDeviceTableEntry>,
     size_bytes: u64,
@@ -109,7 +109,7 @@ impl AmdDeviceTable {
 
         Ok(Self {
             phys_base: phys_base.as_u64(),
-            backing: phys_base,
+            _backing: phys_base,
             virt_base: entry_ptr,
             size_bytes,
             entry_count: (size_bytes / entry_bytes) as usize,

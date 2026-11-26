@@ -29,13 +29,6 @@ pub(crate) fn log_aggregated_event_summary(key: EventAggregateKey, aggregate: Ev
                 .field("source_id", fmt_hex_u64(source_id as u64, &mut buf1))
                 .field("count", fmt_dec_u64(aggregate.count, &mut buf2))
         }
-        EventAggregateKey::QuarantinePoisoned { domain_id } => {
-            AuditEvent::new(AuditEventType::IommuEvent, 0)
-                .success(false)
-                .message("quarantine_poisoned_summary")
-                .field("domain_id", fmt_dec_u64(domain_id as u64, &mut buf1))
-                .field("count", fmt_dec_u64(aggregate.count, &mut buf2))
-        }
         EventAggregateKey::FaultStorm { source_id } => {
             AuditEvent::new(AuditEventType::IommuEvent, 0)
                 .success(false)
@@ -95,11 +88,6 @@ pub(crate) fn security_event_to_audit(event: SecurityEvent) -> AuditEvent {
                 .message("device_isolated")
                 .field("source_id", fmt_hex_u64(source_id as u64, &mut buf1))
                 .field("reason", reason_str)
-        }
-        SecurityEvent::QuarantinePoisoned { domain_id } => {
-            AuditEvent::new(AuditEventType::IommuEvent, domain_id as u64)
-                .success(false)
-                .message("quarantine_poisoned")
         }
         SecurityEvent::EventsDropped { count } => AuditEvent::new(AuditEventType::IommuEvent, 0)
             .success(false)

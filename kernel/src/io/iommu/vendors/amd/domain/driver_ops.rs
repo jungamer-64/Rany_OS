@@ -239,9 +239,6 @@ impl AmdIommuDriver {
             PteFormat::Amd,
         );
         let domain = Arc::new(domain);
-        if let Some(notifier) = self.security_notifier.get() {
-            let _ = domain.set_security_notifier(Arc::clone(notifier));
-        }
         let info = AmdDomainInfo { domain };
 
         let mut domains = self.domains.lock().map_err(|_| IommuError::Poisoned)?;

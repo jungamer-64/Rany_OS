@@ -113,12 +113,6 @@ pub trait InvalidationOps {
     /// Submit a page-selective Device-TLB invalidation
     fn qi_invalidate_device_tlb_page(&self, source_id: u16, iova: u64) -> Result<(), IommuError>;
 
-    /// Submit a domain PASID cache invalidation
-    fn qi_invalidate_pasid_cache_domain(&self, domain_id: u16) -> Result<(), IommuError>;
-
-    /// Submit a PASID-based IOTLB invalidation
-    fn qi_invalidate_pasid_iotlb(&self, domain_id: u16, pasid: u32) -> Result<(), IommuError>;
-
     /// Submit a wait descriptor and synchronize
     fn qi_wait_sync(&self) -> Result<(), IommuError>;
 
@@ -221,18 +215,6 @@ impl InvalidationOps for IommuController {
     #[inline]
     fn qi_invalidate_device_tlb_page(&self, source_id: u16, iova: u64) -> Result<(), IommuError> {
         let entry = InvalidationQueueEntry::device_tlb_invalidate_page(source_id, iova);
-        self.submit_invalidation(entry)
-    }
-
-    #[inline]
-    fn qi_invalidate_pasid_cache_domain(&self, domain_id: u16) -> Result<(), IommuError> {
-        let entry = InvalidationQueueEntry::pasid_cache_invalidate_domain(domain_id);
-        self.submit_invalidation(entry)
-    }
-
-    #[inline]
-    fn qi_invalidate_pasid_iotlb(&self, domain_id: u16, pasid: u32) -> Result<(), IommuError> {
-        let entry = InvalidationQueueEntry::pasid_iotlb_invalidate(domain_id, pasid);
         self.submit_invalidation(entry)
     }
 
