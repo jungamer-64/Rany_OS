@@ -357,12 +357,6 @@ mod tests {
 
         assert!(HttpClient::split_request_uri(uri).is_none());
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
     #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
     #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
     fn reports_the_peer_alert_number() {
