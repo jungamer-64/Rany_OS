@@ -83,11 +83,6 @@ impl CongestionController {
         }
     }
 
-    /// 初期回復ポイント (ISS) を設定 (RFC 6582)
-    pub fn set_initial_recover(&mut self, iss: u32) {
-        self.recover = iss;
-    }
-
     /// MSS更新時の処理 (RFC 6928: 初期ウィンドウを新MSSに合わせる)
     pub fn update_mss(&mut self, new_mss: u32) {
         let old_mss = self.mss;
@@ -265,10 +260,6 @@ impl TcpCongestionController {
         Self {
             controller: CongestionController::with_iss(iss),
         }
-    }
-
-    pub fn set_initial_recover(&mut self, iss: u32) {
-        self.controller.set_initial_recover(iss);
     }
 
     pub fn update_mss(&mut self, mss: u32) {

@@ -30,29 +30,9 @@ impl Ipv4Processor {
         }
     }
 
-    /// Get configuration
-    pub fn config(&self) -> &Ipv4Config {
-        &self.config
-    }
-
     /// Set configuration
     pub fn set_config(&mut self, config: Ipv4Config) {
         self.config = config;
-    }
-
-    /// Get statistics
-    pub fn stats(&self) -> &Ipv4Stats {
-        &self.stats
-    }
-
-    /// Get fragment reassembler statistics
-    pub fn fragment_stats(&self) -> &FragmentStats {
-        self.reassembler.stats()
-    }
-
-    /// Get PMTU cache statistics
-    pub fn pmtu_stats(&self) -> &PmtuStats {
-        self.pmtu_cache.stats()
     }
 
     /// Get Path MTU for a destination

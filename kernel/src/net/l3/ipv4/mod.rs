@@ -31,7 +31,6 @@ mod processor_impl;
 mod processor_packet_path_impl;
 mod processor_runtime_impl;
 mod processor_security_impl;
-mod processor_tx_impl;
 mod protocol_impl;
 pub use checksum_impl::{data_checksum, pseudo_header_checksum};
 pub use fragment_impl::*;

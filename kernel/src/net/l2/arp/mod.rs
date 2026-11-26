@@ -154,11 +154,6 @@ impl ArpPacket {
         self.sender_ip = *ip.as_bytes();
     }
 
-    /// Get target MAC address
-    pub fn target_mac(&self) -> MacAddress {
-        MacAddress::new(self.target_mac)
-    }
-
     /// Set target MAC address
     pub fn set_target_mac(&mut self, mac: MacAddress) {
         self.target_mac = *mac.as_bytes();
@@ -231,10 +226,6 @@ pub struct ArpEntry {
     pub timestamp: u64,
     /// Entry state
     pub state: ArpEntryState,
-    /// Number of ARP requests sent for this entry
-    pub request_count: u8,
-    /// Timestamp of last ARP request sent
-    pub last_request_time: u64,
 }
 
 /// ARP entry state
@@ -244,8 +235,6 @@ pub enum ArpEntryState {
     Incomplete,
     /// Entry is resolved and valid
     Resolved,
-    /// Entry is stale (needs refresh)
-    Stale,
 }
 
 impl ArpEntry {
@@ -256,8 +245,6 @@ impl ArpEntry {
             mac,
             timestamp,
             state: ArpEntryState::Resolved,
-            request_count: 0,
-            last_request_time: 0,
         }
     }
 
@@ -268,8 +255,6 @@ impl ArpEntry {
             mac: MacAddress::ZERO,
             timestamp,
             state: ArpEntryState::Incomplete,
-            request_count: 1,
-            last_request_time: timestamp,
         }
     }
 
@@ -288,12 +273,6 @@ const ARP_CACHE_TIMEOUT: u64 = 20 * 60 * 1000;
 /// ARP incomplete entry timeout (3 seconds)
 const ARP_INCOMPLETE_TIMEOUT: u64 = 3 * 1000;
 
-/// Minimum interval between ARP requests for the same IP (1 second)
-const ARP_REQUEST_INTERVAL: u64 = 1000;
-
-/// Maximum number of ARP requests before giving up
-const ARP_MAX_REQUESTS: u8 = 5;
-
 /// ARP cache for IPv4-to-MAC resolution
 pub struct ArpCache {
     /// Cache entries
@@ -310,8 +289,6 @@ pub struct ArpStats {
     pub misses: AtomicU64,
     /// Entries added
     pub entries_added: AtomicU64,
-    /// Entries expired
-    pub entries_expired: AtomicU64,
 }
 
 impl Default for ArpStats {
@@ -320,7 +297,6 @@ impl Default for ArpStats {
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
             entries_added: AtomicU64::new(0),
-            entries_expired: AtomicU64::new(0),
         }
     }
 }
@@ -335,7 +311,6 @@ impl ArpCache {
                 hits: AtomicU64::new(0),
                 misses: AtomicU64::new(0),
                 entries_added: AtomicU64::new(0),
-                entries_expired: AtomicU64::new(0),
             },
         }
     }
@@ -484,118 +459,6 @@ impl ArpCache {
         }
 
         false
-    }
-
-    /// Remove an entry
-    pub fn remove(&self, ip: Ipv4Address) {
-        let mut entries = match self.entries.lock() {
-            Ok(g) => g,
-            Err(_) => {
-                log::error!("[NET] ARP cache lock poisoned - remove ignored");
-                return;
-            }
-        };
-
-        for entry in entries.iter_mut() {
-            if let Some(e) = entry
-                && e.ip == ip
-            {
-                *entry = None;
-                return;
-            }
-        }
-    }
-
-    /// Remove an entry only if it is in the Incomplete state.
-    ///
-    /// ブートストラップ同期コンテキストで `current_time` が進まない場合、
-    /// `is_pending()` が永続的に true を返し ARP 要求の再送が抑止される。
-    /// Incomplete エントリのみを削除し、Resolved エントリはそのまま保持する。
-    pub fn remove_if_incomplete(&self, ip: Ipv4Address) {
-        let mut entries = match self.entries.lock() {
-            Ok(g) => g,
-            Err(_) => {
-                log::error!("[NET] ARP cache lock poisoned - remove_if_incomplete ignored");
-                return;
-            }
-        };
-
-        for entry in entries.iter_mut() {
-            if let Some(e) = entry
-                && e.ip == ip
-                && e.state == ArpEntryState::Incomplete
-            {
-                *entry = None;
-                return;
-            }
-        }
-    }
-
-    /// Expire old entries
-    pub fn expire_old(&self, current_time: u64) {
-        let mut entries = match self.entries.lock() {
-            Ok(g) => g,
-            Err(_) => {
-                log::error!("[NET] ARP cache lock poisoned - expire_old ignored");
-                return;
-            }
-        };
-
-        for entry in entries.iter_mut() {
-            if let Some(e) = entry {
-                let timeout = if e.state == ArpEntryState::Incomplete {
-                    ARP_INCOMPLETE_TIMEOUT
-                } else {
-                    ARP_CACHE_TIMEOUT
-                };
-
-                if e.is_expired(current_time, timeout) {
-                    *entry = None;
-                    self.stats.entries_expired.fetch_add(1, Ordering::Relaxed);
-                }
-            }
-        }
-    }
-
-    /// Get statistics
-    pub fn stats(&self) -> (u64, u64, u64, u64) {
-        (
-            self.stats.hits.load(Ordering::Relaxed),
-            self.stats.misses.load(Ordering::Relaxed),
-            self.stats.entries_added.load(Ordering::Relaxed),
-            self.stats.entries_expired.load(Ordering::Relaxed),
-        )
-    }
-
-    /// Check whether an ARP request should be sent for the given IP.
-    /// Implements rate limiting to prevent ARP storms.
-    pub fn should_send_request(&self, ip: Ipv4Address, current_time: u64) -> bool {
-        let mut entries = match self.entries.lock() {
-            Ok(g) => g,
-            Err(_) => return false,
-        };
-
-        for entry in entries.iter_mut() {
-            if let Some(e) = entry
-                && e.ip == ip
-                && e.state == ArpEntryState::Incomplete
-            {
-                // Rate limit: check interval and max attempts
-                if e.request_count >= ARP_MAX_REQUESTS {
-                    return false;
-                }
-                if current_time.saturating_sub(e.last_request_time) < ARP_REQUEST_INTERVAL {
-                    return false;
-                }
-                // Update rate limit state
-                e.request_count = e.request_count.saturating_add(1);
-                e.last_request_time = current_time;
-                return true;
-            }
-        }
-
-        // No existing entry - allow the request (caller should create Incomplete entry)
-        true
     }
 
     /// Get all entries (for debugging)

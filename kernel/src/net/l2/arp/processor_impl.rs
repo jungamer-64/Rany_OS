@@ -276,11 +276,6 @@ impl ArpProcessor {
         self.cache.lookup(ip, current_time)
     }
 
-    /// Check if we need to send an ARP request
-    pub fn needs_request(&self, ip: Ipv4Address, current_time: u64) -> bool {
-        self.cache.lookup(ip, current_time).is_none() && !self.cache.is_pending(ip, current_time)
-    }
-
     /// Mark that we're waiting for a reply
     pub fn request_sent(&self, ip: Ipv4Address, current_time: u64) {
         self.cache.mark_incomplete(ip, current_time);

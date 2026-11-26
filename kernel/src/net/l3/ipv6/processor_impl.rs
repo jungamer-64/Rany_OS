@@ -46,12 +46,6 @@ impl Ipv6Processor {
         self.config = config;
     }
 
-    /// Get stats reference
-    #[inline]
-    pub fn stats(&self) -> &Ipv6Stats {
-        &self.stats
-    }
-
     /// Process an incoming IPv6 packet by consuming the packet owner.
     pub fn process_owned_packet(
         &mut self,

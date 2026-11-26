@@ -91,12 +91,6 @@ fn trigger_tcp_data_ready_in(runtime: NetRuntimeHandle, socket_id: SocketId) {
     );
 }
 
-fn socket_inner_stats(socket: &Socket) -> TcpStats {
-    socket
-        .with_inner(|inner| inner.tcp().map(|tcp| tcp.stats).unwrap_or_default())
-        .unwrap_or_default()
-}
-
 fn poll_tcp_dispatch<T>(
     runtime: NetRuntimeHandle,
     sent: &mut bool,
@@ -305,28 +299,6 @@ impl TcpConnection {
         Ok(connection)
     }
 
-    pub async fn dial_timeout_in(
-        runtime: NetRuntimeHandle,
-        addr: EndpointAddr,
-        timeout_us: u64,
-    ) -> Result<Self, TcpError> {
-        let local_addr = if addr.is_ipv6() {
-            EndpointAddr::new_v6([0; 16], 0)
-        } else {
-            EndpointAddr::new([0, 0, 0, 0], 0)
-        };
-
-        let connection =
-            TcpDialDispatchFuture::new(runtime, InterfaceScope::Any, local_addr, addr).await?;
-        ConnectTimeoutFuture {
-            connection: &connection,
-            start_us: crate::time::precise_time_nanos() / 1000,
-            timeout_us,
-        }
-        .await?;
-        Ok(connection)
-    }
-
     pub const fn runtime(&self) -> NetRuntimeHandle {
         self.runtime
     }
@@ -339,10 +311,6 @@ impl TcpConnection {
 
     pub fn peer_addr(&self) -> Option<EndpointAddr> {
         self.socket.remote_addr()
-    }
-
-    pub fn stats(&self) -> TcpStats {
-        socket_inner_stats(&self.socket)
     }
 
     pub async fn recv_payload(&mut self) -> Result<Option<PacketPayload>, TcpError> {
@@ -554,45 +522,6 @@ impl<'a> Future for ConnectFuture<'a> {
                         Poll::Ready(Err(TcpError::ConnectionRefused))
                     }
                     Some(TcpSocketState::Connecting) => {
-                        inner.connect_waker.register(cx.waker());
-                        Poll::Pending
-                    }
-                    _ => Poll::Ready(Err(TcpError::InvalidState)),
-                }
-            })
-            .unwrap_or(Poll::Ready(Err(TcpError::InvalidState)))
-    }
-}
-
-pub(crate) struct ConnectTimeoutFuture<'a> {
-    connection: &'a TcpConnection,
-    start_us: u64,
-    timeout_us: u64,
-}
-
-impl<'a> Future for ConnectTimeoutFuture<'a> {
-    type Output = Result<(), TcpError>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.get_mut();
-        let now = crate::time::precise_time_nanos() / 1000;
-        let timeout = now.saturating_sub(this.start_us) >= this.timeout_us;
-        this.connection
-            .socket
-            .with_inner_mut(|inner| {
-                if let Some(err) = inner.last_error.take() {
-                    return Poll::Ready(Err(tcp_error_from_endpoint(err)));
-                }
-
-                match inner.tcp_state() {
-                    Some(TcpSocketState::Connected) => Poll::Ready(Ok(())),
-                    Some(TcpSocketState::Closed | TcpSocketState::Closing) => {
-                        Poll::Ready(Err(TcpError::ConnectionRefused))
-                    }
-                    Some(TcpSocketState::Connecting) => {
-                        if timeout {
-                            return Poll::Ready(Err(TcpError::Timeout));
-                        }
                         inner.connect_waker.register(cx.waker());
                         Poll::Pending
                     }

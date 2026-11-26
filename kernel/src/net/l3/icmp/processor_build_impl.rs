@@ -110,46 +110,4 @@ impl IcmpProcessor {
     ) -> Option<PacketPayload> {
         Self::build_error_payload(IcmpType::TimeExceeded, code as u8, [0; 4], original_packet)
     }
-
-    /// Build a parameter problem payload (RFC 792).
-    pub fn build_parameter_problem_payload(
-        pointer: u8,
-        original_packet: PacketPayload,
-    ) -> Option<PacketPayload> {
-        Self::build_error_payload(
-            IcmpType::ParameterProblem,
-            0,
-            [pointer, 0, 0, 0],
-            original_packet,
-        )
-    }
-
-    /// Build a timestamp reply packet (RFC 792)
-    pub fn build_timestamp_reply(
-        buffer: &mut [u8],
-        identifier: u16,
-        sequence: u16,
-        originate_ts: u32,
-        receive_ts: u32,
-        transmit_ts: u32,
-    ) -> Option<usize> {
-        let total_len = 20;
-        if buffer.len() < total_len {
-            return None;
-        }
-
-        buffer[0] = u8::from(IcmpType::TimestampReply);
-        buffer[1] = 0;
-        buffer[2..4].copy_from_slice(&[0, 0]);
-        buffer[4..6].copy_from_slice(&identifier.to_be_bytes());
-        buffer[6..8].copy_from_slice(&sequence.to_be_bytes());
-        buffer[8..12].copy_from_slice(&originate_ts.to_be_bytes());
-        buffer[12..16].copy_from_slice(&receive_ts.to_be_bytes());
-        buffer[16..20].copy_from_slice(&transmit_ts.to_be_bytes());
-
-        let checksum = data_checksum(&buffer[..total_len], 0);
-        buffer[2..4].copy_from_slice(&checksum.to_be_bytes());
-
-        Some(total_len)
-    }
 }

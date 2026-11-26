@@ -311,15 +311,6 @@ impl PageTableManager {
         self.pml4_phys = pml4_phys;
     }
 
-    /// PDPT→PD→PTまでウォークし、PTの物理アドレスを返す
-    pub(super) fn walk_to_page_table(
-        &mut self,
-        indices: [usize; 4],
-        flags: PageFlags,
-    ) -> Result<PhysAddr, MapError> {
-        self.walk_to_page_table_recording(indices, flags, &mut |_| {})
-    }
-
     fn walk_to_page_table_recording(
         &self,
         indices: [usize; 4],

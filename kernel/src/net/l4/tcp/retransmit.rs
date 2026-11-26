@@ -362,11 +362,6 @@ impl RetransmitRuntimeState {
     }
 }
 
-/// タイミングホイールを初期化する
-pub fn init_timer_wheel_in(runtime: NetRuntimeHandle) {
-    tcp_runtime_in(runtime).retransmit().init_timer_wheel();
-}
-
 /// タイミングホイールにタイマーを登録する
 fn schedule_retransmit_timer(runtime: NetRuntimeHandle, key: TcpFlowKey, deadline: u64) {
     if let Some(ref mut tw) = *tcp_runtime_in(runtime)

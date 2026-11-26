@@ -16,9 +16,4 @@ impl IcmpProcessor {
             ingress_tokens: 200, // Ingress (receiving) tokens
         }
     }
-
-    /// Get statistics
-    pub fn stats(&self) -> &IcmpStats {
-        &self.stats
-    }
 }

@@ -25,26 +25,6 @@ impl Icmpv6Builder {
         )
     }
 
-    /// Build an ICMPv6 Echo Request
-    ///
-    /// Returns the complete ICMPv6 message with correct checksum
-    pub fn build_echo_request(
-        src: &Ipv6Address,
-        dst: &Ipv6Address,
-        identifier: u16,
-        sequence: u16,
-        payload: PacketPayload,
-    ) -> Option<PacketPayload> {
-        Self::build_echo(
-            src,
-            dst,
-            Icmpv6Type::EchoRequest,
-            identifier,
-            sequence,
-            payload,
-        )
-    }
-
     /// Build ICMPv6 Echo message (shared by Request and Reply)
     fn build_echo(
         src: &Ipv6Address,
@@ -81,16 +61,6 @@ impl Icmpv6Builder {
         }
 
         Some(message_payload)
-    }
-
-    /// Build a Packet Too Big message (RFC 4443 Section 3.2)
-    pub fn build_packet_too_big(
-        src: &Ipv6Address,
-        dst: &Ipv6Address,
-        mtu: u32,
-        trigger_packet: PacketPayload,
-    ) -> Option<PacketPayload> {
-        Self::build_error(src, dst, Icmpv6Type::PacketTooBig, 0, mtu, trigger_packet)
     }
 
     /// Build a Destination Unreachable message

@@ -66,12 +66,6 @@ impl Icmpv6Processor {
         true
     }
 
-    /// Get stats reference
-    #[inline]
-    pub fn stats(&self) -> &Icmpv6Stats {
-        &self.stats
-    }
-
     pub fn process_payload(
         &self,
         payload: PacketPayload,

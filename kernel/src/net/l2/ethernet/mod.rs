@@ -317,10 +317,6 @@ pub struct EthernetStats {
     pub rx_packets: u64,
     /// Bytes received
     pub rx_bytes: u64,
-    /// Packets transmitted
-    pub tx_packets: u64,
-    /// Bytes transmitted
-    pub tx_bytes: u64,
     /// Packets dropped (wrong destination)
     pub rx_dropped: u64,
     /// Invalid frames
@@ -344,15 +340,6 @@ pub enum EthernetIngress {
         packet: PacketRef,
         src_mac: MacAddress,
     },
-    /// VLAN tagged frame - contains (VLAN ID, inner payload, inner EtherType)
-    VlanTagged {
-        vlan_id: u16,
-        pcp: u8,
-        dei: bool,
-        inner_type: EtherType,
-        packet: PacketRef,
-        src_mac: MacAddress,
-    },
     /// Frame was dropped (not for us)
     Dropped,
     /// Frame was invalid
@@ -368,24 +355,9 @@ impl EthernetProcessor {
         }
     }
 
-    /// Get local MAC address
-    pub fn local_mac(&self) -> MacAddress {
-        self.local_mac
-    }
-
     /// Set local MAC address
     pub fn set_local_mac(&mut self, mac: MacAddress) {
         self.local_mac = mac;
-    }
-
-    /// Get statistics
-    pub fn stats(&self) -> &EthernetStats {
-        &self.stats
-    }
-
-    /// Reset statistics
-    pub fn reset_stats(&mut self) {
-        self.stats = EthernetStats::default();
     }
 
     /// Process an incoming Ethernet frame by consuming the packet owner.
@@ -443,9 +415,7 @@ impl EthernetProcessor {
 
     /// Process a VLAN-tagged frame (802.1Q)
     fn process_vlan_packet(&mut self, packet: PacketRef, src_mac: MacAddress) -> EthernetIngress {
-        let Some((vlan_id, pcp, dei, inner_type, inner_payload_len)) =
-            self.parse_vlan_payload(packet.data())
-        else {
+        let Some((inner_type, inner_payload_len)) = self.parse_vlan_payload(packet.data()) else {
             return EthernetIngress::Error;
         };
 
@@ -469,26 +439,11 @@ impl EthernetProcessor {
                 inner_payload_len,
                 |packet| EthernetIngress::Arp { packet, src_mac },
             ),
-            _ => self.finish_payload_packet(
-                packet,
-                inner_payload_offset,
-                inner_payload_len,
-                |packet| EthernetIngress::VlanTagged {
-                    vlan_id,
-                    pcp,
-                    dei,
-                    inner_type,
-                    packet,
-                    src_mac,
-                },
-            ),
+            _ => EthernetIngress::Dropped,
         }
     }
 
-    fn parse_vlan_payload(
-        &mut self,
-        frame_data: &[u8],
-    ) -> Option<(u16, u8, bool, EtherType, usize)> {
+    fn parse_vlan_payload(&mut self, frame_data: &[u8]) -> Option<(EtherType, usize)> {
         let payload = frame_data.get(EthernetHeader::SIZE..)?;
         // Payload starts after the outer 0x8100 EtherType: TCI (2 bytes),
         // inner EtherType (2 bytes), then the inner payload.
@@ -496,13 +451,9 @@ impl EthernetProcessor {
             self.stats.rx_errors += 1;
             return None;
         }
-        let tci = u16::from_be_bytes([payload[0], payload[1]]);
-        let vlan_id = tci & 0x0FFF;
-        let pcp = ((tci >> 13) & 0x07) as u8;
-        let dei = (tci & 0x1000) != 0;
         let inner_ethertype = u16::from_be_bytes([payload[2], payload[3]]);
         let inner_type = EtherType::from(inner_ethertype);
-        Some((vlan_id, pcp, dei, inner_type, payload.len() - 4))
+        Some((inner_type, payload.len() - 4))
     }
 
     fn finish_payload_packet(
@@ -538,234 +489,11 @@ impl EthernetProcessor {
     fn is_for_us(&self, mac: &MacAddress) -> bool {
         *mac == self.local_mac || mac.is_broadcast() || mac.is_multicast()
     }
-
-    /// Build a reply frame (swaps src/dst)
-    pub fn build_reply<'a>(
-        &mut self,
-        buffer: &'a mut [u8],
-        dst_mac: MacAddress,
-        ether_type: EtherType,
-    ) -> Option<EthernetFrameMut<'a>> {
-        let mut frame = EthernetFrameMut::new(buffer)?;
-        frame
-            .set_destination(dst_mac)
-            .set_source(self.local_mac)
-            .set_ether_type(ether_type);
-        Some(frame)
-    }
-
-    /// Record transmitted frame
-    pub fn record_tx(&mut self, len: usize) {
-        self.stats.tx_packets += 1;
-        self.stats.tx_bytes += len as u64;
-    }
 }
 
-/// VLAN tag (802.1Q)
-#[derive(Debug, Clone, Copy)]
-#[repr(C, packed)]
-pub struct VlanTag {
-    /// Tag Protocol Identifier (0x8100)
-    pub tpid: [u8; 2],
-    /// Tag Control Information
-    pub tci: [u8; 2],
-}
-
-impl VlanTag {
-    /// Size of VLAN tag
-    pub const SIZE: usize = 4;
-
-    /// Create a new VLAN tag
-    pub const fn new(vlan_id: u16, pcp: u8, dei: bool) -> Self {
-        let tci_val =
-            (vlan_id & 0x0FFF) | ((pcp as u16 & 0x07) << 13) | if dei { 0x1000 } else { 0 };
-        Self {
-            tpid: [0x81, 0x00],
-            tci: tci_val.to_be_bytes(),
-        }
-    }
-
-    /// Get VLAN ID (12 bits)
-    pub fn vlan_id(&self) -> u16 {
-        u16::from_be_bytes(self.tci) & 0x0FFF
-    }
-
-    /// Get Priority Code Point (3 bits)
-    pub fn pcp(&self) -> u8 {
-        (self.tci[0] >> 5) & 0x07
-    }
-
-    /// Get Drop Eligible Indicator
-    pub fn dei(&self) -> bool {
-        (self.tci[0] & 0x10) != 0
-    }
-
-    /// Serialize the VLAN tag to bytes
-    pub fn to_bytes(&self) -> [u8; 4] {
-        [self.tpid[0], self.tpid[1], self.tci[0], self.tci[1]]
-    }
-}
-
-// ============================================================================
-// VLAN-Aware Ethernet Frame Builder (802.1Q TX)
-// ============================================================================
-
-/// Ethernet frame with 802.1Q VLAN tag for transmission
-///
-/// Frame layout: DST(6) + SRC(6) + TPID(2) + TCI(2) + EtherType(2) + Payload
-/// Total header = 18 bytes (vs 14 for untagged)
-pub struct VlanEthernetFrameMut<'a> {
-    /// Raw frame buffer
-    data: &'a mut [u8],
-    /// Current payload length
-    payload_len: usize,
-}
-
-impl<'a> VlanEthernetFrameMut<'a> {
-    /// VLAN-tagged Ethernet header size (14 + 4 = 18 bytes)
-    pub const HEADER_SIZE: usize = 18;
-
-    /// Maximum frame size (1518 + 4 for VLAN tag)
-    pub const MAX_SIZE: usize = 1522;
-
-    /// Create a new VLAN-tagged Ethernet frame builder
-    pub fn new(buffer: &'a mut [u8]) -> Option<Self> {
-        if buffer.len() < Self::HEADER_SIZE {
-            return None;
-        }
-        Some(VlanEthernetFrameMut {
-            data: buffer,
-            payload_len: 0,
-        })
-    }
-
-    /// Set destination MAC address
-    pub fn set_destination(&mut self, mac: MacAddress) -> &mut Self {
-        self.data[0..6].copy_from_slice(mac.as_bytes());
-        self
-    }
-
-    /// Set source MAC address
-    pub fn set_source(&mut self, mac: MacAddress) -> &mut Self {
-        self.data[6..12].copy_from_slice(mac.as_bytes());
-        self
-    }
-
-    /// Set VLAN tag (TPID + TCI)
-    pub fn set_vlan_tag(&mut self, vlan_id: u16, pcp: u8, dei: bool) -> &mut Self {
-        let tag = VlanTag::new(vlan_id, pcp, dei);
-        let tag_bytes = tag.to_bytes();
-        self.data[12..16].copy_from_slice(&tag_bytes);
-        self
-    }
-
-    /// Set inner EtherType (after VLAN tag)
-    pub fn set_ether_type(&mut self, ether_type: EtherType) -> &mut Self {
-        let et_bytes = u16::to_be_bytes(ether_type.into());
-        self.data[16..18].copy_from_slice(&et_bytes);
-        self
-    }
-
-    /// Get mutable payload buffer (after VLAN + EtherType)
-    pub fn payload_mut(&mut self) -> &mut [u8] {
-        &mut self.data[Self::HEADER_SIZE..]
-    }
-
-    /// Set payload length
-    pub fn set_payload_len(&mut self, len: usize) -> &mut Self {
-        self.payload_len = len.min(self.data.len() - Self::HEADER_SIZE);
-        self
-    }
-
-    /// Get total frame length
-    pub fn total_len(&self) -> usize {
-        Self::HEADER_SIZE + self.payload_len
-    }
-
-    /// Get the complete frame as bytes
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.data[..self.total_len()]
-    }
-
-    /// Pad frame to minimum size (64 bytes for tagged)
-    pub fn pad_to_minimum(&mut self) {
-        let min_size = 64; // 802.1Q minimum frame size
-        let current_len = self.total_len();
-        if current_len < min_size {
-            // SECURITY: 実 buffer 末尾を越えて書き込まないことを保証する。
-            let pad_end = min_size.min(self.data.len());
-            for byte in &mut self.data[current_len..pad_end] {
-                *byte = 0;
-            }
-            self.payload_len = pad_end - Self::HEADER_SIZE;
-        }
-    }
-}
-
-/// Insert a VLAN tag into an existing untagged Ethernet frame
-///
-/// Takes an untagged frame buffer, shifts the payload to make room for the
-/// 4-byte VLAN tag, and inserts the tag. Returns the new frame length.
-///
-/// `frame` must be large enough to hold the additional 4 bytes.
-/// `frame_len` is the current length of the untagged frame.
-pub fn insert_vlan_tag(
-    frame: &mut [u8],
-    frame_len: usize,
-    vlan_id: u16,
-    pcp: u8,
-    dei: bool,
-) -> Option<usize> {
-    let new_len = frame_len + VlanTag::SIZE;
-    if new_len > frame.len() || frame_len < EthernetHeader::SIZE {
-        return None;
-    }
-
-    // Shift payload (everything after dst+src MAC, i.e. from offset 12) by 4 bytes
-    // We need to move bytes [12..frame_len] to [16..frame_len+4]
-    frame.copy_within(12..frame_len, 16);
-
-    // Insert VLAN tag at offset 12
-    let tag = VlanTag::new(vlan_id, pcp, dei);
-    let tag_bytes = tag.to_bytes();
-    frame[12..16].copy_from_slice(&tag_bytes);
-
-    Some(new_len)
-}
-
-/// Strip a VLAN tag from a tagged frame
-///
-/// Removes the 4-byte VLAN tag and shifts payload back.
-/// Returns (vlan_id, new_frame_len).
-pub fn strip_vlan_tag(frame: &mut [u8], frame_len: usize) -> Option<(u16, usize)> {
-    if frame_len < VlanEthernetFrameMut::HEADER_SIZE || frame_len > frame.len() {
-        return None;
-    }
-
-    // Check TPID
-    let tpid = u16::from_be_bytes([frame[12], frame[13]]);
-    if tpid != 0x8100 {
-        return None;
-    }
-
-    // Read VLAN ID
-    let tci = u16::from_be_bytes([frame[14], frame[15]]);
-    let vlan_id = tci & 0x0FFF;
-
-    // Shift payload back: move [16..frame_len] to [12..frame_len-4]
-    let new_len = frame_len - VlanTag::SIZE;
-    frame.copy_within(16..frame_len, 12);
-
-    Some((vlan_id, new_len))
-}
-
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub mod tests {
+#[cfg(test)]
+mod tests {
     use super::*;
-    #[cfg(feature = "qemu-test-export")]
-    use crate::net::payload::alloc_packet_with_headroom;
-    #[cfg(feature = "qemu-test-export")]
-    use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
@@ -784,34 +512,5 @@ pub mod tests {
         assert_eq!(EtherType::from(0x0800), EtherType::Ipv4);
         assert_eq!(EtherType::from(0x0806), EtherType::Arp);
         assert_eq!(u16::from(EtherType::Ipv4), 0x0800);
-    }
-
-    #[cfg(feature = "qemu-test-export")]
-    fn test_packet_with_contents(bytes: &[u8]) -> PacketRef {
-        let mut packet =
-            alloc_packet_with_headroom(bytes.len(), DEFAULT_PACKET_HEADROOM).expect("packet");
-        packet.data_mut().copy_from_slice(bytes);
-        packet
-    }
-
-    #[cfg(feature = "qemu-test-export")]
-    pub fn test_process_packet_returns_owned_ipv4_payload() {
-        let local = MacAddress::from_octets(0x02, 0, 0, 0, 0, 1);
-        let src = MacAddress::from_octets(0x02, 0, 0, 0, 0, 2);
-        let mut frame = [0u8; EthernetHeader::SIZE + 4];
-        frame[0..6].copy_from_slice(local.as_bytes());
-        frame[6..12].copy_from_slice(src.as_bytes());
-        frame[12..14].copy_from_slice(&u16::to_be_bytes(EtherType::Ipv4.into()));
-        frame[EthernetHeader::SIZE..].copy_from_slice(b"ipv4");
-
-        let mut processor = EthernetProcessor::new(local);
-
-        match processor.process_packet(test_packet_with_contents(&frame)) {
-            EthernetIngress::Ipv4 { packet, src_mac } => {
-                assert_eq!(src_mac, src);
-                assert_eq!(packet.data(), b"ipv4");
-            }
-            _ => panic!("expected owned IPv4 ingress"),
-        }
     }
 }

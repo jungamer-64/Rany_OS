@@ -25,7 +25,44 @@ use kernel_api::service::netdev::{
 };
 
 pub fn ethernet_owned_ipv4_payload_smoke() -> bool {
-    crate::net::l2::ethernet::tests::test_process_packet_returns_owned_ipv4_payload();
+    use crate::net::l2::ethernet::{
+        EtherType, EthernetHeader, EthernetIngress, EthernetProcessor, MacAddress,
+    };
+
+    let local = MacAddress::from_octets(0x02, 0, 0, 0, 0, 1);
+    let peer = MacAddress::from_octets(0x02, 0, 0, 0, 0, 2);
+    let mut processor = EthernetProcessor::new(local);
+    for (tag, inner, accepted) in [
+        (None, 0x0800u16, true),
+        (Some([0x81, 0x00, 0x00, 0x2a]), 0x0800, true),
+        (Some([0x81, 0x00, 0x00, 0x2a]), 0x88b5, false),
+    ] {
+        let len = EthernetHeader::SIZE + tag.map_or(0, |tag| tag.len()) + 4;
+        let mut packet = alloc_packet_with_headroom(len, DEFAULT_PACKET_HEADROOM).expect("packet");
+        let frame = packet.data_mut();
+        frame[0..6].copy_from_slice(local.as_bytes());
+        frame[6..12].copy_from_slice(peer.as_bytes());
+        let inner_offset = if let Some(tag) = tag {
+            frame[12..16].copy_from_slice(&tag);
+            16
+        } else {
+            12
+        };
+        frame[inner_offset..inner_offset + 2].copy_from_slice(&inner.to_be_bytes());
+        frame[inner_offset + 2..].copy_from_slice(b"ipv4");
+
+        match processor.process_packet(packet) {
+            EthernetIngress::Ipv4 { packet, src_mac } if accepted => {
+                assert_eq!(src_mac, peer);
+                assert_eq!(packet.data(), b"ipv4");
+            }
+            EthernetIngress::Dropped if !accepted => (),
+            _ => panic!(
+                "unexpected ingress for EtherType {:?}",
+                EtherType::from(inner)
+            ),
+        }
+    }
     true
 }
 
