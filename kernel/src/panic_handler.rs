@@ -1,106 +1,9 @@
-//! Bounded diagnostics for a fatal kernel panic.
-
-use crate::graphics::bsod::BsodInfo;
-use core::panic::{Location, PanicInfo};
-use core::sync::atomic::{AtomicBool, Ordering};
-
-static PANIC_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
-static PANIC_RECORD: crate::sync::InitOnce<PanicRecord> = crate::sync::InitOnce::new();
+//! Fatal kernel diagnostics and stack guards.
 
 const MAX_PANIC_MSG: usize = 1024;
 
-struct PanicRecord {
-    message: &'static str,
-    location: Option<&'static Location<'static>>,
-}
-
 fn bounded_message(message: &str) -> &str {
     &message[..message.floor_char_boundary(MAX_PANIC_MSG)]
-}
-
-/// Fatal Rust panic in the kernel image.
-pub(crate) fn handle_panic(info: &PanicInfo<'_>) -> ! {
-    x86_64::instructions::interrupts::disable();
-    if PANIC_IN_PROGRESS.swap(true, Ordering::AcqRel) {
-        crate::io::log::early_print("\n[panic] secondary panic; halting CPU\n");
-        halt_current_cpu();
-    }
-
-    crate::io::log::enter_panic_mode();
-    crate::io::log::early_print("\n!!! KERNEL PANIC DETECTED !!!\n");
-
-    // A panic argument can run arbitrary Debug or Display code. Only retain
-    // message text that is already available without calling a formatter.
-    let record = PANIC_RECORD.call_once(|| PanicRecord {
-        message: bounded_message(
-            info.message()
-                .as_str()
-                .unwrap_or("Panic message requires runtime formatting"),
-        ),
-        location: info.location(),
-    });
-
-    if let Some(location) = record.location {
-        crate::io::log::print(format_args!(
-            "Panic at {}:{}:{}\n",
-            location.file(),
-            location.line(),
-            location.column(),
-        ));
-    }
-    crate::io::log::print(format_args!("Message: {}\n", record.message));
-
-    if let Some(saved) = crate::io::iommu::api::write_panic_record(record.message) {
-        crate::io::log::print(format_args!(
-            "[PANIC] record saved at {:#x}\n",
-            saved.phys.as_u64(),
-        ));
-    }
-
-    let mut bsod = BsodInfo::new(record.message);
-    if let Some(location) = record.location {
-        bsod = bsod.with_location(location.file(), location.line(), location.column());
-    }
-    let backtrace = crate::unwind::Backtrace::capture();
-    if !backtrace.is_empty() {
-        bsod = bsod.with_backtrace(backtrace);
-    }
-    bsod = bsod.with_error_code(
-        record
-            .message
-            .split_whitespace()
-            .next()
-            .unwrap_or("KERNEL_PANIC"),
-    );
-    crate::graphics::bsod::dump_bsod_info_to_serial(&bsod);
-    #[cfg(not(any(test, feature = "bench")))]
-    crate::graphics::try_with_framebuffer(|framebuffer| {
-        crate::graphics::bsod::display_bsod_direct(framebuffer, &bsod);
-    });
-    halt_current_cpu();
-}
-
-/// Snapshot of the fatal Rust panic, available once the record is published.
-pub fn panic_stats() -> PanicStats {
-    PanicStats {
-        total_panics: u64::from(PANIC_IN_PROGRESS.load(Ordering::Acquire)),
-        last_panic: PANIC_RECORD.get().map(|record| record.message.into()),
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct PanicStats {
-    pub total_panics: u64,
-    pub last_panic: Option<alloc::string::String>,
-}
-
-/// The terminal CPU cannot resume execution of the interrupted context.
-pub(crate) fn halt_current_cpu() -> ! {
-    x86_64::instructions::interrupts::disable();
-    // LOOP_PROOF: mode=halt; reason=The faulting CPU has no continuation after the fatal boundary.;
-    loop {
-        x86_64::instructions::hlt();
-    }
 }
 
 // ============================================================================
@@ -190,30 +93,6 @@ pub fn setup_stack_guard(stack_bottom: usize, stack_size: usize) {
                 }
             }
         }
-    }
-}
-
-pub fn setup_task_stack_guard(stack_start: usize, stack_size: usize) {
-    setup_stack_guard(stack_start, stack_size);
-}
-
-pub fn setup_ist_stack_guards() {
-    // nothing
-}
-
-// Basic panic handler implementation
-pub fn panic(_info: &PanicInfo) -> ! {
-    // Attempt to acquire lock and print panic info
-    // In a real implementation we would write to the panic record
-    // For now, just loop
-    PANIC_IN_PROGRESS.store(true, Ordering::SeqCst);
-
-    // Simplistic printing if possible (depends on logger state)
-    // We avoid complex formatting to prevent double panic
-
-    // LOOP_PROOF: mode=halt; reason=Fallback panic stub intentionally spins forever when panic infrastructure is unavailable.;
-    loop {
-        core::hint::spin_loop();
     }
 }
 

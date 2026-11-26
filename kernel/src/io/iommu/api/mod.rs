@@ -11,7 +11,6 @@ pub mod dispatcher;
 pub mod dma;
 pub mod driver;
 pub mod mgmt;
-pub mod panic_dma;
 pub mod pci;
 pub mod security;
 
@@ -20,7 +19,6 @@ pub use self::dispatcher::*;
 pub use self::dma::*;
 pub use self::driver::*;
 pub use self::mgmt::*;
-pub use self::panic_dma::*;
 #[cfg(not(test))]
 pub use self::pci::*;
 pub use self::security::*;

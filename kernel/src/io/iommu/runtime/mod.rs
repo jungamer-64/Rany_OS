@@ -7,7 +7,6 @@ pub(crate) mod config;
 pub(crate) mod fault_log;
 pub(crate) mod groups;
 pub(crate) mod irq;
-pub(crate) mod panic;
 pub(crate) mod pci;
 pub(crate) mod registry;
 pub(crate) mod security;
