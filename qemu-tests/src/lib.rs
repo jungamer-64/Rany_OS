@@ -78,7 +78,6 @@ fn run_required_profile(profile: &str) {
                     for marker in [
                         "COM1 interrupt-driven output ready",
                         "[boot] BOOT COMPLETE!",
-                        "[kernel-test] result pass",
                     ] {
                         assert!(
                             serial

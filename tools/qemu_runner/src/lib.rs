@@ -931,18 +931,6 @@ fn ensure_ovmf_assets(root: &Path) -> Result<(PathBuf, PathBuf), RunError> {
     Ok((code, vars))
 }
 
-fn detect_fullboot_result(log_path: &Path) -> Option<bool> {
-    let bytes = std::fs::read(log_path).ok()?;
-    let serial = String::from_utf8_lossy(&bytes);
-    if serial.contains("[kernel-test] result pass") {
-        return Some(true);
-    }
-    if serial.contains("[kernel-test] result fail") {
-        return Some(false);
-    }
-    None
-}
-
 fn serial_contains(log_path: &Path, marker: &str) -> bool {
     std::fs::read(log_path)
         .ok()
@@ -1273,43 +1261,9 @@ fn poll_qemu(
             });
         }
 
-        if let Some(success) = detect_fullboot_result(&log_path) {
-            if success && hotplug.as_ref().is_some_and(|run| !run.is_complete()) {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(RunError::Qmp {
-                    source: Box::new(QmpError::Protocol {
-                        operation: "CPU hotplug run",
-                        detail: String::from(
-                            "guest reported success before DEVICE_DELETED was acknowledged",
-                        )
-                        .into_boxed_str(),
-                    }),
-                    log_path: Box::new(log_path),
-                    qemu_stderr_path: Box::new(qemu_stderr_path),
-                });
-            }
-            let _ = child.kill();
-            let _ = child.wait();
-            let host_exit_code = if success { 33 } else { 35 };
-            let report = make_report(
-                config.profile.clone(),
-                artifact_path,
-                log_path,
-                qemu_stderr_path,
-                host_exit_code,
-                start.elapsed(),
-            );
-            if success {
-                return Ok(report);
-            }
-            return Err(RunError::ProfileFailed(Box::new(report)));
-        }
-
         match child.try_wait() {
             Ok(Some(status)) => {
                 let host_exit_code = status.code().unwrap_or(-1);
-                let token_result = detect_fullboot_result(&log_path);
                 let report = make_report(
                     config.profile.clone(),
                     artifact_path,
@@ -1318,10 +1272,23 @@ fn poll_qemu(
                     host_exit_code,
                     start.elapsed(),
                 );
-                if token_result == Some(true) || report.isa_debug_value == Some(0x10) {
-                    return Ok(report);
+                if report.isa_debug_value != Some(0x10) {
+                    return Err(RunError::ProfileFailed(Box::new(report)));
                 }
-                return Err(RunError::ProfileFailed(Box::new(report)));
+                if hotplug.as_ref().is_some_and(|run| !run.is_complete()) {
+                    return Err(RunError::Qmp {
+                        source: Box::new(QmpError::Protocol {
+                            operation: "CPU hotplug run",
+                            detail: String::from(
+                                "guest reported success before DEVICE_DELETED was acknowledged",
+                            )
+                            .into_boxed_str(),
+                        }),
+                        log_path: Box::new(report.log_path),
+                        qemu_stderr_path: Box::new(report.qemu_stderr_path),
+                    });
+                }
+                return Ok(report);
             }
             Ok(None) => thread::sleep(Duration::from_millis(100)),
             Err(err) => {
