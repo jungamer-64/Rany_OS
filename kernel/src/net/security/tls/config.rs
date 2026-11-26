@@ -67,10 +67,6 @@ impl AlpnProtocol {
         self.0.len()
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
     pub(crate) fn as_bytes(&self) -> &[u8] {
         self.0.as_bytes()
     }
@@ -142,10 +138,6 @@ impl OfferedCipherSuites {
         self.0.len()
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
     pub(crate) fn iter(&self) -> core::slice::Iter<'_, CipherSuite> {
         self.0.iter()
     }
@@ -187,10 +179,6 @@ impl NegotiatedCipherSuite {
     pub(crate) const fn uses_sha384(self) -> bool {
         self.0.uses_sha384()
     }
-
-    pub(crate) const fn is_chacha20_poly1305(self) -> bool {
-        self.0.is_chacha20_poly1305()
-    }
 }
 
 #[derive(Debug)]
@@ -223,6 +211,7 @@ impl OfferedSignatureSchemes {
         self.0.len()
     }
 
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -275,6 +264,7 @@ impl OfferedNamedGroups {
         self.0.len()
     }
 
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -309,7 +299,7 @@ impl TlsTrustAnchors {
     pub fn system_roots() -> Result<Self, TlsClientConfigError> {
         let mut anchors = Self::empty();
         for (_, der) in security::root_certs::ROOT_CERTS {
-            if let Ok(cert) = Certificate::from_static_der(der) {
+            if let Some(cert) = Certificate::from_static_der(der) {
                 anchors.push(cert)?;
             }
         }
@@ -326,6 +316,7 @@ impl TlsTrustAnchors {
         self.0.iter()
     }
 
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -363,35 +354,6 @@ impl TlsClientConfig {
 
     pub fn with_alpn(mut self, protocols: &[&str]) -> Result<Self, TlsClientConfigError> {
         self.alpn_protocols = AlpnProtocols::from_protocols(protocols)?;
-        Ok(self)
-    }
-
-    pub fn with_cipher_suites(
-        mut self,
-        suites: &[CipherSuite],
-    ) -> Result<Self, TlsClientConfigError> {
-        self.cipher_suites = OfferedCipherSuites::from_slice(suites)?;
-        Ok(self)
-    }
-
-    pub fn with_signature_schemes(
-        mut self,
-        schemes: &[SignatureScheme],
-    ) -> Result<Self, TlsClientConfigError> {
-        self.signature_schemes = OfferedSignatureSchemes::from_slice(schemes)?;
-        Ok(self)
-    }
-
-    pub fn with_named_groups(
-        mut self,
-        groups: &[NamedGroup],
-    ) -> Result<Self, TlsClientConfigError> {
-        self.named_groups = OfferedNamedGroups::from_slice(groups)?;
-        Ok(self)
-    }
-
-    pub fn with_trust_anchor(mut self, cert: Certificate) -> Result<Self, TlsClientConfigError> {
-        self.trust_anchors.push(cert)?;
         Ok(self)
     }
 }

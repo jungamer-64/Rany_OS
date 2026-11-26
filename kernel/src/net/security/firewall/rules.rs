@@ -528,11 +528,6 @@ impl FirewallRuleBuilder {
         self.action(FirewallAction::Allow)
     }
 
-    /// 拒否に設定
-    pub fn deny(self) -> Self {
-        self.action(FirewallAction::Deny)
-    }
-
     /// 優先度を設定（小さいほど先に評価）
     pub fn priority(mut self, priority: u16) -> Self {
         self.priority = priority;
@@ -555,11 +550,6 @@ impl FirewallRuleBuilder {
     pub fn protocol(mut self, proto: FirewallProtocol) -> Self {
         self.protocol = proto;
         self
-    }
-
-    /// TCP プロトコルに設定
-    pub fn tcp(self) -> Self {
-        self.protocol(FirewallProtocol::Tcp)
     }
 
     /// UDP プロトコルに設定

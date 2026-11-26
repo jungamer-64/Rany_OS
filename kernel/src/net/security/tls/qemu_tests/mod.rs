@@ -54,6 +54,6 @@ pub use crypto::{
     wave8_tls_x509_tls13_leaf_requires_digital_signature_smoke,
 };
 pub use protocol::{
-    wave8_tls_base64_decode_smoke, wave8_tls_cipher_suite_defaults_smoke,
-    wave8_tls_cipher_suite_helpers_smoke, wave8_tls_tls_version_smoke,
+    wave8_tls_cipher_suite_defaults_smoke, wave8_tls_cipher_suite_helpers_smoke,
+    wave8_tls_tls_version_smoke,
 };

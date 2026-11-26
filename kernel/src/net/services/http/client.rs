@@ -12,8 +12,8 @@ use super::types::{
 use crate::net::l4::tcp::{EndpointAddr, TcpConnection};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::security::tls::{
-    KeyUpdateAction, TlsClientConfig, TlsEstablishedSession, TlsHandshake, TlsHandshakeStep,
-    TlsTrustAnchors,
+    KeyUpdateAction, TlsClientConfig, TlsError, TlsEstablishedSession, TlsHandshake,
+    TlsHandshakeStep, TlsTrustAnchors,
 };
 use crate::net::services::dns::resolve_ipv4_in;
 use kernel_api::resource::net::PacketPayload;
@@ -51,7 +51,7 @@ async fn complete_tls_handshake(
         let in_payload = recv_tls_handshake_payload(connection).await?;
         match handshake
             .process_incoming_payload(in_payload)
-            .map_err(|_| HttpClientError::TlsHandshakeFailed)?
+            .map_err(HttpClientError::TlsProtocol)?
         {
             TlsHandshakeStep::NeedMoreInput(next) => handshake = next,
             TlsHandshakeStep::SendClientHello {
@@ -109,13 +109,13 @@ async fn send_over_tls_transport(
         .and_then(|config| config.with_alpn(&["http/1.1"]))
         .map_err(|_| HttpClientError::TlsHandshakeFailed)?;
     let (handshake, client_hello) =
-        TlsHandshake::start(tls_config).map_err(|_| HttpClientError::TlsHandshakeFailed)?;
+        TlsHandshake::start(tls_config).map_err(HttpClientError::TlsProtocol)?;
     send_payload(connection, client_hello).await?;
     let mut tls = Box::new(complete_tls_handshake(handshake, connection).await?);
 
     let encrypted_request = tls
         .encrypt_payload(request_payload)
-        .map_err(|_| HttpClientError::WriteError)?;
+        .map_err(HttpClientError::TlsProtocol)?;
     send_payload(connection, encrypted_request).await?;
 
     let response = receive_tls_response(&mut tls, connection, method).await?;
@@ -143,7 +143,7 @@ async fn receive_tls_response(
             ))?;
         let inbound = tls
             .process_incoming_payload(payload)
-            .map_err(|_| HttpClientError::ReadError)?;
+            .map_err(HttpClientError::TlsProtocol)?;
         if let Some(data) = inbound.application_data {
             parser
                 .push_payload(data)
@@ -204,6 +204,7 @@ pub enum HttpClientError {
     ConnectionFailed,
     InvalidUrl,
     TlsHandshakeFailed,
+    TlsProtocol(TlsError),
     WriteError,
     ReadError,
     ParseError(HttpParseError),
@@ -220,6 +221,7 @@ impl core::fmt::Display for HttpClientError {
             Self::ConnectionFailed => f.write_str("TCP connection failed"),
             Self::InvalidUrl => f.write_str("invalid URL"),
             Self::TlsHandshakeFailed => f.write_str("TLS handshake failed"),
+            Self::TlsProtocol(error) => write!(f, "TLS failed: {error}"),
             Self::WriteError => f.write_str("request write failed"),
             Self::ReadError => f.write_str("response read failed"),
             Self::ParseError(error) => write!(f, "response parse failed: {:?}", error),
@@ -354,5 +356,17 @@ mod tests {
         };
 
         assert!(HttpClient::split_request_uri(uri).is_none());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn reports_the_peer_alert_number() {
+        let error = HttpClientError::TlsProtocol(TlsError::Alert(40));
+        assert_eq!(alloc::format!("{error}"), "TLS failed: peer alert 40");
     }
 }

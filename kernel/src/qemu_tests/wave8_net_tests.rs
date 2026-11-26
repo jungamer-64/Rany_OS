@@ -102,10 +102,6 @@ pub fn net_tls_wave8_cipher_suite_helpers_smoke() -> bool {
     crate::net::security::tls::qemu_tests::wave8_tls_cipher_suite_helpers_smoke()
 }
 
-pub fn net_tls_wave8_base64_decode_smoke() -> bool {
-    crate::net::security::tls::qemu_tests::wave8_tls_base64_decode_smoke()
-}
-
 pub fn net_tls_wave8_tls_version_smoke() -> bool {
     crate::net::security::tls::qemu_tests::wave8_tls_tls_version_smoke()
 }

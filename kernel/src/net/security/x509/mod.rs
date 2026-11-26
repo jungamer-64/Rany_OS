@@ -1056,7 +1056,8 @@ pub mod qemu_tests {
         let Ok(payload) = kernel_api::resource::net::PacketPayload::try_pair(first, second) else {
             return false;
         };
-        let Ok(configured) = crate::net::security::tls::Certificate::from_der_bytes(&TEST_CERT_DER)
+        let Some(configured) =
+            crate::net::security::tls::credentials::Certificate::from_static_der(&TEST_CERT_DER)
         else {
             return false;
         };

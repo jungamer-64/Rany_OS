@@ -6,20 +6,7 @@
 pub struct TlsVersion;
 
 impl TlsVersion {
-    pub const TLS_1_3: Self = Self;
     pub const WIRE: u16 = 0x0304;
-
-    pub const fn major(self) -> u8 {
-        0x03
-    }
-
-    pub const fn minor(self) -> u8 {
-        0x04
-    }
-
-    pub const fn to_bytes(self) -> [u8; 2] {
-        Self::WIRE.to_be_bytes()
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,15 +111,6 @@ impl NamedGroup {
     pub const SECP256R1: Self = Self::Secp256r1;
     pub const SECP384R1: Self = Self::Secp384r1;
     pub const X25519: Self = Self::X25519;
-
-    pub(crate) fn parse_wire(value: u16) -> Option<Self> {
-        match value {
-            0x0017 => Some(Self::Secp256r1),
-            0x0018 => Some(Self::Secp384r1),
-            0x001D => Some(Self::X25519),
-            _ => None,
-        }
-    }
 
     pub(crate) const fn wire(self) -> u16 {
         match self {

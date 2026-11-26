@@ -53,7 +53,7 @@ mod tests {
                 .ingress()
                 .udp()
                 .priority(20)
-                .deny()
+                .action(FirewallAction::Deny)
                 .build(),
         );
         assert!(engine.admits_fragment(src, dst, Some(udp)));
@@ -70,7 +70,7 @@ mod tests {
                 .ingress()
                 .udp()
                 .priority(5)
-                .deny()
+                .action(FirewallAction::Deny)
                 .build(),
         );
         assert!(!engine.admits_fragment(src, dst, Some(udp)));
@@ -96,7 +96,13 @@ mod tests {
         assert_eq!(classify(true), FirewallVerdict::Allow);
         assert_eq!(classify(false), FirewallVerdict::Deny);
 
-        engine.add_rule(FirewallRule::builder().ingress().tcp().deny().build());
+        engine.add_rule(
+            FirewallRule::builder()
+                .ingress()
+                .protocol(FirewallProtocol::Tcp)
+                .action(FirewallAction::Deny)
+                .build(),
+        );
         assert_eq!(
             engine.evaluate_mut(
                 FirewallDirection::Ingress,
@@ -216,8 +222,8 @@ mod tests {
         let rule = FirewallRule::builder()
             .name("block-ssh")
             .ingress()
-            .deny()
-            .tcp()
+            .action(FirewallAction::Deny)
+            .protocol(FirewallProtocol::Tcp)
             .dst_port(PortMatch::Exact(22))
             .build();
         engine.add_rule(rule);
@@ -303,8 +309,8 @@ mod tests {
         let deny_ssh = FirewallRule::builder()
             .name("deny-ssh")
             .ingress()
-            .deny()
-            .tcp()
+            .action(FirewallAction::Deny)
+            .protocol(FirewallProtocol::Tcp)
             .dst_port(PortMatch::Exact(22))
             .priority(1000)
             .build();
@@ -314,7 +320,7 @@ mod tests {
             .name("allow-trusted-ssh")
             .ingress()
             .allow()
-            .tcp()
+            .protocol(FirewallProtocol::Tcp)
             .src_ip(IpMatch::Cidr([10, 0, 0, 0], 8))
             .dst_port(PortMatch::Exact(22))
             .priority(100)
@@ -359,8 +365,8 @@ mod tests {
         let rule = FirewallRule::builder()
             .name("block-high-ports")
             .ingress()
-            .deny()
-            .tcp()
+            .action(FirewallAction::Deny)
+            .protocol(FirewallProtocol::Tcp)
             .dst_port(PortMatch::Range(1024, 65535))
             .build();
         engine.add_rule(rule);
@@ -401,7 +407,7 @@ mod tests {
         let rule = FirewallRule::builder()
             .name("block-specific-ip")
             .ingress()
-            .deny()
+            .action(FirewallAction::Deny)
             .src_ip(IpMatch::Exact([203, 0, 113, 42]))
             .build();
         engine.add_rule(rule);
@@ -440,7 +446,7 @@ mod tests {
         let rule = FirewallRule::builder()
             .name("block-egress-dns")
             .egress()
-            .deny()
+            .action(FirewallAction::Deny)
             .udp()
             .dst_port(PortMatch::Exact(53))
             .build();
@@ -482,7 +488,7 @@ mod tests {
         let rule = FirewallRule::builder()
             .name("block-icmp-both")
             .direction(FirewallDirection::Both)
-            .deny()
+            .action(FirewallAction::Deny)
             .icmp()
             .build();
         engine.add_rule(rule);
@@ -523,8 +529,8 @@ mod tests {
         let id = engine.add_rule(
             FirewallRule::builder()
                 .ingress()
-                .deny()
-                .tcp()
+                .action(FirewallAction::Deny)
+                .protocol(FirewallProtocol::Tcp)
                 .dst_port(PortMatch::Exact(22))
                 .build(),
         );
@@ -568,16 +574,16 @@ mod tests {
         engine.add_rule(
             FirewallRule::builder()
                 .ingress()
-                .deny()
-                .tcp()
+                .action(FirewallAction::Deny)
+                .protocol(FirewallProtocol::Tcp)
                 .dst_port(PortMatch::Exact(22))
                 .build(),
         );
         engine.add_rule(
             FirewallRule::builder()
                 .ingress()
-                .deny()
-                .tcp()
+                .action(FirewallAction::Deny)
+                .protocol(FirewallProtocol::Tcp)
                 .dst_port(PortMatch::Exact(80))
                 .build(),
         );
@@ -637,8 +643,8 @@ mod tests {
         engine.add_rule(
             FirewallRule::builder()
                 .ingress()
-                .deny()
-                .tcp()
+                .action(FirewallAction::Deny)
+                .protocol(FirewallProtocol::Tcp)
                 .dst_port(PortMatch::Exact(22))
                 .build(),
         );

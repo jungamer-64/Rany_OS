@@ -78,67 +78,6 @@ pub fn scalar_base_mul(scalar: &[u8; 32]) -> P256Point {
 // P-256 スカラー（群位数 n）上の算術演算
 // ========================================================================
 
-/// P-256群位数 n 上での加算: (a + b) mod n
-pub fn scalar_add_mod_n(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
-    // ビッグエンディアンでu64リム4個に変換
-    let mut a_limbs = [0u64; 4];
-    let mut b_limbs = [0u64; 4];
-    for i in 0..4 {
-        a_limbs[3 - i] = u64::from_be_bytes([
-            a[i * 8],
-            a[i * 8 + 1],
-            a[i * 8 + 2],
-            a[i * 8 + 3],
-            a[i * 8 + 4],
-            a[i * 8 + 5],
-            a[i * 8 + 6],
-            a[i * 8 + 7],
-        ]);
-        b_limbs[3 - i] = u64::from_be_bytes([
-            b[i * 8],
-            b[i * 8 + 1],
-            b[i * 8 + 2],
-            b[i * 8 + 3],
-            b[i * 8 + 4],
-            b[i * 8 + 5],
-            b[i * 8 + 6],
-            b[i * 8 + 7],
-        ]);
-    }
-
-    // a + b (carry付き)
-    let mut result = [0u64; 4];
-    let mut carry = 0u64;
-    for i in 0..4 {
-        let sum = (a_limbs[i] as u128) + (b_limbs[i] as u128) + (carry as u128);
-        result[i] = sum as u64;
-        carry = (sum >> 64) as u64;
-    }
-
-    // mod n: result >= n ならnを減算
-    let mut borrow = 0u64;
-    let mut sub = [0u64; 4];
-    for i in 0..4 {
-        let diff = (result[i] as u128)
-            .wrapping_sub(N[i] as u128)
-            .wrapping_sub(borrow as u128);
-        sub[i] = diff as u64;
-        borrow = if diff >> 127 != 0 { 1 } else { 0 };
-    }
-
-    // carry > 0 or (carry==0 and borrow==0) → use sub
-    let use_sub = carry > 0 || borrow == 0;
-    let final_limbs = if use_sub { sub } else { result };
-
-    // リトルエンディアンリムからビッグエンディアンバイト列に変換
-    let mut out = [0u8; 32];
-    for i in 0..4 {
-        let bytes = final_limbs[3 - i].to_be_bytes();
-        out[i * 8..i * 8 + 8].copy_from_slice(&bytes);
-    }
-    out
-}
-
 /// P-256群位数 n 上での乗算: (a * b) mod n
 pub fn scalar_mul_mod_n(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
     // ビッグエンディアンu64リム（リトルエンディアン順）に変換

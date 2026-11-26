@@ -2,7 +2,6 @@
 // kernel/src/net/security/tls/tests/protocol.rs - TLS 1.3 protocol tests
 // ============================================================================
 
-use super::super::credentials::base64_decode_bytes;
 use super::super::{CipherSuite, TlsClientConfig, TlsTrustAnchors, TlsVersion};
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -26,46 +25,8 @@ pub(crate) fn test_tls13_cipher_suite_helpers() {
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub(crate) fn test_base64_decode() {
-    assert_eq!(base64_decode_bytes("SGVsbG8=").unwrap(), b"Hello");
-    assert_eq!(
-        base64_decode_bytes(""),
-        Err(super::super::CertificateDataError::Empty)
-    );
-    assert_eq!(
-        base64_decode_bytes("%"),
-        Err(super::super::CertificateDataError::InvalidEncoding)
-    );
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn configured_certificate_owns_its_encoded_material() {
-    use super::super::{Certificate, CertificateDataError};
-    let mut source = [0x30, 0x00];
-    let certificate = Certificate::from_der_bytes(&source).unwrap();
-    source[0] = 0x31;
-    assert!(certificate.der_span().eq_bytes(&[0x30, 0x00]));
-    assert_eq!(source, [0x31, 0x00]);
-    let pem = Certificate::from_pem("-----BEGIN CERTIFICATE-----\nMAA=\n-----END CERTIFICATE-----")
-        .unwrap();
-    assert!(pem.der_span().eq_bytes(&[0x30, 0x00]));
-    assert!(matches!(
-        Certificate::from_der_bytes(&[]),
-        Err(CertificateDataError::Empty)
-    ));
-    assert!(matches!(
-        Certificate::from_pem("-----BEGIN CERTIFICATE-----\n%\n-----END CERTIFICATE-----"),
-        Err(CertificateDataError::InvalidEncoding)
-    ));
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls_version_is_closed_to_tls13() {
-    assert_eq!(TlsVersion::TLS_1_3.major(), 3);
-    assert_eq!(TlsVersion::TLS_1_3.minor(), 4);
-    assert_eq!(TlsVersion::TLS_1_3.to_bytes(), [0x03, 0x04]);
+    assert_eq!(TlsVersion::WIRE, 0x0304);
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

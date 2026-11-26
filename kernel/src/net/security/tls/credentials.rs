@@ -3,159 +3,20 @@
 // ============================================================================
 
 use crate::net::security::x509::CertificateSpan;
-use alloc::string::String;
-use alloc::vec::Vec;
 use arrayvec::ArrayVec;
-use kernel_api::resource::net::PacketPayload;
 
-/// Immutable encoded material keeps configured bytes or received packets alive
-/// through every parsed borrow. Certificate policy establishes validity/trust.
+/// A process-lifetime encoded trust anchor. Received certificates borrow
+/// their encoding from the retained handshake payload.
 #[derive(Debug)]
-pub struct Certificate {
-    material: CertificateStorage,
-}
-
-#[derive(Debug)]
-enum CertificateStorage {
-    Bytes(Vec<u8>),
-    Packet(PacketPayload),
-    /// Process-lifetime material such as the built-in root store.
-    Static(&'static [u8]),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CertificateDataError {
-    Empty,
-    InvalidEncoding,
-    MetadataAllocation,
-}
+pub struct Certificate(&'static [u8]);
 
 impl Certificate {
-    pub fn from_der_payload(der: PacketPayload) -> Self {
-        Self {
-            material: CertificateStorage::Packet(der),
-        }
-    }
-
-    /// Borrows process-lifetime DER material without copying it.
-    ///
-    /// # Errors
-    /// Rejects empty material.
-    pub fn from_static_der(der: &'static [u8]) -> Result<Self, CertificateDataError> {
-        if der.is_empty() {
-            return Err(CertificateDataError::Empty);
-        }
-        Ok(Self {
-            material: CertificateStorage::Static(der),
-        })
-    }
-
-    /// Retains configured bytes in CPU-owned storage.
-    /// DER validity and trust are established by the certificate policy.
-    ///
-    /// # Errors
-    /// Rejects empty material or metadata allocation failure before publishing
-    /// a certificate; the caller retains its input on both outcomes.
-    pub fn from_der_bytes(der: &[u8]) -> Result<Self, CertificateDataError> {
-        if der.is_empty() {
-            return Err(CertificateDataError::Empty);
-        }
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(der.len())
-            .map_err(|_| CertificateDataError::MetadataAllocation)?;
-        bytes.extend_from_slice(der);
-        Ok(Self {
-            material: CertificateStorage::Bytes(bytes),
-        })
-    }
-
-    /// # Errors
-    /// Rejects empty decoded material, invalid base64 digits, or metadata
-    /// allocation failure. Rejection leaves the caller's PEM storage intact.
-    pub fn from_pem(pem: &str) -> Result<Self, CertificateDataError> {
-        let mut in_cert = false;
-        let mut encoded = String::new();
-        encoded
-            .try_reserve(pem.len())
-            .map_err(|_| CertificateDataError::MetadataAllocation)?;
-        for line in pem.lines() {
-            if line.contains("BEGIN CERTIFICATE") {
-                in_cert = true;
-            } else if line.contains("END CERTIFICATE") {
-                break;
-            } else if in_cert {
-                for c in line.trim().chars() {
-                    if c == '=' {
-                        break;
-                    }
-                    encoded.push(c);
-                }
-            }
-        }
-        Ok(Self {
-            material: CertificateStorage::Bytes(base64_decode_bytes(&encoded)?),
-        })
+    pub fn from_static_der(der: &'static [u8]) -> Option<Self> {
+        (!der.is_empty()).then_some(Self(der))
     }
 
     pub(crate) fn der_span(&self) -> CertificateSpan<'_> {
-        match &self.material {
-            CertificateStorage::Bytes(bytes) => CertificateSpan::from_bytes(bytes),
-            CertificateStorage::Packet(payload) => CertificateSpan::from_payload(payload),
-            CertificateStorage::Static(bytes) => CertificateSpan::from_bytes(bytes),
-        }
-    }
-}
-
-pub(crate) fn base64_decode_bytes(input: &str) -> Result<Vec<u8>, CertificateDataError> {
-    let mut decoded = Vec::new();
-    decoded
-        .try_reserve(input.len())
-        .map_err(|_| CertificateDataError::MetadataAllocation)?;
-    let mut chunk = [0u8; 3];
-    let mut chunk_len = 0usize;
-    let mut buf = 0u32;
-    let mut bits = 0;
-
-    for c in input.chars() {
-        if c == '=' {
-            break;
-        }
-
-        let value = base64_value(c).ok_or(CertificateDataError::InvalidEncoding)? as u32;
-        buf = (buf << 6) | value;
-        bits += 6;
-
-        if bits >= 8 {
-            bits -= 8;
-            chunk[chunk_len] = (buf >> bits) as u8;
-            chunk_len += 1;
-            buf &= (1 << bits) - 1;
-            if chunk_len == chunk.len() {
-                decoded.extend_from_slice(&chunk);
-                chunk_len = 0;
-            }
-        }
-    }
-
-    if chunk_len > 0 {
-        decoded.extend_from_slice(&chunk[..chunk_len]);
-    }
-
-    if decoded.is_empty() {
-        return Err(CertificateDataError::Empty);
-    }
-    Ok(decoded)
-}
-
-fn base64_value(c: char) -> Option<u8> {
-    match c {
-        'A'..='Z' => Some((c as u8) - b'A'),
-        'a'..='z' => Some((c as u8) - b'a' + 26),
-        '0'..='9' => Some((c as u8) - b'0' + 52),
-        '+' => Some(62),
-        '/' => Some(63),
-        _ => None,
+        CertificateSpan::from_bytes(self.0)
     }
 }
 

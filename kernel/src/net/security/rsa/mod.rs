@@ -88,7 +88,8 @@ impl BigUint {
         }
     }
 
-    pub fn encoded_len(&self) -> usize {
+    #[cfg(feature = "qemu-test-export")]
+    fn encoded_len(&self) -> usize {
         if self.is_zero() {
             1
         } else {
@@ -97,6 +98,7 @@ impl BigUint {
     }
 
     /// ビッグエンディアンバイト列を caller-owned buffer に書き込む
+    #[cfg(feature = "qemu-test-export")]
     pub fn write_be_bytes(&self, out: &mut [u8]) -> Option<usize> {
         let byte_count = self.encoded_len();
         if out.len() < byte_count {
@@ -150,29 +152,6 @@ impl BigUint {
         while self.len > 0 && self.limbs[self.len - 1] == 0 {
             self.len -= 1;
         }
-    }
-
-    /// 加算
-    pub fn add(&self, other: &Self) -> Self {
-        let mut result = Self::zero();
-        let max_len = self.len.max(other.len);
-        let mut carry: u64 = 0;
-
-        for i in 0..max_len {
-            let a = if i < self.len { self.limbs[i] } else { 0 };
-            let b = if i < other.len { other.limbs[i] } else { 0 };
-            let sum = (a as u128) + (b as u128) + (carry as u128);
-            result.limbs[i] = sum as u64;
-            carry = (sum >> 64) as u64;
-        }
-
-        result.len = max_len;
-        if carry != 0 && result.len < MAX_LIMBS {
-            result.limbs[result.len] = carry;
-            result.len += 1;
-        }
-
-        result
     }
 
     /// 減算 (self >= other 前提)
@@ -410,7 +389,6 @@ pub enum RsaError {
     DigestInfoMismatch,
     DigestMismatch,
     ModulusTooSmall,
-    EntropyUnavailable,
 }
 
 fn find_pkcs1_separator(em: &[u8]) -> Result<usize, RsaError> {
@@ -504,56 +482,6 @@ pub fn rsa_pkcs1_verify(
     let em = &em[..];
     let sep = find_pkcs1_separator(&em)?;
     verify_digest_info(&em[sep + 1..], prefix, digest, t_len)
-}
-
-pub fn rsa_pkcs1_encrypt_into(
-    key: &RsaPublicKey,
-    message: &[u8],
-    ciphertext_out: &mut [u8],
-) -> Result<usize, RsaError> {
-    let k = key.modulus.len();
-    // SECURITY: large allocation による DoS を防ぐため modulus size を制限する。
-    if k > RSA_MAX_BYTES || ciphertext_out.len() < k {
-        return Err(RsaError::ModulusTooSmall);
-    }
-
-    if message.len() > k.saturating_sub(11) {
-        return Err(RsaError::ModulusTooSmall);
-    }
-    let ps_len = k - 3 - message.len();
-    let mut em = [0u8; RSA_MAX_BYTES];
-    let em = &mut em[..k];
-    em[0] = 0x00;
-    em[1] = 0x02;
-    let mut offset = 2usize;
-    let mut ps_remaining = ps_len;
-    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-    while ps_remaining > 0 {
-        let random_bytes = crate::net::security::tls::crypto::generate_random()
-            .map_err(|_| RsaError::EntropyUnavailable)?;
-        for &b in &random_bytes {
-            if b != 0 {
-                em[offset] = b;
-                offset += 1;
-                ps_remaining -= 1;
-                if ps_remaining == 0 {
-                    break;
-                }
-            }
-        }
-    }
-    em[offset] = 0x00;
-    offset += 1;
-    em[offset..offset + message.len()].copy_from_slice(message);
-    let n = BigUint::from_be_bytes(key.modulus);
-    let e = BigUint::from_be_bytes(key.exponent);
-    let m = BigUint::from_be_bytes(em);
-    if m >= n {
-        return Err(RsaError::InvalidSignatureValue);
-    }
-    let c = m.mod_exp(&e, &n);
-    c.write_be_bytes_padded(&mut ciphertext_out[..k]);
-    Ok(k)
 }
 
 fn find_pss_padding_separator(db: &[u8]) -> Result<usize, RsaError> {

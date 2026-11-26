@@ -112,7 +112,6 @@ pub(super) static NETWORK_RUNTIME_CASES: &[(&str, NetworkRuntimeCase)] = &[
     ("net_tls_wave8_aes_gcm_key_invalid_nonce_len_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_tls_wave8_aes_gcm_key_invalid_nonce_len_smoke)),
     ("net_tls_wave8_aes_gcm_roundtrip_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_tls_wave8_aes_gcm_roundtrip_smoke)),
     ("net_tls_wave8_aes_key_expansion_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_tls_wave8_aes_key_expansion_smoke)),
-    ("net_tls_wave8_base64_decode_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_tls_wave8_base64_decode_smoke)),
     ("net_tls_wave8_chacha20_poly1305_auth_failure_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_tls_wave8_chacha20_poly1305_auth_failure_smoke)),
     ("net_tls_wave8_chacha20_poly1305_empty_plaintext_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_tls_wave8_chacha20_poly1305_empty_plaintext_smoke)),
     ("net_tls_wave8_chacha20_poly1305_rfc8439_decrypt_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_tls_wave8_chacha20_poly1305_rfc8439_decrypt_smoke)),

@@ -13,7 +13,7 @@
 
 mod buffer;
 mod config;
-mod credentials;
+pub(super) mod credentials;
 mod protocol;
 
 mod connection;
@@ -28,8 +28,6 @@ pub mod qemu_tests;
 
 pub use config::{TlsClientConfig, TlsTrustAnchors};
 pub use connection::{KeyUpdateAction, TlsEstablishedSession, TlsHandshake, TlsHandshakeStep};
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub use credentials::{Certificate, CertificateDataError};
 pub use error::{TlsError, TlsResult};
 pub use protocol::{CipherSuite, TlsVersion};
 

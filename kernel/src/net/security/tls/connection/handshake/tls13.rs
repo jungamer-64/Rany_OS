@@ -634,15 +634,16 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn certificate_verify_rejects_unoffered_signature_scheme() {
-        let config = crate::net::security::tls::TlsClientConfig::for_server_name(
+        let mut config = crate::net::security::tls::TlsClientConfig::for_server_name(
             "example.com",
             crate::net::security::tls::TlsTrustAnchors::empty(),
         )
-        .expect("test server name fits")
-        .with_signature_schemes(&[
-            crate::net::security::tls::protocol::SignatureScheme::ECDSA_SECP256R1_SHA256,
-        ])
-        .expect("test signature scheme set is non-empty");
+        .expect("test server name fits");
+        config.signature_schemes =
+            crate::net::security::tls::config::OfferedSignatureSchemes::from_slice(&[
+                crate::net::security::tls::protocol::SignatureScheme::ECDSA_SECP256R1_SHA256,
+            ])
+            .expect("test signature scheme set is non-empty");
         let conn =
             TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
 

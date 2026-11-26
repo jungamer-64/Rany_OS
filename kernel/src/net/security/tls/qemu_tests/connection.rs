@@ -111,10 +111,12 @@ fn test_tls_handshake_start_builds_client_hello() {
 }
 
 fn test_server_hello_rejects_unoffered_cipher_suite() {
-    let config = TlsClientConfig::for_server_name("example.com", TlsTrustAnchors::empty())
-        .expect("test server name fits")
-        .with_cipher_suites(&[CipherSuite::TLS_AES_128_GCM_SHA256])
-        .expect("test cipher suite set is non-empty");
+    let mut config = TlsClientConfig::for_server_name("example.com", TlsTrustAnchors::empty())
+        .expect("test server name fits");
+    config.cipher_suites = super::super::config::OfferedCipherSuites::from_slice(&[
+        CipherSuite::TLS_AES_128_GCM_SHA256,
+    ])
+    .expect("test cipher suite set is non-empty");
     let mut conn =
         TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
     let _ = conn
