@@ -164,11 +164,12 @@ pub unsafe trait KeyAdapter {
     /// エントリからキーを取得
     fn get_key(entry: &Self::Entry) -> &Self::Key;
 
-    /// エントリからRBLinkを取得（不変）
-    fn get_link(entry: &Self::Entry) -> &RBLink;
-
-    /// エントリからRBLinkを取得（可変）
-    fn get_link_mut(entry: &mut Self::Entry) -> &mut RBLink;
+    /// Project the embedded link while retaining the entry pointer's provenance.
+    ///
+    /// # Safety
+    /// `entry` points to a live entry. Implementations must project the same
+    /// field that `entry_from_link` inverts, without reborrowing the field.
+    unsafe fn link_from_entry(entry: *mut Self::Entry) -> *mut RBLink;
 
     /// RBLinkポインタからエントリポインタを取得
     ///
