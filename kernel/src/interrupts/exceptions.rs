@@ -402,30 +402,14 @@ define_interrupt!(
             .double_faults
             .fetch_add(1, Ordering::Relaxed);
 
-        early_print("\n");
-        early_print("========================================================\n");
-        early_print("              DOUBLE FAULT - UNRECOVERABLE\n");
-        early_print("========================================================\n");
-        early_print("Error Code: ");
+        crate::io::log::enter_panic_mode();
+        early_print("\n!!! DOUBLE FAULT (#DF) !!!\n");
+        early_print("Error code: ");
         early_print_hex(error_code);
-        early_print("\n\n");
-
-        early_print("Stack Frame:\n");
+        early_print("\n");
         dump_stack_frame(&stack_frame);
-
-        early_print("\nControl Registers:\n");
         dump_control_registers();
-
-        early_print("\nGeneral Registers:\n");
-        dump_registers();
-
-        early_print("\n[FATAL] System halted.\n");
-
-        // 回復不能 - ハルト
-        // LOOP_PROOF: mode=halt; reason=Fatal exception path intentionally halts forever after dumping unrecoverable processor state.;
-        loop {
-            x86_64::instructions::hlt();
-        }
+        crate::panic_handler::halt_current_cpu();
     }
 );
 

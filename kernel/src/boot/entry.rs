@@ -158,6 +158,11 @@ pub(super) static KERNEL_STACK: KernelStack = KernelStack {
     _bytes: core::cell::UnsafeCell::new([0; 4096 * KERNEL_STACK_PAGES]),
 };
 
+pub(crate) fn bootstrap_stack_bounds() -> core::ops::Range<usize> {
+    let start = (&raw const KERNEL_STACK) as usize;
+    start + 4096..start + core::mem::size_of::<KernelStack>()
+}
+
 #[unsafe(no_mangle)]
 #[unsafe(naked)]
 pub extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {

@@ -1,328 +1,106 @@
-// ============================================================================
-// src/panic_handler.rs - Enhanced Panic Handler with Domain Isolation
-// 設計書 8.1: スタックアンワインドとリソース回収
-// ============================================================================
-use crate::graphics::bsod::BsodInfo;
-use core::cell::UnsafeCell;
-use core::fmt::{self, Write};
-use core::mem::MaybeUninit;
-use core::panic::PanicInfo;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+//! Bounded diagnostics for a fatal kernel panic.
 
-/// 【設計書 8.5.1】Double Panic検出用フラグ
-/// 各CPUコアにパニック中フラグを設置（現在は単一コア想定）
+use crate::graphics::bsod::BsodInfo;
+use core::panic::{Location, PanicInfo};
+use core::sync::atomic::{AtomicBool, Ordering};
+
 static PANIC_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+static PANIC_RECORD: crate::sync::InitOnce<PanicRecord> = crate::sync::InitOnce::new();
 
 const MAX_PANIC_MSG: usize = 1024;
-const MAX_FILE_LEN: usize = 128;
 
-/// パニック情報の記録 (ヒープ割り当てなし)
-pub struct PanicRecord {
-    /// パニックメッセージ (UTF-8 bytes)
-    pub message: [u8; MAX_PANIC_MSG],
-    pub message_len: usize,
-    /// パニックが発生したドメインID
-    pub domain_id: Option<u64>,
-    /// パニックが発生した場所
-    pub location: Option<PanicLocation>,
-    /// パニック発生時刻（ティック）
-    pub tick: u64,
+struct PanicRecord {
+    message: &'static str,
+    location: Option<&'static Location<'static>>,
 }
 
-impl PanicRecord {
-    const fn empty() -> Self {
-        Self {
-            message: [0; MAX_PANIC_MSG],
-            message_len: 0,
-            domain_id: None,
-            location: None,
-            tick: 0,
-        }
-    }
+fn bounded_message(message: &str) -> &str {
+    &message[..message.floor_char_boundary(MAX_PANIC_MSG)]
 }
 
-/// パニック発生場所 (ヒープ割り当てなし)
-#[derive(Clone, Copy)]
-pub struct PanicLocation {
-    pub file: [u8; MAX_FILE_LEN],
-    pub file_len: usize,
-    pub line: u32,
-    pub column: u32,
-}
-
-/// First-writer-wins storage for the allocation-free panic path.
-struct PanicRecordCell {
-    state: AtomicU8,
-    record: UnsafeCell<MaybeUninit<PanicRecord>>,
-}
-
-impl PanicRecordCell {
-    const EMPTY: u8 = 0;
-    const WRITING: u8 = 1;
-    const VALID: u8 = 2;
-
-    const fn new() -> Self {
-        Self {
-            state: AtomicU8::new(Self::EMPTY),
-            record: UnsafeCell::new(MaybeUninit::uninit()),
-        }
-    }
-
-    fn try_capture(
-        &'static self,
-        fill: impl FnOnce(&mut PanicRecord),
-    ) -> Option<&'static PanicRecord> {
-        self.state
-            .compare_exchange(
-                Self::EMPTY,
-                Self::WRITING,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .ok()?;
-
-        // SAFETY: the successful state transition grants this caller the only
-        // mutable access. A complete value is installed before a reference is
-        // formed, and readers cannot observe it until the release publication.
-        let record = unsafe {
-            let slot = &mut *self.record.get();
-            slot.write(PanicRecord::empty());
-            slot.assume_init_mut()
-        };
-        fill(record);
-        self.state.store(Self::VALID, Ordering::Release);
-        Some(record)
-    }
-
-    fn get(&'static self) -> Option<&'static PanicRecord> {
-        if self.state.load(Ordering::Acquire) != Self::VALID {
-            return None;
-        }
-        // SAFETY: VALID is release-published only after initialization and the
-        // record is immutable thereafter. Acquire observes every initialized field.
-        Some(unsafe { (&*self.record.get()).assume_init_ref() })
-    }
-}
-
-// SAFETY: the atomic state grants exclusive initialization to one writer and
-// publishes only an immutable, fully initialized record to concurrent readers.
-unsafe impl Sync for PanicRecordCell {}
-
-static PANIC_RECORD: PanicRecordCell = PanicRecordCell::new();
-
-/// パニック統計
-static PANIC_COUNT: AtomicU64 = AtomicU64::new(0);
-
-/// 固定長バッファへの書き込み用ヘルパー
-struct PanicBufferWriter<'a> {
-    buffer: &'a mut [u8],
-    offset: usize,
-}
-
-impl<'a> PanicBufferWriter<'a> {
-    fn new(buffer: &'a mut [u8]) -> Self {
-        Self { buffer, offset: 0 }
-    }
-}
-
-impl<'a> Write for PanicBufferWriter<'a> {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        let remaining = self.buffer.len() - self.offset;
-        let bytes = s.as_bytes();
-        let len = bytes.len().min(remaining);
-
-        if len > 0 {
-            self.buffer[self.offset..self.offset + len].copy_from_slice(&bytes[..len]);
-            self.offset += len;
-        }
-
-        if len < bytes.len() {
-            // Buffer full, but we don't error, just truncate
-            Ok(())
-        } else {
-            Ok(())
-        }
-    }
-}
-
-/// Capture the panic record into the static buffer (lock-free, first-writer-wins).
-/// Returns a slice to the recorded message or a default fallback.
-fn panic_capture_record(info: &PanicInfo, domain_id: u64) -> &'static [u8] {
-    if let Some(record) = PANIC_RECORD.try_capture(|record| {
-        let mut writer = PanicBufferWriter::new(&mut record.message);
-        let _ = write!(writer, "{}", info.message());
-        record.message_len = writer.offset;
-
-        if let Some(loc) = info.location() {
-            let mut file_buf = [0u8; MAX_FILE_LEN];
-            let file_bytes = loc.file().as_bytes();
-            let copy_len = file_bytes.len().min(MAX_FILE_LEN);
-            file_buf[..copy_len].copy_from_slice(&file_bytes[..copy_len]);
-
-            record.location = Some(PanicLocation {
-                file: file_buf,
-                file_len: copy_len,
-                line: loc.line(),
-                column: loc.column(),
-            });
-        } else {
-            record.location = None;
-        }
-
-        record.domain_id = if domain_id > 0 { Some(domain_id) } else { None };
-        record.tick = crate::task::current_tick();
-    }) {
-        &record.message[..record.message_len]
-    } else {
-        crate::io::log::early_print("Concurrent panic detected, skipping record capture.\n");
-        b"Unknown panic"
-    }
-}
-
-/// Output the panic location and message to serial (lock-free).
-fn panic_output_location(info: &PanicInfo, message_slice: &[u8]) {
-    if let Some(location) = info.location() {
-        crate::io::log::early_print("Panic at ");
-        crate::io::log::early_print(location.file());
-        crate::io::log::early_print(":");
-        crate::io::log::early_print_dec(location.line() as u64);
-        crate::io::log::early_print(":");
-        crate::io::log::early_print_dec(location.column() as u64);
-        crate::io::log::early_print("\n");
-    } else {
-        crate::io::log::early_print("Panic at unknown location\n");
-    }
-
-    crate::io::log::early_print("Message: ");
-    if let Ok(s) = core::str::from_utf8(message_slice) {
-        crate::io::log::early_print(s);
-    } else {
-        crate::io::log::early_print("(invalid utf8 message)");
-    }
-    crate::io::log::early_print("\n");
-}
-
-/// Save IOMMU DMA panic record if message is valid UTF-8 (lock-free).
-fn panic_save_iommu_record(message_slice: &[u8]) {
-    if let Ok(s) = core::str::from_utf8(message_slice)
-        && let Some(info) = crate::io::iommu::api::write_panic_record(s)
-    {
-        crate::io::log::early_print("[PANIC] record saved\n");
-        crate::io::log::early_print("record phys=0x");
-        crate::io::log::early_print_hex(info.phys.as_u64());
-        crate::io::log::early_print("\n");
-    }
-}
-
-/// Build a BsodInfo struct with panic-safe metadata for BSOD rendering.
-fn panic_build_bsod(message_slice: &[u8]) -> BsodInfo<'_> {
-    // Keep the panic path minimal and allocation-free. Register capture has
-    // triggered secondary faults during SMP bring-up, which hides the original
-    // panic we actually need to diagnose.
-    let backtrace = crate::unwind::Backtrace::capture();
-
-    let (file_str, line, col) = if let Some(record) = PANIC_RECORD.get() {
-        if let Some(loc) = &record.location {
-            let f = core::str::from_utf8(&loc.file[..loc.file_len]).unwrap_or("unknown");
-            (Some(f), Some(loc.line), Some(loc.column))
-        } else {
-            (None, None, None)
-        }
-    } else {
-        (None, None, None)
-    };
-
-    let msg_str = core::str::from_utf8(message_slice).unwrap_or("Panic error");
-    let first_word = msg_str.split_whitespace().next().unwrap_or("KERNEL_PANIC");
-
-    let mut bsod_info = BsodInfo::new(msg_str);
-    if let (Some(f), Some(l), Some(c)) = (file_str, line, col) {
-        bsod_info = bsod_info.with_location(f, l, c);
-    }
-    if !backtrace.is_empty() {
-        bsod_info = bsod_info.with_backtrace(backtrace);
-    }
-    bsod_info = bsod_info.with_error_code(first_word);
-
-    if let Some(first) = bsod_info.backtrace.as_ref().and_then(|bt| bt.iter().next())
-        && let Some(sym) = &first.symbol
-    {
-        crate::io::log::early_print("[PANIC] Likely at symbol: ");
-        if let Some(name) = sym.name {
-            crate::io::log::early_print(name);
-            crate::io::log::early_print("\n");
-        }
-    }
-
-    bsod_info
-}
-
-/// パニックハンドラの本体
-/// 設計書 8.1: パニック捕捉とドメイン境界での処理
-pub fn handle_panic(info: &PanicInfo) -> ! {
-    // 割り込みを無効化
+/// Fatal Rust panic in the kernel image.
+pub(crate) fn handle_panic(info: &PanicInfo<'_>) -> ! {
     x86_64::instructions::interrupts::disable();
-
-    // 【設計書 8.5.1】Double Panic検出
-    if PANIC_IN_PROGRESS.swap(true, Ordering::SeqCst) {
-        crate::io::log::early_print("\n!!! DOUBLE PANIC DETECTED !!!\n");
-        crate::io::log::early_print("Aborting without further processing.\n");
-        // LOOP_PROOF: mode=halt; reason=Double panic path intentionally halts forever to prevent reentrant panic recovery attempts.;
-        loop {
-            x86_64::instructions::hlt();
-        }
+    if PANIC_IN_PROGRESS.swap(true, Ordering::AcqRel) {
+        crate::io::log::early_print("\n[panic] secondary panic; halting CPU\n");
+        halt_current_cpu();
     }
 
-    // パニックモードに入る（ログ出力時のデッドロック回避）
     crate::io::log::enter_panic_mode();
-
-    // 【設計書 8.4】パニック状態をマーク（PoisonLockのため）
-    crate::sync::set_panicking(true);
-
-    let _count = PANIC_COUNT.fetch_add(1, Ordering::Relaxed);
-    let domain_id = crate::cpu::CurrentCpu::acquire()
-        .and_then(|cpu| cpu.execution())
-        .map(|subject| subject.domain.as_u64())
-        .unwrap_or(crate::domain::DomainId::KERNEL.as_u64());
-
     crate::io::log::early_print("\n!!! KERNEL PANIC DETECTED !!!\n");
 
-    let message_slice = panic_capture_record(info, domain_id);
-    panic_output_location(info, message_slice);
-    panic_save_iommu_record(message_slice);
-    panic_notify_domain(domain_id, message_slice);
-
-    let bsod_info = panic_build_bsod(message_slice);
-    crate::graphics::bsod::dump_bsod_info_to_serial(&bsod_info);
-    display_bsod_on_panic(&bsod_info);
-
-    // システム停止
-    // LOOP_PROOF: mode=halt; reason=Primary panic path intentionally halts forever after logging to preserve crash state.;
-    loop {
-        x86_64::instructions::hlt();
-    }
-}
-
-/// パニック統計を取得 (Lock-Free read attempt)
-/// 注意: Stringを返すため、アロケーションが発生します。パニックハンドラ内では使用しないでください。
-pub fn panic_stats() -> PanicStats {
-    let msg = PANIC_RECORD.get().map(|record| {
-        let message =
-            core::str::from_utf8(&record.message[..record.message_len]).unwrap_or("Invalid UTF-8");
-        alloc::string::String::from(message)
+    // A panic argument can run arbitrary Debug or Display code. Only retain
+    // message text that is already available without calling a formatter.
+    let record = PANIC_RECORD.call_once(|| PanicRecord {
+        message: bounded_message(
+            info.message()
+                .as_str()
+                .unwrap_or("Panic message requires runtime formatting"),
+        ),
+        location: info.location(),
     });
 
+    if let Some(location) = record.location {
+        crate::io::log::print(format_args!(
+            "Panic at {}:{}:{}\n",
+            location.file(),
+            location.line(),
+            location.column(),
+        ));
+    }
+    crate::io::log::print(format_args!("Message: {}\n", record.message));
+
+    if let Some(saved) = crate::io::iommu::api::write_panic_record(record.message) {
+        crate::io::log::print(format_args!(
+            "[PANIC] record saved at {:#x}\n",
+            saved.phys.as_u64(),
+        ));
+    }
+
+    let mut bsod = BsodInfo::new(record.message);
+    if let Some(location) = record.location {
+        bsod = bsod.with_location(location.file(), location.line(), location.column());
+    }
+    let backtrace = crate::unwind::Backtrace::capture();
+    if !backtrace.is_empty() {
+        bsod = bsod.with_backtrace(backtrace);
+    }
+    bsod = bsod.with_error_code(
+        record
+            .message
+            .split_whitespace()
+            .next()
+            .unwrap_or("KERNEL_PANIC"),
+    );
+    crate::graphics::bsod::dump_bsod_info_to_serial(&bsod);
+    #[cfg(not(any(test, feature = "bench")))]
+    crate::graphics::try_with_framebuffer(|framebuffer| {
+        crate::graphics::bsod::display_bsod_direct(framebuffer, &bsod);
+    });
+    halt_current_cpu();
+}
+
+/// Snapshot of the fatal Rust panic, available once the record is published.
+pub fn panic_stats() -> PanicStats {
     PanicStats {
-        total_panics: PANIC_COUNT.load(Ordering::Relaxed),
-        last_panic: msg,
+        total_panics: u64::from(PANIC_IN_PROGRESS.load(Ordering::Acquire)),
+        last_panic: PANIC_RECORD.get().map(|record| record.message.into()),
     }
 }
 
-/// パニック統計
 #[derive(Debug, Clone)]
 pub struct PanicStats {
     pub total_panics: u64,
     pub last_panic: Option<alloc::string::String>,
+}
+
+/// The terminal CPU cannot resume execution of the interrupted context.
+pub(crate) fn halt_current_cpu() -> ! {
+    x86_64::instructions::interrupts::disable();
+    // LOOP_PROOF: mode=halt; reason=The faulting CPU has no continuation after the fatal boundary.;
+    loop {
+        x86_64::instructions::hlt();
+    }
 }
 
 // ============================================================================
@@ -423,56 +201,6 @@ pub fn setup_ist_stack_guards() {
     // nothing
 }
 
-// ============================================================================
-// Abort Handler
-// ============================================================================
-
-pub fn abort(message: &str) -> ! {
-    x86_64::instructions::interrupts::disable();
-    crate::io::log::enter_panic_mode();
-    crate::io::log::early_print("\n!!! ABORT: ");
-    crate::io::log::early_print(message);
-    crate::io::log::early_print(" !!!\n");
-    // LOOP_PROOF: mode=halt; reason=Abort path intentionally halts forever after reporting because no safe rollback exists.;
-    loop {
-        x86_64::instructions::hlt();
-    }
-}
-
-// ============================================================================
-// BSOD Display Functions
-// ============================================================================
-
-#[cfg(not(any(test, feature = "bench")))]
-fn display_bsod_on_panic(info: &crate::graphics::bsod::BsodInfo) {
-    // グラフィックスが初期化されているか確認
-    unsafe {
-        crate::graphics::force_unlock_framebuffer();
-    }
-
-    if crate::graphics::framebuffer().is_none() {
-        return;
-    }
-
-    // BSOD表示
-    crate::graphics::bsod::show_panic_bsod(info);
-}
-
-#[cfg(any(test, feature = "bench"))]
-fn display_bsod_on_panic(_info: &crate::graphics::bsod::BsodInfo) {
-    // No-op in tests
-}
-
-#[cfg(not(any(test, feature = "bench")))]
-pub fn test_bsod(message: &str) {
-    use crate::graphics::bsod::BsodInfo;
-    let mut info = BsodInfo::new(message);
-    info = info.with_location("test_file.rs", 42, 1);
-    crate::graphics::bsod::show_panic_bsod(&info);
-}
-
-#[cfg(any(test, feature = "bench"))]
-pub fn test_bsod(_message: &str) {}
 // Basic panic handler implementation
 pub fn panic(_info: &PanicInfo) -> ! {
     // Attempt to acquire lock and print panic info
@@ -486,5 +214,24 @@ pub fn panic(_info: &PanicInfo) -> ! {
     // LOOP_PROOF: mode=halt; reason=Fallback panic stub intentionally spins forever when panic infrastructure is unavailable.;
     loop {
         core::hint::spin_loop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_PANIC_MSG, bounded_message};
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn panic_message_keeps_the_longest_utf8_prefix() {
+        let fits = alloc::format!("{}\u{3042}", "a".repeat(MAX_PANIC_MSG - 3));
+        assert_eq!(bounded_message(&fits), fits);
+
+        let crosses_limit = alloc::format!("{}\u{3042}", "a".repeat(MAX_PANIC_MSG - 1));
+        assert_eq!(
+            bounded_message(&crosses_limit),
+            &crosses_limit[..MAX_PANIC_MSG - 1]
+        );
+        assert_eq!(bounded_message(""), "");
     }
 }

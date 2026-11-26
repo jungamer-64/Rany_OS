@@ -157,67 +157,42 @@ impl Backtrace {
 
     /// 現在の位置からバックトレースをキャプチャ
     pub fn capture() -> Self {
-        let mut bt = Self::new();
-        bt.capture_frames();
-        bt
+        let registers = StackRegisters::read();
+        let mut trace = Self::new();
+        trace.capture_frames(registers);
+        trace
     }
 
-    /// フレームをキャプチャ
-    fn capture_frames(&mut self) {
-        // 現在のフレームポインタを取得
-        let mut rbp: usize;
-        unsafe {
-            core::arch::asm!(
-                "mov {}, rbp",
-                out(reg) rbp,
-                options(nostack, preserves_flags)
-            );
-        }
-
-        let mut frame_num = 0;
-
-        // フレームポインタチェーンをたどる
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while frame_num < MAX_FRAMES {
-            // フレームポインタの有効性チェック
-            if !is_valid_stack_address(rbp) {
+    fn capture_frames(&mut self, registers: StackRegisters) {
+        let Some(stack) = ActiveStack::containing(registers.rsp) else {
+            return;
+        };
+        let mut rbp = registers.rbp;
+        // LOOP_PROOF: mode=bounded; reason=Each recorded frame consumes one slot and any invalid frame terminates the walk.;
+        for frame_number in self.count..MAX_FRAMES {
+            let Some((next_rbp, return_address, next_rsp)) = stack.frame_at(rbp) else {
                 break;
-            }
-
-            // リターンアドレスとスタックポインタを取得
-            let return_addr = read_usize_checked(rbp + 8).unwrap_or(0);
-            let next_rbp = read_usize_checked(rbp).unwrap_or(0);
-
-            // 無効なリターンアドレスで終了
-            if return_addr == 0 || !is_valid_code_address(return_addr) {
-                break;
-            }
-
-            let frame = StackFrame {
-                instruction_pointer: return_addr,
-                stack_pointer: rbp + 16,
-                frame_pointer: rbp,
             };
+            if !is_valid_code_address(return_address) {
+                break;
+            }
 
-            // シンボル情報を解決（可能な場合）
-            let symbol = resolve_symbol(return_addr);
-
-            self.entries[frame_num] = Some(BacktraceEntry {
-                frame_number: frame_num,
-                frame,
-                symbol,
+            self.entries[frame_number] = Some(BacktraceEntry {
+                frame_number,
+                frame: StackFrame {
+                    instruction_pointer: return_address,
+                    stack_pointer: next_rsp,
+                    frame_pointer: rbp,
+                },
+                symbol: resolve_symbol(return_address),
             });
+            self.count += 1;
 
-            frame_num += 1;
-
-            // 次のフレームへ
-            if next_rbp == 0 || next_rbp <= rbp {
+            if next_rbp <= rbp {
                 break;
             }
             rbp = next_rbp;
         }
-
-        self.count = frame_num;
     }
 
     /// フレーム数を取得
@@ -255,20 +230,84 @@ impl Default for Backtrace {
     }
 }
 
-/// 有効なスタックアドレスかチェック
-fn is_valid_stack_address(addr: usize) -> bool {
-    // スタックは通常高位アドレスにある
-    // カーネルスタックの範囲をチェック
-    if addr == 0 || addr > 0xFFFF_FFFF_FFFF_0000 {
-        return false;
+struct StackRegisters {
+    rsp: usize,
+    rbp: usize,
+}
+
+impl StackRegisters {
+    #[inline(always)]
+    fn read() -> Self {
+        let rsp: usize;
+        let rbp: usize;
+        // SAFETY: only snapshots the current CPU's frame and stack registers.
+        unsafe {
+            core::arch::asm!(
+                "mov {rsp}, rsp",
+                "mov {rbp}, rbp",
+                rsp = out(reg) rsp,
+                rbp = out(reg) rbp,
+                options(nomem, nostack, preserves_flags),
+            );
+        }
+        Self { rsp, rbp }
+    }
+}
+
+/// Reads only from a mapped stack whose backing is retained by this CPU.
+struct ActiveStack(core::ops::Range<usize>);
+
+impl ActiveStack {
+    fn containing(rsp: usize) -> Option<Self> {
+        let cpu = crate::cpu::CurrentCpu::acquire()?;
+        if let Some(bounds) = crate::task::context::task_stack_bounds(&cpu)
+            && bounds.contains(&(rsp as u64))
+        {
+            return Some(Self(rsp..bounds.end as usize));
+        }
+        if let Some(bounds) = cpu.descriptor_tables().ist_bounds_containing(rsp) {
+            return Some(Self(rsp..bounds.end));
+        }
+        if cpu.id() == crate::cpu::CpuId::BOOTSTRAP {
+            let bounds = crate::boot::entry::bootstrap_stack_bounds();
+            if bounds.contains(&rsp) {
+                return Some(Self(rsp..bounds.end));
+            }
+        }
+        None
     }
 
-    // アライメントチェック
-    if !addr.is_multiple_of(8) {
-        return false;
+    fn record_end(&self, address: usize, size: usize) -> Option<usize> {
+        let end = address.checked_add(size)?;
+        (address.is_multiple_of(size_of::<u64>()) && address >= self.0.start && end <= self.0.end)
+            .then_some(end)
     }
 
-    true
+    fn frame_at(&self, rbp: usize) -> Option<(usize, usize, usize)> {
+        let next_rsp = self.record_end(rbp, 2 * size_of::<u64>())?;
+        Some((
+            self.read_word(rbp)? as usize,
+            self.read_word(rbp + size_of::<u64>())? as usize,
+            next_rsp,
+        ))
+    }
+
+    fn read_word(&self, address: usize) -> Option<u64> {
+        self.record_end(address, size_of::<u64>())?;
+        let word: u64;
+        // SAFETY: the range belongs to a live, mapped stack on this CPU.
+        // Reading through an integer register also permits inspecting padding or
+        // inactive stack slots without constructing a Rust value in stack memory.
+        unsafe {
+            core::arch::asm!(
+                "mov {word}, qword ptr [{address}]",
+                word = lateout(reg) word,
+                address = in(reg) address,
+                options(readonly, nostack, preserves_flags),
+            );
+        }
+        Some(word)
+    }
 }
 
 /// 有効なコードアドレスかチェック
@@ -283,21 +322,9 @@ fn is_valid_code_address(addr: usize) -> bool {
     addr >= 0xFFFF_8000_0000_0000 || addr < 0x0000_8000_0000_0000
 }
 
-/// 安全なポインタ読み取り: usize
-pub(crate) fn read_usize_checked(addr: usize) -> Option<usize> {
-    if !is_valid_stack_address(addr) {
-        return None;
-    }
-    // Use centralized util to read from an address, which performs the unsafe read internally
-    Some(crate::util::read_unaligned_from_addr::<usize>(addr))
-}
-
-/// 安全なポインタ読み取り: u64
+/// Returns a word only when it lies within the current mapped stack.
 pub(crate) fn read_u64_checked(addr: usize) -> Option<u64> {
-    if !is_valid_stack_address(addr) {
-        return None;
-    }
-    Some(crate::util::read_unaligned_from_addr::<u64>(addr))
+    ActiveStack::containing(StackRegisters::read().rsp)?.read_word(addr)
 }
 
 // ============================================================================
@@ -352,8 +379,6 @@ pub fn print_backtrace() {
 /// レジスタ状態からバックトレースをキャプチャ
 pub fn capture_from_context(rip: usize, rsp: usize, rbp: usize) -> Backtrace {
     let mut bt = Backtrace::new();
-    let mut current_rbp = rbp;
-    let mut frame_num = 1;
 
     // 最初のフレーム（クラッシュ位置）
     bt.entries[0] = Some(BacktraceEntry {
@@ -366,35 +391,8 @@ pub fn capture_from_context(rip: usize, rsp: usize, rbp: usize) -> Backtrace {
         symbol: resolve_symbol(rip),
     });
 
-    // フレームチェーンをたどる
-    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-    while frame_num < MAX_FRAMES && is_valid_stack_address(current_rbp) {
-        let return_addr = read_usize_checked(current_rbp + 8).unwrap_or(0);
-        let next_rbp = read_usize_checked(current_rbp).unwrap_or(0);
-
-        if return_addr == 0 || !is_valid_code_address(return_addr) {
-            break;
-        }
-
-        bt.entries[frame_num] = Some(BacktraceEntry {
-            frame_number: frame_num,
-            frame: StackFrame {
-                instruction_pointer: return_addr,
-                stack_pointer: current_rbp + 16,
-                frame_pointer: current_rbp,
-            },
-            symbol: resolve_symbol(return_addr),
-        });
-
-        frame_num += 1;
-
-        if next_rbp == 0 || next_rbp <= current_rbp {
-            break;
-        }
-        current_rbp = next_rbp;
-    }
-
-    bt.count = frame_num;
+    bt.count = 1;
+    bt.capture_frames(StackRegisters { rsp, rbp });
     bt
 }
 
@@ -591,5 +589,22 @@ mod instruction_tests {
         let mut parser = SafeEhFrameParser::new(&records);
         assert!(parser.find_fde(0).is_none());
         assert!(parser.get_cached_cie(0).is_none());
+    }
+}
+
+#[cfg(test)]
+mod stack_bounds_tests {
+    use super::ActiveStack;
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn saved_frame_must_fit_completely_inside_the_mapped_stack() {
+        let stack = ActiveStack(0x1000..0x2000);
+        assert_eq!(stack.record_end(0x1000, 16), Some(0x1010));
+        assert_eq!(stack.record_end(0x1ff0, 16), Some(0x2000));
+        assert_eq!(stack.record_end(0x0ff8, 16), None);
+        assert_eq!(stack.record_end(0x1001, 16), None);
+        assert_eq!(stack.record_end(0x1ff8, 16), None);
+        assert_eq!(stack.record_end(usize::MAX - 7, 16), None);
     }
 }

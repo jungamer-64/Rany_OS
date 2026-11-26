@@ -52,16 +52,13 @@ where
     guard.as_mut().map(f)
 }
 
-/// フレームバッファが初期化されているか確認
-pub fn framebuffer() -> Option<()> {
-    if FRAMEBUFFER
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .is_some()
+/// Fatal diagnostics skip drawing when the framebuffer cannot be borrowed.
+#[cfg(not(any(test, feature = "bench")))]
+pub(crate) fn try_with_framebuffer(f: impl FnOnce(&mut Framebuffer)) {
+    if let Ok(mut guard) = FRAMEBUFFER.try_lock()
+        && let Some(framebuffer) = guard.as_mut()
     {
-        Some(())
-    } else {
-        None
+        f(framebuffer);
     }
 }
 

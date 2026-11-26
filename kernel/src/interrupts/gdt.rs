@@ -85,6 +85,17 @@ impl CpuDescriptorTables {
         &self.smp_ipi_stack as *const IstStack as u64 + IST_STACK_SIZE as u64
     }
 
+    pub(crate) fn ist_bounds_containing(&self, rsp: usize) -> Option<core::ops::Range<usize>> {
+        [
+            self.double_fault_stack_end(),
+            self.page_fault_stack_end(),
+            self.smp_ipi_stack_end(),
+        ]
+        .into_iter()
+        .map(|end| end as usize - IST_STACK_SIZE..end as usize)
+        .find(|bounds| bounds.contains(&rsp))
+    }
+
     fn gdt(&'static self) -> &'static GlobalDescriptorTable {
         let storage = unsafe { &*self.gdt.get() };
         unsafe { storage.assume_init_ref() }

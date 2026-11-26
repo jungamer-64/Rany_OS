@@ -33,11 +33,11 @@ pub use font::{BitmapFont, FONT_HEIGHT, FONT_WIDTH, Font};
 pub use framebuffer::Framebuffer;
 
 pub(crate) use global::init_from_boot_info;
+#[cfg(not(any(test, feature = "bench")))]
+pub(crate) use global::try_with_framebuffer;
 
 // グローバル関数の再エクスポート
-pub use global::{
-    console_print, force_unlock_framebuffer, framebuffer, init_console, with_framebuffer,
-};
+pub use global::{console_print, init_console, with_framebuffer};
 
 #[cfg(all(test, feature = "std"))]
 mod scanout_tests;
