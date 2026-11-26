@@ -173,18 +173,10 @@ pub struct DomainMessage {
 
 ### 6.1 panic 封じ込めの実装パターン
 
-- ドメイン境界の呼び出しは proxy 層で包み、panic を `Err` に変換する。
-- panic 後の共有状態は `PoisonLock<T>` 経由で検出し、呼び出し側で縮退処理する。
-- 「panic したセルを自動再起動するか」「停止維持するか」は運用ポリシーとして明示する。
-
-```rust
-fn call_cross_domain<R>(f: impl FnOnce() -> R) -> Result<R, DomainError> {
-    match core::panic::catch_unwind(core::panic::AssertUnwindSafe(f)) {
-        Ok(value) => Ok(value),
-        Err(_) => Err(DomainError::Panicked),
-    }
-}
-```
+- スタンドアロンセルの C ABI コールバックは `invoke_cell` で包む。セル内で Rust の破棄処理を完了してから、障害通知と ABI の失敗値を返す。
+- ドメイン proxy は、呼び出し中に捕捉されたセルパニックを `Err` に変換する。
+- デバイスに公開された可能性がある DMA の所有権は、完了かデバイスの停止を確認するまで保持する。
+- セルの停止や再起動は、サービスホストがドライバドメインの回復ポリシーに従って進める。
 
 ### 6.2 Double panic / fault hardening
 
