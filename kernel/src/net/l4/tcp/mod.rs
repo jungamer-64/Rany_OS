@@ -22,7 +22,6 @@ pub use connection::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TcpState {
     Closed,
-    Listen,
     SynSent,
     SynReceived,
     Established,

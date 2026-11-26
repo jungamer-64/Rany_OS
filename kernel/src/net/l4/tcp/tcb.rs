@@ -1899,7 +1899,7 @@ impl TcbTable {
                 return seq == snapshot.snd_una;
             }
             match snapshot.state {
-                TcpConnectionState::Closed | TcpConnectionState::Listen => return false,
+                TcpConnectionState::Closed => return false,
                 _ => {}
             }
             let una = snapshot.snd_una;

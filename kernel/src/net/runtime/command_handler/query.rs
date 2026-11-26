@@ -169,7 +169,6 @@ impl RuntimeCommandHandler {
                     .map(|snapshot| {
                         let state = match snapshot.state {
                             TcpConnectionState::Closed => "CLOSED",
-                            TcpConnectionState::Listen => "LISTEN",
                             TcpConnectionState::SynSent => "SYN_SENT",
                             TcpConnectionState::SynReceived => "SYN_RCVD",
                             TcpConnectionState::Established => "ESTABLISHED",
