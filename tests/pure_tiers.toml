@@ -30,6 +30,8 @@ exact = false
 serial = false
 mode = "hybrid"
 features = ["std"]
+# The kernel suite uses per-process isolation for global state.
+panic = "abort"
 
 [[package]]
 name = "rany_kernel"

@@ -301,8 +301,8 @@ def main() -> int:
         features = entry.get("features", [])
         if not isinstance(features, list) or not all(isinstance(v, str) and v for v in features):
             return fail(f"package[{idx}] features must be a list of non-empty strings")
-        panic = entry.get("panic")
-        if "panic" in entry and panic not in ("abort", "unwind"):
+        panic = entry.get("panic", "unwind")
+        if panic not in ("abort", "unwind"):
             return fail(f"package[{idx}] invalid panic strategy: {panic}")
         mode = entry.get("mode", "pure-only")
         if mode not in VALID_PACKAGE_MODES:
