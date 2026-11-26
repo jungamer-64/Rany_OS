@@ -526,7 +526,7 @@ fn init_graphics_console(context: &KernelBootContext) -> bool {
                 }
             }
             Err(error) => {
-                warn!(target: "init", "Graphics framebuffer init failed: {:?}", error);
+                warn!(target: "init", "Graphics framebuffer init failed: {error}");
                 false
             }
         }

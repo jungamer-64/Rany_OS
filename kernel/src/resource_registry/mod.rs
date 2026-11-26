@@ -366,16 +366,6 @@ impl NvmeNamespaceRegistry {
         }
         handles.len()
     }
-
-    pub fn lookup(namespace_id: u32) -> Option<AbiNvmeNamespaceInfo> {
-        NVME_NAMESPACES
-            .entries
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .values()
-            .find(|entry| entry.info.namespace_id == namespace_id)
-            .map(|entry| entry.info)
-    }
 }
 
 fn leak_driver_name(info: &AbiNetPortInfo) -> &'static str {

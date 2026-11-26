@@ -45,7 +45,7 @@ enum NvmeControllerState {
         identify_close_failure: Option<DmaCloseError>,
     },
     RundownOwned {
-        runtime: NvmeRuntime,
+        _runtime: NvmeRuntime,
         identify_close_failure: Option<DmaCloseError>,
     },
     Failed(NvmeStartupFailure),
@@ -149,7 +149,7 @@ impl NvmeControllerOwner {
                     identify_close_failure,
                 },
                 RuntimeRundownPoll::Owned(runtime) => NvmeControllerState::RundownOwned {
-                    runtime,
+                    _runtime: runtime,
                     identify_close_failure,
                 },
             },

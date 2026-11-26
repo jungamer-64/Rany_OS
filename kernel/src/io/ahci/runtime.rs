@@ -39,10 +39,7 @@ const PORT_COUNT: usize = 32;
 enum RetainedLease {
     PreparedTransfer(DmaTransitionError<PreparedDmaLease>),
     PreparedMetadata(DmaTransitionError<PreparedSharedDmaLease>),
-    UnmapFailed {
-        cause: DmaLeaseError,
-        lease: UnmapFailedDmaLease,
-    },
+    UnmapFailed(UnmapFailedDmaLease),
 }
 
 #[derive(Debug)]
@@ -54,13 +51,8 @@ enum RuntimePortState {
         route: IoCompletionRoute,
         operation: IoOperationType,
     },
-    AuthorityQuarantined {
-        cause: IoError,
-        lease: RetainedLease,
-    },
-    PortQuarantined {
-        cause: IoError,
-    },
+    AuthorityQuarantined(RetainedLease),
+    PortQuarantined,
 }
 
 #[derive(Debug)]
@@ -101,6 +93,18 @@ pub(crate) enum PortAdmission {
         cause: ControllerPortCause,
         cleanup: AdmissionCleanup,
     },
+}
+
+impl core::fmt::Display for PortAdmission {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Attached => f.write_str("attached"),
+            Self::Rejected { cause, cleanup } => write!(f, "rejected: {cause:?}, DMA {cleanup:?}"),
+            Self::Quarantined { cause, cleanup } => {
+                write!(f, "quarantined: {cause:?}, DMA {cleanup:?}")
+            }
+        }
+    }
 }
 
 /// Machine-readable disposition of metadata ownership after failed admission.
@@ -216,7 +220,7 @@ impl AhciRuntime {
             .submit(AtaCommand::identify(), buffer);
         if let Err(error) = result {
             let cause = map_submit_cause(error.cause);
-            state.ports[index] = RuntimePortState::PortQuarantined { cause };
+            state.ports[index] = RuntimePortState::PortQuarantined;
             match error.buffer {
                 RejectedBuffer::Cpu(buffer) => {
                     close_initialization_cpu(&mut state, buffer);
@@ -268,19 +272,17 @@ impl AhciRuntime {
                 close_initialization_cpu(&mut state, completion.buffer);
                 state.ports[index] = match geometry {
                     Ok(_) => RuntimePortState::Idle,
-                    Err(cause) => RuntimePortState::PortQuarantined { cause },
+                    Err(_) => RuntimePortState::PortQuarantined,
                 };
                 geometry.map(Some)
             }
             Ok(CommandPoll::Idle) => {
-                state.ports[index] = RuntimePortState::PortQuarantined {
-                    cause: IoError::DeviceError,
-                };
+                state.ports[index] = RuntimePortState::PortQuarantined;
                 Err(IoError::DeviceError)
             }
             Err(fault) => {
                 let cause = map_port_fault(fault);
-                state.ports[index] = RuntimePortState::PortQuarantined { cause };
+                state.ports[index] = RuntimePortState::PortQuarantined;
                 Err(cause)
             }
         }
@@ -309,9 +311,7 @@ impl AhciRuntime {
                     retain_or_release_initialization(&mut state, memory)
                 });
                 if let Some(slot) = state.ports.get_mut(port.as_usize()) {
-                    *slot = RuntimePortState::PortQuarantined {
-                        cause: IoError::DeviceError,
-                    };
+                    *slot = RuntimePortState::PortQuarantined;
                 }
                 PortAdmission::Quarantined { cause, cleanup }
             }
@@ -359,7 +359,7 @@ impl AhciRuntime {
             mut retained_initialization,
         } = state;
         for port in ports {
-            if let RuntimePortState::AuthorityQuarantined { lease, .. } = port {
+            if let RuntimePortState::AuthorityQuarantined(lease) = port {
                 retained_initialization.push(lease);
             }
         }
@@ -406,8 +406,7 @@ impl AhciRuntime {
                 return rejected(IoError::Busy, submission);
             }
             RuntimePortState::Unavailable => return rejected(IoError::NotSupported, submission),
-            RuntimePortState::AuthorityQuarantined { .. }
-            | RuntimePortState::PortQuarantined { .. } => {
+            RuntimePortState::AuthorityQuarantined(_) | RuntimePortState::PortQuarantined => {
                 return rejected(IoError::DeviceError, submission);
             }
         }
@@ -463,7 +462,7 @@ impl AhciRuntime {
                                 .ports
                                 .get_mut(index)
                                 .expect("validated AHCI port indexes the runtime table") =
-                                RuntimePortState::PortQuarantined { cause };
+                                RuntimePortState::PortQuarantined;
                         }
                         route.reject(command_identity.rebuild(buffer), cause)
                     }
@@ -472,10 +471,9 @@ impl AhciRuntime {
                             .ports
                             .get_mut(index)
                             .expect("validated AHCI port indexes the runtime table") =
-                            RuntimePortState::AuthorityQuarantined {
-                                cause,
-                                lease: RetainedLease::PreparedTransfer(failure),
-                            };
+                            RuntimePortState::AuthorityQuarantined(
+                                RetainedLease::PreparedTransfer(failure),
+                            );
                         IoSubmitOutcome::Finished(route.finish(
                             IoCompletion::authority_quarantined(
                                 command_identity.operation(),
@@ -517,12 +515,9 @@ impl AhciRuntime {
             if matches!(polled, Ok(CommandPoll::Pending)) {
                 continue;
             }
-            let RuntimePortState::Submitted { route, operation } = core::mem::replace(
-                &mut state.ports[index],
-                RuntimePortState::PortQuarantined {
-                    cause: IoError::DeviceError,
-                },
-            ) else {
+            let RuntimePortState::Submitted { route, operation } =
+                core::mem::replace(&mut state.ports[index], RuntimePortState::PortQuarantined)
+            else {
                 unreachable!("submitted state is held under the same controller lock")
             };
             let completion = match polled {
@@ -535,7 +530,7 @@ impl AhciRuntime {
                 }
                 Err(fault) => {
                     let cause = map_port_fault(fault);
-                    state.ports[index] = RuntimePortState::PortQuarantined { cause };
+                    state.ports[index] = RuntimePortState::PortQuarantined;
                     IoCompletion::outcome_unknown(operation, cause)
                 }
                 Ok(CommandPoll::Pending) => unreachable!("pending completion was not consumed"),
@@ -688,7 +683,7 @@ fn close_initialization_cpu(state: &mut RuntimeState, memory: CpuDmaLease) -> Ad
             let (cause, lease) = failure.into_parts();
             state
                 .retained_initialization
-                .push(RetainedLease::UnmapFailed { cause, lease });
+                .push(RetainedLease::UnmapFailed(lease));
             AdmissionCleanup::UnmapFailedRetained(cause)
         }
     }
@@ -763,12 +758,12 @@ fn release_retained(lease: RetainedLease) -> Result<(), (RuntimeShutdownCause, R
                 }
             }
         }
-        RetainedLease::UnmapFailed { lease, .. } => {
+        RetainedLease::UnmapFailed(lease) => {
             return lease.retry_close().map_err(|failure| {
                 let (cause, lease) = failure.into_parts();
                 (
                     RuntimeShutdownCause::Unmap(cause),
-                    RetainedLease::UnmapFailed { cause, lease },
+                    RetainedLease::UnmapFailed(lease),
                 )
             });
         }
@@ -779,7 +774,7 @@ fn release_retained(lease: RetainedLease) -> Result<(), (RuntimeShutdownCause, R
             let (cause, lease) = failure.into_parts();
             Err((
                 RuntimeShutdownCause::Unmap(cause),
-                RetainedLease::UnmapFailed { cause, lease },
+                RetainedLease::UnmapFailed(lease),
             ))
         }
     }

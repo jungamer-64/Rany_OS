@@ -701,6 +701,7 @@ define_interrupt!(
     }
 );
 
+#[cfg(not(target_os = "none"))]
 define_interrupt!(
     fn apic_timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
         record_interrupt_frame(APIC_TIMER_VECTOR, &_stack_frame);

@@ -205,13 +205,15 @@ impl RuntimeQueue {
 }
 
 /// Failure before a runtime can publish any scheduler or poller owner.
+/// The caller retains the controller through this outcome for the lifetime of
+/// its startup failure state.
 pub(crate) enum RuntimeCreateError {
     InvalidController {
-        controller: NvmeController,
+        _controller: NvmeController,
         namespace: NamespaceInfo,
     },
     MetadataAllocation {
-        controller: NvmeController,
+        _controller: NvmeController,
         namespace: NamespaceInfo,
     },
 }
@@ -252,27 +254,27 @@ impl NvmeRuntime {
             || namespace.byte_capacity().is_none()
         {
             return Err(RuntimeCreateError::InvalidController {
-                controller,
+                _controller: controller,
                 namespace,
             });
         }
         let mut queues = Vec::new();
         if queues.try_reserve_exact(queue_count).is_err() {
             return Err(RuntimeCreateError::MetadataAllocation {
-                controller,
+                _controller: controller,
                 namespace,
             });
         }
         for index in 0..queue_count {
             let Some(queue_id) = index.checked_add(1).and_then(|id| u16::try_from(id).ok()) else {
                 return Err(RuntimeCreateError::InvalidController {
-                    controller,
+                    _controller: controller,
                     namespace,
                 });
             };
             let Some(depth) = controller.queue_depth(queue_id) else {
                 return Err(RuntimeCreateError::InvalidController {
-                    controller,
+                    _controller: controller,
                     namespace,
                 });
             };
@@ -280,7 +282,7 @@ impl NvmeRuntime {
                 Ok(state) => state,
                 Err(()) => {
                     return Err(RuntimeCreateError::MetadataAllocation {
-                        controller,
+                        _controller: controller,
                         namespace,
                     });
                 }

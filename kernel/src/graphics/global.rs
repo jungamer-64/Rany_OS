@@ -13,10 +13,18 @@ use super::{Color, framebuffer::PixelBuffer};
 
 static FRAMEBUFFER: PoisonLock<Option<Framebuffer>> = PoisonLock::new(None);
 
-#[derive(Debug)]
 pub(crate) enum FramebufferInitError {
     Resource(crate::resource_registry::mmio::BootScanoutError),
     Framebuffer(super::framebuffer::FramebufferError),
+}
+
+impl core::fmt::Display for FramebufferInitError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Resource(cause) => write!(f, "boot scanout acquisition failed: {cause:?}"),
+            Self::Framebuffer(cause) => write!(f, "framebuffer construction failed: {cause:?}"),
+        }
+    }
 }
 
 /// The boot phase has already prepared the only scanout owner before AP startup.

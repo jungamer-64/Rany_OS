@@ -91,12 +91,63 @@ enum StartupFailure {
     },
     PciUnavailable,
     Acquisition(ControllerOpenError),
-    HandoffDeadline(AhciAcquisition),
+    HandoffDeadline {
+        _owner: AhciAcquisition,
+    },
     DmaWidth {
         cause: crate::io::iommu::types::IommuError,
-        controller: AhciController,
+        _controller: AhciController,
     },
-    Metadata(AhciController),
+    Metadata {
+        _controller: AhciController,
+    },
+}
+
+impl core::fmt::Display for StartupFailure {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Request(cause) => write!(f, "MMIO request failed: {cause:?}"),
+            Self::Mapping(cause) => write!(f, "MMIO mapping failed: {cause:?}"),
+            Self::PciMemory(cause) => write!(f, "PCI memory decoding failed: {cause:?}"),
+            Self::PciBusMaster {
+                cause,
+                memory_rollback,
+            } => write!(
+                f,
+                "PCI bus mastering failed: {cause:?}, memory decoding rollback: {memory_rollback:?}"
+            ),
+            Self::PciUnavailable => f.write_str("PCI configuration unavailable"),
+            Self::Acquisition(cause) => write!(f, "controller acquisition failed: {cause:?}"),
+            Self::HandoffDeadline { .. } => f.write_str("controller handoff deadline elapsed"),
+            Self::DmaWidth { cause, .. } => write!(f, "DMA address width setup failed: {cause:?}"),
+            Self::Metadata { .. } => f.write_str("runtime metadata allocation failed"),
+        }
+    }
+}
+
+impl core::fmt::Display for DiscoveryFailure {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Allocation(cause) => write!(f, "DMA allocation failed: {cause:?}"),
+            Self::Admission(cause) => write!(f, "port admission {cause}"),
+            Self::Identify(cause) => write!(f, "IDENTIFY failed: {cause:?}"),
+            Self::IdentifyDeadline => f.write_str("IDENTIFY deadline elapsed"),
+            Self::IdentifyLateCompletion(result) => {
+                write!(f, "late IDENTIFY completion: {result:?}")
+            }
+        }
+    }
+}
+
+impl core::fmt::Display for ShutdownBlocker {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::RequestsActive(ports) => write!(f, "active ports {ports:#010x}"),
+            Self::Shared => f.write_str("runtime still shared"),
+            Self::Preparation => f.write_str("shutdown preparation failed"),
+            Self::Poisoned => f.write_str("runtime lock poisoned"),
+        }
+    }
 }
 
 impl SystemIntegration {
@@ -144,6 +195,18 @@ impl SystemIntegration {
             }
             let message = self.ahci_controllers[index].summary();
             self.log(&message);
+            for (port, cause) in self.ahci_controllers[index]
+                .discovery_failures
+                .iter()
+                .enumerate()
+            {
+                if let Some(cause) = cause {
+                    log::warn!(
+                        "AHCI {:?} port {port}: {cause}",
+                        self.ahci_controllers[index].device
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -190,7 +253,9 @@ impl AhciControllerOwner {
                 Ok(AhciAcquisitionPoll::Waiting(owner)) => {
                     if expired(started, HANDOFF_DEADLINE_NS) {
                         (
-                            ControllerState::Failed(StartupFailure::HandoffDeadline(owner)),
+                            ControllerState::Failed(StartupFailure::HandoffDeadline {
+                                _owner: owner,
+                            }),
                             true,
                         )
                     } else {
@@ -212,7 +277,10 @@ impl AhciControllerOwner {
                         crate::io::iommu::api::register_device_dma_width(iommu_device, width)
                     {
                         (
-                            ControllerState::Failed(StartupFailure::DmaWidth { cause, controller }),
+                            ControllerState::Failed(StartupFailure::DmaWidth {
+                                cause,
+                                _controller: controller,
+                            }),
                             true,
                         )
                     } else {
@@ -232,7 +300,9 @@ impl AhciControllerOwner {
                                 false,
                             ),
                             Err(controller) => (
-                                ControllerState::Failed(StartupFailure::Metadata(controller)),
+                                ControllerState::Failed(StartupFailure::Metadata {
+                                    _controller: controller,
+                                }),
                                 true,
                             ),
                         }
@@ -341,11 +411,14 @@ impl AhciControllerOwner {
             if !matches!(cause, Some(DiscoveryFailure::IdentifyDeadline)) {
                 continue;
             }
-            match runtime.poll_identify(PortNumber::new(index as u8)) {
-                Ok(None) => {}
-                Ok(Some(_)) => *cause = Some(DiscoveryFailure::IdentifyLateCompletion(Ok(()))),
-                Err(error) => *cause = Some(DiscoveryFailure::IdentifyLateCompletion(Err(error))),
-            }
+            let result = match runtime.poll_identify(PortNumber::new(index as u8)) {
+                Ok(None) => continue,
+                Ok(Some(_)) => Ok(()),
+                Err(error) => Err(error),
+            };
+            let completed = DiscoveryFailure::IdentifyLateCompletion(result);
+            log::warn!("AHCI {:?} port {index}: {completed}", self.device);
+            *cause = Some(completed);
         }
         self
     }
@@ -448,10 +521,15 @@ impl AhciControllerOwner {
                 devices.iter().flatten().count()
             ),
             ControllerState::Failed(cause) => {
-                alloc::format!("    AHCI {:?}: startup retained {:?}", self.device, cause)
+                alloc::format!("    AHCI {:?}: startup failed: {cause}", self.device)
             }
-            ControllerState::Draining { cause, .. } => {
-                alloc::format!("    AHCI {:?}: rundown blocked {:?}", self.device, cause)
+            ControllerState::Draining {
+                cause: Some(cause), ..
+            } => {
+                alloc::format!("    AHCI {:?}: rundown blocked: {cause}", self.device)
+            }
+            ControllerState::Draining { cause: None, .. } => {
+                alloc::format!("    AHCI {:?}: draining", self.device)
             }
             ControllerState::Closing { cause, .. } => {
                 alloc::format!("    AHCI {:?}: release incomplete {:?}", self.device, cause)
