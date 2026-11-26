@@ -57,33 +57,6 @@ impl<const N: usize> FrameQueue<N> {
         self.pending_payload
     }
 
-    pub(super) fn copy_pending(&self, output: &mut [u8]) -> usize {
-        let mut cursor = 0;
-        let mut remaining = self.remaining_in_frame;
-        let written = output.len().min(self.pending_payload);
-        for byte in &mut output[..written] {
-            if remaining == 0 {
-                let low = self
-                    .bytes
-                    .get(cursor)
-                    .expect("pending frame contains a length");
-                let high = self
-                    .bytes
-                    .get(cursor + 1)
-                    .expect("pending frame contains a length");
-                remaining = usize::from(u16::from_le_bytes([low, high]));
-                cursor += LENGTH_BYTES;
-            }
-            *byte = self
-                .bytes
-                .get(cursor)
-                .expect("frame admission includes its payload");
-            cursor += 1;
-            remaining -= 1;
-        }
-        written
-    }
-
     fn clear(&mut self) {
         self.bytes.clear();
         self.remaining_in_frame = 0;
@@ -138,21 +111,20 @@ mod tests {
 
     #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
     #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
-    fn saturation_preserves_whole_records_and_pending_snapshot() {
+    fn saturation_preserves_whole_records() {
         let mut queue = FrameQueue::<14>::new();
         assert!(queue.push(b"prior\n"));
         assert!(!queue.push(b"prefix body\n"));
 
-        let mut output = [0; 14];
-        assert_eq!(queue.copy_pending(&mut output), 6);
-        assert_eq!(&output[..6], b"prior\n");
-        for _ in 0..5 {
-            assert!(queue.pop().is_some());
+        for &byte in b"prior" {
+            assert_eq!(queue.pop(), Some(byte));
         }
 
         assert!(queue.push(b"next line\n"));
-        assert_eq!(queue.copy_pending(&mut output), 11);
-        assert_eq!(&output[..11], b"\nnext line\n");
+        for &byte in b"\nnext line\n" {
+            assert_eq!(queue.pop(), Some(byte));
+        }
+        assert_eq!(queue.pop(), None);
     }
 
     #[cfg_attr(any(feature = "std", target_os = "linux"), test)]

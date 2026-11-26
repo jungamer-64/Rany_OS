@@ -60,15 +60,6 @@ pub fn dropped_log_records() -> usize {
     DROPPED_LOG_RECORDS.load(Ordering::Relaxed)
 }
 
-/// Copies a snapshot of bytes currently pending for the serial transport.
-pub fn peek_global_log(dst: &mut [u8]) -> usize {
-    serial::copy_pending_logs(dst)
-}
-
-pub fn get_log_len() -> usize {
-    serial::pending_log_bytes()
-}
-
 /// Installs the logger before interrupts and the heap are available.
 ///
 /// # Errors
@@ -184,5 +175,5 @@ pub fn bench_pop_global_buf(dst: &mut [u8]) -> usize {
 
 #[cfg(feature = "bench")]
 pub fn bench_total_pending_bytes() -> usize {
-    get_log_len()
+    serial::pending_log_bytes()
 }

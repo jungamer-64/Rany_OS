@@ -180,24 +180,6 @@ pub fn enter(boot_info: &'static ExoBootInfo) -> ! {
     super::phases::kmain_inner(boot_info)
 }
 
-/// Early serial port (COM1) initialization and boot message output.
-pub(super) fn init_early_serial() {
-    unsafe {
-        let port = 0x3F8u16;
-        core::arch::asm!("out dx, al", in("dx") port + 1, in("al") 0u8);
-        core::arch::asm!("out dx, al", in("dx") port + 3, in("al") 0x80u8);
-        core::arch::asm!("out dx, al", in("dx") port + 0, in("al") 0x03u8);
-        core::arch::asm!("out dx, al", in("dx") port + 1, in("al") 0x00u8);
-        core::arch::asm!("out dx, al", in("dx") port + 3, in("al") 0x03u8);
-        core::arch::asm!("out dx, al", in("dx") port + 2, in("al") 0xC7u8);
-        core::arch::asm!("out dx, al", in("dx") port + 4, in("al") 0x0Bu8);
-        core::arch::asm!("out dx, al", in("dx") port, in("al") b'M');
-        for byte in b"RanyOS UEFI Boot OK!\r\n" {
-            core::arch::asm!("out dx, al", in("dx") port, in("al") *byte);
-        }
-    }
-}
-
 /// ACPI and IOMMU initialization.
 fn iommu_config_from_boot_policy(
     policy: &boot_proto::BootPolicy,

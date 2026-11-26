@@ -31,18 +31,6 @@ fn test_histogram_percentile() {
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_trace_event() {
-    let buf = TraceBuffer::new(100);
-    buf.enable();
-    buf.record(TracePointId(1), 0, 42);
-
-    let events = buf.drain();
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].data, 42);
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_benchmark_runner() {
     let mut counter = 0u64;
     let result = BenchmarkRunner::run("test", 1000, || {

@@ -11,7 +11,6 @@
 //! - 統計ヒストグラム (`Histogram`)
 //! - パフォーマンスカウンタ (`PerfStats`)
 //! - リソースモニタリング (`ResourceMonitor`)
-//! - トレースポイント / リングバッファ (`TraceBuffer`)
 //! - マイクロベンチマーク (`BenchmarkRunner`)
 //!
 //! ## 関連モジュール（可観測性ファミリー）
@@ -413,88 +412,6 @@ impl ResourceMonitor {
 }
 
 // ============================================================================
-// Trace Points
-// ============================================================================
-
-/// トレースポイントID
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TracePointId(pub u32);
-
-/// トレースイベント
-#[derive(Debug, Clone)]
-pub struct TraceEvent {
-    pub id: TracePointId,
-    pub timestamp: u64,
-    pub cpu: u32,
-    pub data: u64,
-}
-
-/// トレースバッファ
-pub struct TraceBuffer {
-    /// イベントバッファ
-    events: PoisonLock<Vec<TraceEvent>>,
-    /// 最大サイズ
-    max_events: usize,
-    /// 有効フラグ
-    enabled: AtomicBool,
-    /// ドロップカウント
-    dropped: AtomicU64,
-}
-
-impl TraceBuffer {
-    pub fn new(max_events: usize) -> Self {
-        Self {
-            events: PoisonLock::new(Vec::with_capacity(max_events)),
-            max_events,
-            enabled: AtomicBool::new(false),
-            dropped: AtomicU64::new(0),
-        }
-    }
-
-    /// トレースを有効化
-    pub fn enable(&self) {
-        self.enabled.store(true, Ordering::Release);
-    }
-
-    /// トレースを無効化
-    pub fn disable(&self) {
-        self.enabled.store(false, Ordering::Release);
-    }
-
-    /// イベントを記録
-    pub fn record(&self, id: TracePointId, cpu: u32, data: u64) {
-        if !self.enabled.load(Ordering::Acquire) {
-            return;
-        }
-
-        let event = TraceEvent {
-            id,
-            timestamp: rdtsc(),
-            cpu,
-            data,
-        };
-
-        let mut events = self.events.lock().unwrap_or_else(|e| e.into_inner());
-        if events.len() >= self.max_events {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
-            events.remove(0);
-        }
-        events.push(event);
-    }
-
-    /// イベントを取得してクリア
-    pub fn drain(&self) -> Vec<TraceEvent> {
-        let mut events = self.events.lock().unwrap_or_else(|e| e.into_inner());
-        core::mem::take(&mut *events)
-    }
-
-    /// ドロップカウントを取得
-    pub fn dropped_count(&self) -> u64 {
-        self.dropped.load(Ordering::Relaxed)
-    }
-}
-
-// ============================================================================
 // Micro-Benchmark Framework (diag固有)
 // ============================================================================
 
@@ -594,11 +511,9 @@ pub struct ThroughputResult {
 
 static PERF_STATS: PoisonLock<Option<PerfStats>> = PoisonLock::new(None);
 static RESOURCE_MONITOR: PoisonLock<Option<ResourceMonitor>> = PoisonLock::new(None);
-static TRACE_BUFFER: PoisonLock<Option<TraceBuffer>> = PoisonLock::new(None);
 
 /// 診断システムを初期化
 pub fn init() {
     *PERF_STATS.lock().unwrap_or_else(|e| e.into_inner()) = Some(PerfStats::new());
     *RESOURCE_MONITOR.lock().unwrap_or_else(|e| e.into_inner()) = Some(ResourceMonitor::new(1000));
-    *TRACE_BUFFER.lock().unwrap_or_else(|e| e.into_inner()) = Some(TraceBuffer::new(10000));
 }

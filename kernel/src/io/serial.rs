@@ -73,7 +73,7 @@ impl Channel {
     fn allowed_in(self, session: Session) -> bool {
         match self {
             Self::Log | Self::Console => session == Session::Console,
-            Self::Debugger => session != Session::Panic,
+            Self::Debugger => session == Session::Debugger,
         }
     }
 }
@@ -127,20 +127,13 @@ pub(crate) fn handle_interrupt() {
     );
 }
 
+#[cfg(feature = "bench")]
 pub(super) fn pending_log_bytes() -> usize {
     TRANSMIT
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .log
         .pending()
-}
-
-pub(super) fn copy_pending_logs(dst: &mut [u8]) -> usize {
-    TRANSMIT
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .log
-        .copy_pending(dst)
 }
 
 #[cfg(feature = "bench")]
