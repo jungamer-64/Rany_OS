@@ -67,7 +67,6 @@ jobs:
       QEMU_TEST_ACCEL: tcg
       # Capacity admission exercises all guarded task stacks plus boot and driver resources.
       QEMU_TEST_MEMORY_MB: 2048
-      QEMU_TEST_TIMEOUT_SECS: 240
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

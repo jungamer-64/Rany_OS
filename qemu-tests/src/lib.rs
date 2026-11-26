@@ -35,9 +35,10 @@ fn base_config(profile: &str) -> RunConfig {
     } else if matches!(profile, "nightly-required" | "cpu-hotplug-sparse") {
         300
     } else if profile == "driver_domain" {
-        240
+        // Auto-commit observes the full guest validation window under TCG.
+        720
     } else {
-        120
+        240
     };
     cfg.timeout_secs = env_u64("QEMU_TEST_TIMEOUT_SECS", default_timeout);
     cfg.memory_mb = env_u64("QEMU_TEST_MEMORY_MB", 2048);
