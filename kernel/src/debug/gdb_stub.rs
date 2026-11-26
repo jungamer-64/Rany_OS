@@ -24,6 +24,7 @@ pub enum GdbStubError {
     InvalidCommand,
     InvalidAddress,
     TargetError,
+    TransportWrite { written: usize, requested: usize },
     Unsupported,
 }
 
@@ -45,7 +46,7 @@ pub trait GdbTarget {
 
 pub trait GdbTransport: Send + Sync {
     fn try_read_byte(&self) -> Option<u8>;
-    fn write_bytes(&self, bytes: &[u8]);
+    fn write_bytes(&self, bytes: &[u8]) -> Result<(), GdbStubError>;
 }
 
 struct KernelGdbTarget {
@@ -300,18 +301,18 @@ impl GdbServer {
 
         match parse_packet(&packet) {
             Ok(payload) => {
-                slot.transport.write_bytes(b"+");
+                slot.transport.write_bytes(b"+")?;
                 let response = {
                     let mut target = self.target.lock().unwrap_or_else(|e| e.into_inner());
                     self.stub.handle_payload(payload, &mut *target)?
                 };
                 if let Some(resp_payload) = response {
                     let framed = frame_packet(&resp_payload);
-                    slot.transport.write_bytes(&framed);
+                    slot.transport.write_bytes(&framed)?;
                 }
             }
             Err(GdbStubError::InvalidChecksum) => {
-                slot.transport.write_bytes(b"-");
+                slot.transport.write_bytes(b"-")?;
             }
             Err(e) => return Err(e),
         }
@@ -331,8 +332,12 @@ impl GdbServer {
             if active != ACTIVE_NONE && active != idx {
                 continue;
             }
-            if let Ok(true) = self.process_one_packet(idx, slot) {
-                return true;
+            match self.process_one_packet(idx, slot) {
+                Ok(true) => return true,
+                Err(error @ GdbStubError::TransportWrite { .. }) => {
+                    log::warn!("KGDB response transmission failed: {error:?}");
+                }
+                _ => {}
             }
         }
         false
@@ -364,21 +369,29 @@ impl GdbServer {
     }
 }
 
-pub struct SerialCom1Transport;
+pub(crate) struct SerialCom1Transport(crate::drivers::serial::DebuggerSerial);
 
 impl SerialCom1Transport {
-    pub const fn new() -> Self {
-        Self
+    pub(crate) const fn new(port: crate::drivers::serial::DebuggerSerial) -> Self {
+        Self(port)
     }
 }
 
 impl GdbTransport for SerialCom1Transport {
     fn try_read_byte(&self) -> Option<u8> {
-        crate::drivers::serial::read_debugger()
+        self.0.read()
     }
 
-    fn write_bytes(&self, bytes: &[u8]) {
-        crate::drivers::serial::write_debugger(bytes);
+    fn write_bytes(&self, bytes: &[u8]) -> Result<(), GdbStubError> {
+        let written = self.0.write(bytes);
+        if written == bytes.len() {
+            Ok(())
+        } else {
+            Err(GdbStubError::TransportWrite {
+                written,
+                requested: bytes.len(),
+            })
+        }
     }
 }
 
@@ -396,18 +409,8 @@ pub fn gdb_stub() -> Option<&'static GdbStub> {
     GDB_SERVER.get().map(|s| &s.stub)
 }
 
-pub fn register_transport(transport: Arc<dyn GdbTransport>) -> Result<usize, GdbStubError> {
-    let server = init_gdb_stub();
-    Ok(server.register_transport(transport))
-}
-
 pub fn poll_once() -> bool {
     gdb_server().map(|s| s.poll_once()).unwrap_or(false)
-}
-
-pub fn set_enabled(enabled: bool) {
-    let server = init_gdb_stub();
-    server.set_enabled(enabled);
 }
 
 pub fn on_trap(signal: u8, frame: &InterruptStackFrame) {
@@ -756,11 +759,12 @@ mod tests {
                 .pop_front()
         }
 
-        fn write_bytes(&self, bytes: &[u8]) {
+        fn write_bytes(&self, bytes: &[u8]) -> Result<(), GdbStubError> {
             self.tx
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .extend_from_slice(bytes);
+            Ok(())
         }
     }
 

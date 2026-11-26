@@ -5,8 +5,8 @@ use core::panic::{Location, PanicInfo};
 use x86_64::structures::idt::InterruptStackFrame;
 
 use super::{FatalFault, bounded_message, fail_stop, record};
+use crate::drivers::serial::{self, FatalSerial};
 use crate::graphics::bsod::BsodInfo;
-use crate::io::serial::{self, FatalSerial};
 use crate::unwind::Backtrace;
 
 const REPORT_STACK_SIZE: usize = 64 * 1024;

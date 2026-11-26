@@ -84,6 +84,7 @@ pub(crate) fn init() -> Result<(), SerialError> {
         DataBits::Bits8,
         StopBits::Stop1,
         Parity::None,
+        TRANSMIT_POLLS,
     )?;
     INITIALIZED.store(true, Ordering::Release);
     Ok(())
@@ -97,7 +98,9 @@ pub(crate) fn start_interrupts() -> Result<(), crate::interrupts::Com1RouteError
         return Err(crate::interrupts::Com1RouteError::UartUnavailable);
     }
     crate::interrupts::route_com1()?;
-    PORT.set_interrupt_mode(SerialInterruptMode::Receive);
+    PORT.update_interrupt_mode(|| {
+        (Session::load() == Session::Console).then_some(SerialInterruptMode::Receive)
+    });
     INTERRUPTS_ROUTED.store(true, Ordering::Release);
     Ok(())
 }
@@ -107,6 +110,9 @@ pub(super) fn interrupts_routed() -> bool {
 }
 
 pub(crate) fn handle_interrupt() {
+    if Session::load() != Session::Console {
+        return;
+    }
     PORT.service_interrupt(
         INTERRUPT_BUDGET,
         |byte| {
@@ -163,24 +169,39 @@ pub(super) fn bench_pop_logs(dst: &mut [u8]) -> usize {
     n
 }
 
-pub(crate) fn reserve_for_debugger() {
-    if SESSION
-        .compare_exchange(
-            Session::Console as u8,
-            Session::Debugger as u8,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        )
-        .is_ok()
-    {
-        TRANSMIT
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .clear();
-        if interrupts_routed() {
-            PORT.set_interrupt_mode(SerialInterruptMode::Receive);
-        }
+/// Exclusive polled access to COM1 for the registered debugger.
+pub(crate) struct DebuggerSerial(());
+
+pub(crate) fn reserve_for_debugger() -> Option<DebuggerSerial> {
+    // Finish the current polled console write. Under the UART lock, closing
+    // the console session then masking its interrupts orders the handoff
+    // against both the ISR and a producer trying to arm transmit.
+    let _direct = DIRECT_OUTPUT
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let acquired = PORT.update_interrupt_mode(|| {
+        SESSION
+            .compare_exchange(
+                Session::Console as u8,
+                Session::Debugger as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .ok()
+            .map(|_| SerialInterruptMode::Disabled)
+    });
+    if !acquired {
+        return None;
     }
+    TRANSMIT
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clear();
+    INPUT
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clear();
+    Some(DebuggerSerial(()))
 }
 
 pub(super) fn log_channel_available() -> bool {
@@ -280,8 +301,12 @@ pub(super) fn write(channel: Channel, bytes: &[u8]) -> usize {
                         _ => queue.console.push(bytes),
                     }
             };
-            if admitted && channel.allowed() {
-                PORT.set_interrupt_mode(SerialInterruptMode::ReceiveAndTransmit);
+            if admitted {
+                PORT.update_interrupt_mode(|| {
+                    channel
+                        .allowed()
+                        .then_some(SerialInterruptMode::ReceiveAndTransmit)
+                });
             }
             return if admitted { bytes.len() } else { 0 };
         }
@@ -303,7 +328,7 @@ fn read(channel: Channel) -> Option<u8> {
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .pop();
-    queued.or_else(|| PORT.try_receive().ok())
+    queued.or_else(|| PORT.try_receive(|| channel.allowed()).ok())
 }
 
 /// Best-effort drain before a terminal test runner shuts down the virtual UART.
@@ -339,12 +364,14 @@ pub(crate) fn console_available() -> bool {
     Channel::Console.allowed()
 }
 
-pub(crate) fn write_debugger(bytes: &[u8]) {
-    let _ = write(Channel::Debugger, bytes);
-}
+impl DebuggerSerial {
+    pub(crate) fn write(&self, bytes: &[u8]) -> usize {
+        write(Channel::Debugger, bytes)
+    }
 
-pub(crate) fn read_debugger() -> Option<u8> {
-    read(Channel::Debugger)
+    pub(crate) fn read(&self) -> Option<u8> {
+        PORT.try_receive(|| Channel::Debugger.allowed()).ok()
+    }
 }
 
 /// Read one byte from COM1 for interactive shell input.
@@ -378,6 +405,7 @@ mod tests {
     #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
     #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
     fn exclusive_debugger_and_terminal_diagnostics_have_distinct_transmit_authority() {
+        assert!(!Channel::Debugger.allowed_in(Session::Console));
         assert!(Channel::Debugger.allowed_in(Session::Debugger));
         assert!(!Channel::Console.allowed_in(Session::Debugger));
         assert!(!Channel::Log.allowed_in(Session::Debugger));

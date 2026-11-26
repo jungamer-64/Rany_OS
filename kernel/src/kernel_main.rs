@@ -200,7 +200,13 @@ fn verify_boot_protocol_version(boot_info: &ExoBootInfo) {
 
 fn phase_entry_and_early_cpu(context: &KernelBootContext) {
     let boot_info = context.boot_info();
-    init_early_serial();
+    let serial_init = serial::init();
+    io::log::early_print("RanyOS UEFI Boot OK!\n");
+    if let Err(error) = serial_init {
+        io::log::print(format_args!(
+            "[BOOT] COM1 probe failed: {error:?}; using polled output\n"
+        ));
+    }
     phase_bootloader_handoff(context);
     verify_boot_protocol_version(boot_info);
     crate::cpu::xstate::initialize_boot_cpu();
@@ -216,12 +222,13 @@ fn phase_entry_and_early_cpu(context: &KernelBootContext) {
 
     // ロギングシステムの初期化（最優先、ヒープ不要）
     io::log::early_print("[BOOT] Initializing logger...\n");
-    if let Err(error) = serial::init() {
+    let (level, invalid_level) = io::log::boot_log_level(context.cmdline);
+    if let Some(value) = invalid_level {
         io::log::print(format_args!(
-            "[BOOT] COM1 initialization failed: {error:?}\n"
+            "[BOOT] Invalid loglevel {value:?}; using {level}\n"
         ));
     }
-    if io::log::init().is_err() {
+    if io::log::init(level).is_err() {
         io::log::early_print("[FATAL] Logger init failed\n");
         io::log::early_print("[BOOT] Logger init FAILED!\n");
     } else {
@@ -588,7 +595,7 @@ fn log_driver_registry_summary() {
 }
 
 fn start_serial_interrupts() {
-    if !crate::interrupts::are_interrupts_enabled() {
+    if !serial::console_available() || !crate::interrupts::are_interrupts_enabled() {
         return;
     }
     match serial::start_interrupts() {
@@ -702,32 +709,19 @@ async fn init_durability_and_kgdb(context: &KernelBootContext) {
         let transport_mode = context
             .cmdline
             .and_then(|c| util::get_cmdline_option(c, "kgdb_transport"))
-            .unwrap_or("both");
-        let use_serial = transport_mode == "serial" || transport_mode == "both";
-        let serial_exclusive = context
-            .cmdline
-            .and_then(|c| util::get_cmdline_option(c, "kgdb_serial_exclusive"))
-            .map(parse_cmdline_bool)
-            .unwrap_or(use_serial);
-
-        let _ = debug::gdb_stub::init_gdb_stub();
-        debug::gdb_stub::set_enabled(true);
-        if use_serial {
-            let _ = debug::gdb_stub::register_transport(alloc::sync::Arc::new(
-                debug::gdb_stub::SerialCom1Transport::new(),
+            .unwrap_or("serial");
+        if transport_mode != "serial" {
+            warn!(target: "init", "Unsupported KGDB transport {transport_mode}; use serial");
+        } else if let Some(port) = serial::reserve_for_debugger() {
+            let server = debug::gdb_stub::init_gdb_stub();
+            server.register_transport(alloc::sync::Arc::new(
+                debug::gdb_stub::SerialCom1Transport::new(port),
             ));
+            server.set_enabled(true);
+            info!(target: "init", "KGDB owns COM1");
+        } else {
+            warn!(target: "init", "KGDB could not acquire COM1");
         }
-        if serial_exclusive && use_serial {
-            serial::reserve_for_debugger();
-        }
-        info!(
-            target: "init",
-            "kgdb enabled (transport={}, serial_exclusive={})",
-            transport_mode,
-            serial_exclusive
-        );
-    } else {
-        debug::gdb_stub::set_enabled(false);
     }
     info!(target: "init", "Durability + kgdb subsystems initialized");
 }

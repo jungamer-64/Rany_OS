@@ -1,5 +1,6 @@
 //! Structured kernel logging and allocation-free boot and panic diagnostics.
 
+mod history;
 mod level_parse;
 mod record;
 
@@ -10,7 +11,12 @@ use log::{LevelFilter, Log, Metadata, Record, SetLoggerError};
 use super::serial::{self, Channel};
 use record::WireRecord;
 
+pub(crate) use level_parse::boot_log_level;
 pub use level_parse::set_log_level_from_str;
+
+pub(crate) const HISTORY_BYTES: usize = 16 * 1024;
+static HISTORY: crate::sync::IrqPoisonLock<history::History<HISTORY_BYTES>> =
+    crate::sync::IrqPoisonLock::new(history::History::new());
 
 static CONSOLE_MIRROR_ENABLED: AtomicBool = AtomicBool::new(true);
 static SERIAL_OUTPUT_ENABLED: AtomicBool = AtomicBool::new(true);
@@ -28,7 +34,7 @@ impl Log for KernelLogger {
         if !self.enabled(record.metadata()) {
             return;
         }
-        if serial::in_panic() || !serial_output_enabled() && !console_mirror_enabled() {
+        if serial::in_panic() {
             return;
         }
         // Formatting can call arbitrary Display implementations. Complete it
@@ -37,6 +43,10 @@ impl Log for KernelLogger {
             DROPPED_LOG_RECORDS.fetch_add(1, Ordering::Relaxed);
             return;
         };
+        HISTORY
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .record(&record);
         if serial_output_enabled()
             && serial::log_channel_available()
             && serial::write(Channel::Log, record.bytes()) != record.bytes().len()
@@ -60,17 +70,31 @@ pub fn dropped_log_records() -> usize {
     DROPPED_LOG_RECORDS.load(Ordering::Relaxed)
 }
 
+pub(crate) struct LogSnapshot<'a> {
+    pub(crate) text: &'a str,
+    pub(crate) truncated: bool,
+}
+
+/// Snapshot complete structured records, including records already sent or
+/// emitted while serial output was disabled. Truncation includes eviction.
+pub(crate) fn snapshot(destination: &mut [u8]) -> LogSnapshot<'_> {
+    let (written, truncated) = HISTORY
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .copy(destination);
+    LogSnapshot {
+        text: core::str::from_utf8(&destination[..written])
+            .expect("history copies whole UTF-8 records"),
+        truncated,
+    }
+}
+
 /// Installs the logger before interrupts and the heap are available.
 ///
 /// # Errors
 /// Returns an error if another logger has already been installed.
-pub(crate) fn init() -> Result<(), SetLoggerError> {
+pub(crate) fn init(level: LevelFilter) -> Result<(), SetLoggerError> {
     log::set_logger(&LOGGER)?;
-    let level = if cfg!(feature = "verbose_logging") {
-        LevelFilter::Trace
-    } else {
-        LevelFilter::Info
-    };
     set_log_level(level);
     Ok(())
 }

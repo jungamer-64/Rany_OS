@@ -35,7 +35,8 @@ ExoRust のカーネル初期化は、実装上 6 フェーズに分割されて
 - ここで以後のログ経路と CPU 機能前提を確立する。
 - 依存:
   - `ExoBootInfo.version` が一致していること
-  - early serial 初期化前は `early_print` のみ使用すること
+  - COM1 は初期診断から 115200 baud、8N1 を使用する。プローブに失敗した場合は外部ポートでのポーリングを試みる。
+  - `loglevel` は logger の初期レベルを決める。未指定または無効な値ではビルド既定値を使う。
 
 ## Phase 3: Early Kernel Substrate
 
@@ -97,7 +98,7 @@ COM1 の非同期ログ送信は、I/O APIC の割り込み経路と UART の初
 `spawn_kernel_tasks()` は最小の runtime 起動責務だけを束ねる。
 
 - `spawn_shell_tasks()`
-  - KGDB が COM1 を排他的に確保すると serial shell は起動しない。
+  - COM1 を KGDB に割り当てると、KGDB が送受信を排他的に所有し、serial shell は起動しない。
   - 既定は serial shell、`shell=console` 指定時のみ console shell を起動
 - `spawn_core_runtime_tasks()`
   - I/O scheduler 初期化、network bootstrap、network event task、timeout task、DHCP/DNS/mDNS 背景タスク

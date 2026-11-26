@@ -150,13 +150,16 @@ impl SerialPort {
     }
     /// # Errors
     ///
-    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
+    /// On probe failure, the external UART is configured for polled I/O and
+    /// its interrupts remain masked. The probe observes receive status at
+    /// most `probe_polls` times.
     pub fn init(
         &self,
         baud_rate: BaudRate,
         data_bits: DataBits,
         stop_bits: StopBits,
         parity: Parity,
+        probe_polls: usize,
     ) -> Result<(), SerialError> {
         let _transaction = self
             .transaction
@@ -172,6 +175,7 @@ impl SerialPort {
         let mut lcr_port = registers.port_at(reg::LCR);
         let mut mcr_port = registers.port_at(reg::MCR);
         let mut sr_port = registers.port_at(reg::SCRATCH);
+        lcr_port.write(0x03);
         ier_port.write(0x00);
         lcr_port.write(1 << 7);
         let divisor = baud_rate as u16;
@@ -179,16 +183,30 @@ impl SerialPort {
         ier_port.write(((divisor >> 8) & 0xFF) as u8);
         lcr_port.write((data_bits as u8) | (stop_bits as u8) | (parity as u8));
         fcr_port.write(0x01 | 0x02 | 0x04 | 0xC0);
-        mcr_port.write(0x01 | 0x02 | 0x08);
-        mcr_port.write(0x10 | 0x01 | 0x02 | 0x08);
-        data_port.write(0xAE);
-        if data_port.read() != 0xAE {
-            return Err(SerialError::InitFailed);
+        const EXTERNAL_LINES: u8 = 0x01 | 0x02 | 0x08;
+        const LOOPBACK: u8 = 0x10;
+        const PROBE: u8 = 0xae;
+
+        mcr_port.write(EXTERNAL_LINES | LOOPBACK);
+        data_port.write(PROBE);
+        let received = (0..probe_polls).find_map(|_| {
+            if registers.line_status().is_data_ready() {
+                Some(data_port.read())
+            } else {
+                core::hint::spin_loop();
+                None
+            }
+        });
+        // Polling callers may still use the configured external port after a
+        // failed probe. Remove any probe data before reconnecting the pins.
+        fcr_port.write(0x01 | 0x02 | 0x04 | 0xc0);
+        mcr_port.write(EXTERNAL_LINES);
+        if received != Some(PROBE) {
+            return Err(SerialError::LoopbackProbe(received));
         }
-        mcr_port.write(0x01 | 0x02 | 0x08);
         sr_port.write(0x55);
         if sr_port.read() != 0x55 {
-            return Err(SerialError::InitFailed);
+            return Err(SerialError::ScratchProbe);
         }
         self.initialized.store(true, Ordering::Release);
         Ok(())
@@ -231,12 +249,16 @@ impl SerialRegisters {
 impl SerialPort {
     /// # Errors
     ///
-    /// Returns an error if the request is invalid or the required device state cannot be read.
-    pub fn try_receive(&self) -> Result<u8, SerialError> {
+    /// Returns `ReceiveUnavailable` if the admission check under the UART
+    /// lock fails and `NoData` if no byte is ready.
+    pub fn try_receive(&self, can_receive: impl FnOnce() -> bool) -> Result<u8, SerialError> {
         let _transaction = self
             .transaction
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        if !can_receive() {
+            return Err(SerialError::ReceiveUnavailable);
+        }
         let registers = &self.registers;
         if registers.line_status().is_data_ready() {
             Ok(registers.port_at(reg::DATA).read())
@@ -254,14 +276,24 @@ impl SerialPort {
         })
     }
 
-    /// Selects the complete interrupt mask in one serialized register write.
-    pub fn set_interrupt_mode(&self, mode: SerialInterruptMode) {
+    /// Selects a UART interrupt mask under the register lock. The caller can
+    /// validate or transfer transport ownership before publishing the mask.
+    /// Returning `None` leaves the mask unchanged and reports no update.
+    pub fn update_interrupt_mode(
+        &self,
+        select: impl FnOnce() -> Option<SerialInterruptMode>,
+    ) -> bool {
         let _transaction = self
             .transaction
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let registers = &self.registers;
-        registers.port_at(reg::IER).write(mode.register_value());
+        let Some(mode) = select() else {
+            return false;
+        };
+        self.registers
+            .port_at(reg::IER)
+            .write(mode.register_value());
+        true
     }
 
     /// Takes over a terminal UART even if a stopped context owned its lock.
@@ -395,8 +427,10 @@ impl SerialPort {
 pub enum SerialError {
     InvalidPortRange,
     InvalidInterruptBudget,
-    InitFailed,
+    LoopbackProbe(Option<u8>),
+    ScratchProbe,
     NoData,
+    ReceiveUnavailable,
     Busy,
     TransmitTimeout,
 }

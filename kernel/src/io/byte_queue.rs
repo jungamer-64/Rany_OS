@@ -14,6 +14,10 @@ impl<const N: usize> RingBuffer<N> {
         }
     }
 
+    pub(super) fn len(&self) -> usize {
+        self.len
+    }
+
     pub(super) fn spare(&self) -> usize {
         N - self.len
     }
@@ -34,10 +38,24 @@ impl<const N: usize> RingBuffer<N> {
         true
     }
 
+    pub(super) fn copy_at(&self, offset: usize, dst: &mut [u8]) {
+        assert!(offset <= self.len && dst.len() <= self.len - offset);
+        let start = (self.head + offset) % N;
+        let first = dst.len().min(N - start);
+        let (tail, head) = dst.split_at_mut(first);
+        tail.copy_from_slice(&self.bytes[start..start + first]);
+        head.copy_from_slice(&self.bytes[..head.len()]);
+    }
+
+    pub(super) fn discard(&mut self, len: usize) {
+        assert!(len <= self.len);
+        self.head = (self.head + len) % N;
+        self.len -= len;
+    }
+
     pub(super) fn pop(&mut self) -> Option<u8> {
         let byte = self.get(0)?;
-        self.head = (self.head + 1) % N;
-        self.len -= 1;
+        self.discard(1);
         Some(byte)
     }
 

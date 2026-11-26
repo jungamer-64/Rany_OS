@@ -3,7 +3,7 @@
 // ============================================================================
 
 use alloc::string::String;
-use alloc::{format, vec};
+use alloc::{format, vec::Vec};
 use core::sync::atomic::Ordering;
 
 use crate::net::payload::GeneratedPacketWriter;
@@ -236,34 +236,19 @@ fn build_index_response(keep_alive: bool) -> Result<PacketPayload, HttpResponseB
 }
 
 fn build_log_response(keep_alive: bool) -> Result<PacketPayload, HttpResponseBuildError> {
-    let len = crate::io::log::get_log_len();
-    // 16KB までのログを返却
-    let max_len = core::cmp::min(len, 16 * 1024);
-    let is_truncated = len > max_len;
-    let mut buf = vec![0u8; max_len];
-    let actual = crate::io::log::peek_global_log(&mut buf);
-
-    // Valid UTF-8 な部分のみを返却
-    let logs = match core::str::from_utf8(&buf[..actual]) {
-        Ok(s) => s,
-        Err(e) => {
-            let valid_len = e.valid_up_to();
-            core::str::from_utf8(&buf[..valid_len]).unwrap_or("[INVALID LOG DATA]")
-        }
-    };
-
-    let truncation_header = if is_truncated {
-        [("X-Log-Truncated", "true")]
-    } else {
-        [("X-Log-Truncated", "false")]
-    };
-
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(crate::io::log::HISTORY_BYTES)
+        .map_err(|_| HttpResponseBuildError::AllocationFailed)?;
+    bytes.resize(crate::io::log::HISTORY_BYTES, 0);
+    let snapshot = crate::io::log::snapshot(&mut bytes);
+    let truncated = if snapshot.truncated { "true" } else { "false" };
     build_custom_response_with_headers(
         HttpStatusCode::OK,
         "text/plain; charset=utf-8",
-        logs,
+        snapshot.text,
         keep_alive,
-        &truncation_header,
+        &[("X-Log-Truncated", truncated)],
     )
 }
 
