@@ -1480,6 +1480,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn serial_diagnostics_cannot_override_the_guest_exit_status() {
+        let log_path = std::env::temp_dir().join(format!(
+            "exorust-qemu-exit-status-{}.log",
+            std::process::id()
+        ));
+        std::fs::write(&log_path, "[kernel-test] result pass\n").unwrap();
+
+        #[cfg(windows)]
+        let child = Command::new("cmd").args(["/C", "exit", "35"]).spawn();
+        #[cfg(not(windows))]
+        let child = Command::new("sh").args(["-c", "exit 35"]).spawn();
+        let result = poll_qemu(
+            &RunConfig::for_profile("boot-smoke"),
+            PathBuf::new(),
+            log_path.clone(),
+            PathBuf::new(),
+            child.unwrap(),
+            None,
+        );
+
+        std::fs::remove_file(log_path).unwrap();
+        assert!(matches!(
+            result,
+            Err(RunError::ProfileFailed(report))
+                if report.host_exit_code == 35 && report.isa_debug_value == Some(0x11)
+        ));
+    }
+
+    #[test]
     fn cargo_artifact_selects_reported_executable_for_the_named_binary() {
         let messages = br#"
 macro output
