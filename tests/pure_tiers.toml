@@ -46,6 +46,15 @@ features = ["std"]
 panic = "unwind"
 
 [[package]]
+name = "qemu_runner"
+tier = "pr-required"
+root_default = false
+run_ignored = false
+test_filter = ""
+exact = false
+serial = false
+
+[[package]]
 name = "boot_proto"
 tier = "pr-required"
 root_default = false
