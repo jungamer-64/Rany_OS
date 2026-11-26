@@ -7,10 +7,16 @@ on:
     branches: [ master ]
   workflow_dispatch: {}
 
+permissions:
+  contents: read
+
 jobs:
   bench:
     name: Run framebuffer benchmarks
     runs-on: ubuntu-latest
+    outputs:
+      report: ${{ steps.compare.outputs.report }}
+      comparison: ${{ steps.compare.outcome }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -58,8 +64,23 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
           if [ "$rc" -ne 0 ]; then exit 1; fi
 
+      - name: Fail on regression
+        if: steps.compare.outcome == 'failure'
+        run: |
+          echo "Regression detected by compare_bench.py; failing job"
+          exit 1
+
+  comment:
+    needs: bench
+    if: >-
+      !cancelled() && github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (needs.bench.outputs.comparison == 'success' || needs.bench.outputs.comparison == 'failure')
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
       - name: Create PR comment with benchmark results
-        if: github.event_name == 'pull_request'
         uses: peter-evans/create-or-update-comment@e8674b075228eee787fea43ef493e45ece1004c9 # v5.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -67,12 +88,6 @@ jobs:
           body: |
             **Framebuffer Benchmark Report**
 
-            Status: ${{ steps.compare.conclusion }}
+            Status: ${{ needs.bench.outputs.comparison }}
 
-            ${{ steps.compare.outputs.report }}
-
-      - name: Fail on regression
-        if: steps.compare.conclusion == 'failure'
-        run: |
-          echo "Regression detected by compare_bench.py; failing job"
-          exit 1
+            ${{ needs.bench.outputs.report }}
