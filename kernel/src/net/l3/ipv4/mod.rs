@@ -125,8 +125,6 @@ pub struct PmtuEntry {
     pub pmtu: u16,
     /// Timestamp when this entry was last updated (ms)
     pub updated_at: u64,
-    /// Timestamp for next probe (for PLPMTUD)
-    pub next_probe: u64,
 }
 
 /// Path MTU Discovery cache
@@ -135,19 +133,4 @@ pub struct PmtuCache {
     entries: BTreeMap<Ipv4Address, PmtuEntry>,
     /// Maximum number of entries
     max_entries: usize,
-    /// Statistics
-    stats: PmtuStats,
-}
-
-/// PMTU statistics
-#[derive(Debug, Default)]
-pub struct PmtuStats {
-    /// Number of PMTU discoveries
-    pub discoveries: u64,
-    /// Number of PMTU updates (reductions)
-    pub reductions: u64,
-    /// Number of cache hits
-    pub hits: u64,
-    /// Number of cache misses
-    pub misses: u64,
 }

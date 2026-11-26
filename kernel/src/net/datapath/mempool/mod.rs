@@ -191,11 +191,7 @@ impl fmt::Display for MempoolError {
 #[derive(Debug, Clone, Copy)]
 pub struct MempoolStats {
     pub total_buffers: usize,
-    pub free_buffers: usize,
-    pub used_buffers: usize,
     pub alloc_count: u64,
-    pub free_count: u64,
-    pub alloc_failed: u64,
 }
 
 /// Owner handle of a packet pool.
@@ -415,30 +411,9 @@ impl PacketPool {
 
     pub fn stats(&self) -> MempoolStats {
         let shared = self.shared();
-        let total = shared.slots.len();
-        let mut free = shared
-            .free
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .len();
-        for cache in shared
-            .caches
-            .read()
-            .unwrap_or_else(|error| error.into_inner())
-            .iter()
-        {
-            free += cache
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .len();
-        }
         MempoolStats {
-            total_buffers: total,
-            free_buffers: free,
-            used_buffers: total.saturating_sub(free),
+            total_buffers: shared.slots.len(),
             alloc_count: shared.alloc_count.load(Ordering::Relaxed),
-            free_count: shared.free_count.load(Ordering::Relaxed),
-            alloc_failed: shared.alloc_failed.load(Ordering::Relaxed),
         }
     }
 }

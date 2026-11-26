@@ -76,18 +76,6 @@ pub fn ndp_build_na_smoke() -> bool {
     true
 }
 
-pub fn ndp_build_rs_smoke() -> bool {
-    crate::net::l3::ndp::tests::test_build_rs();
-    true
-}
-
-fn poll_neighbor_future<F: core::future::Future + Unpin>(
-    future: &mut F,
-) -> core::task::Poll<F::Output> {
-    let mut cx = core::task::Context::from_waker(core::task::Waker::noop());
-    core::pin::Pin::new(future).poll(&mut cx)
-}
-
 pub fn neighbor_resolution_completion_smoke() -> bool {
     use crate::net::l2::arp::{ArpResolveFuture, notify_arp_resolved_in};
     use crate::net::l3::ipv6::Ipv6Address;

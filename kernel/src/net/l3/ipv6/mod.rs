@@ -91,29 +91,10 @@ impl Ipv6Address {
     pub const ALL_NODES_LINK_LOCAL: Self =
         Self([0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
 
-    /// All-routers link-local multicast (ff02::2)
-    pub const ALL_ROUTERS_LINK_LOCAL: Self =
-        Self([0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
-
-    /// Solicited-node multicast prefix (ff02::1:ff00:0/104)
-    pub const SOLICITED_NODE_PREFIX: Self =
-        Self([0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01, 0xff, 0, 0, 0]);
-
     /// Create from raw octets
     #[inline]
     pub const fn new(octets: [u8; 16]) -> Self {
         Self(octets)
-    }
-
-    /// Create from two 64-bit halves (network byte order)
-    #[inline]
-    pub const fn from_u64_pair(high: u64, low: u64) -> Self {
-        let h = high.to_be_bytes();
-        let l = low.to_be_bytes();
-        Self([
-            h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], l[0], l[1], l[2], l[3], l[4], l[5],
-            l[6], l[7],
-        ])
     }
 
     /// Create link-local address from MAC address using EUI-64
@@ -240,15 +221,6 @@ impl Ipv6Address {
         self.is_unicast_link_local() || (self.is_multicast() && (self.0[1] & 0x0f) == 0x02)
     }
 
-    /// Check if global unicast (not multicast, not link-local, not loopback, not unspecified)
-    #[inline]
-    pub fn is_global(&self) -> bool {
-        !self.is_unspecified()
-            && !self.is_loopback()
-            && !self.is_multicast()
-            && !self.is_unicast_link_local()
-    }
-
     /// Compute solicited-node multicast address for this address
     ///
     /// ff02::1:ffXX:XXXX (last 3 bytes of unicast address)
@@ -265,24 +237,6 @@ impl Ipv6Address {
     #[inline]
     pub const fn multicast_mac(&self) -> [u8; 6] {
         [0x33, 0x33, self.0[12], self.0[13], self.0[14], self.0[15]]
-    }
-
-    /// Check if this is a solicited-node multicast address (ff02::1:ff00:0/104)
-    #[inline]
-    pub const fn is_solicited_node_multicast(&self) -> bool {
-        self.0[0] == 0xff
-            && self.0[1] == 0x02
-            && self.0[2] == 0
-            && self.0[3] == 0
-            && self.0[4] == 0
-            && self.0[5] == 0
-            && self.0[6] == 0
-            && self.0[7] == 0
-            && self.0[8] == 0
-            && self.0[9] == 0
-            && self.0[10] == 0
-            && self.0[11] == 0x01
-            && self.0[12] == 0xff
     }
 }
 
@@ -401,39 +355,6 @@ pub struct Ipv6Header {
 }
 
 impl Ipv6Header {
-    /// Get version field (should be 6)
-    #[inline]
-    pub fn version(&self) -> u8 {
-        self.version_tc_fl[0] >> 4
-    }
-
-    /// Get Traffic Class (8 bits, similar to IPv4 DSCP+ECN)
-    #[inline]
-    pub fn traffic_class(&self) -> u8 {
-        ((self.version_tc_fl[0] & 0x0f) << 4) | (self.version_tc_fl[1] >> 4)
-    }
-
-    /// Get Flow Label (20 bits)
-    #[inline]
-    pub fn flow_label(&self) -> u32 {
-        let b1 = (self.version_tc_fl[1] & 0x0f) as u32;
-        let b2 = self.version_tc_fl[2] as u32;
-        let b3 = self.version_tc_fl[3] as u32;
-        (b1 << 16) | (b2 << 8) | b3
-    }
-
-    /// Get payload length (excludes 40-byte header)
-    #[inline]
-    pub fn payload_length(&self) -> u16 {
-        u16::from_be_bytes(self.payload_length)
-    }
-
-    /// Get next header (protocol)
-    #[inline]
-    pub fn next_header(&self) -> IpProtocol {
-        IpProtocol::from(self.next_header)
-    }
-
     /// Get hop limit
     #[inline]
     pub fn hop_limit(&self) -> u8 {
@@ -501,7 +422,6 @@ impl Ipv6Header {
 /// Zero-copy IPv6 packet view (read-only)
 pub struct Ipv6Packet<'a> {
     header: &'a Ipv6Header,
-    data: &'a [u8],
 }
 
 impl<'a> Ipv6Packet<'a> {
@@ -525,20 +445,13 @@ impl<'a> Ipv6Packet<'a> {
         }
 
         let header = crate::util::get_ref::<Ipv6Header>(data, 0)?;
-        Some(Self { header, data })
+        Some(Self { header })
     }
 
     /// Get header reference (zero-copy)
     #[inline]
     pub fn header(&self) -> &Ipv6Header {
         self.header
-    }
-
-    /// Get payload (everything after the 40-byte header)
-    #[inline]
-    pub fn payload(&self) -> &'a [u8] {
-        let payload_len = self.header().payload_length() as usize;
-        &self.data[IPV6_HEADER_SIZE..IPV6_HEADER_SIZE + payload_len]
     }
 
     /// Get source address
@@ -553,31 +466,10 @@ impl<'a> Ipv6Packet<'a> {
         self.header().destination()
     }
 
-    /// Get next header (protocol)
-    #[inline]
-    pub fn next_header(&self) -> IpProtocol {
-        self.header().next_header()
-    }
-
     /// Get hop limit
     #[inline]
     pub fn hop_limit(&self) -> u8 {
         self.header().hop_limit()
-    }
-
-    /// Get raw bytes
-    #[inline]
-    pub fn as_bytes(&self) -> &'a [u8] {
-        let payload_len = self.header().payload_length() as usize;
-        let total = IPV6_HEADER_SIZE + payload_len;
-        // SECURITY: invalid payload length の packet で panic しないようにする。
-        &self.data[..core::cmp::min(total, self.data.len())]
-    }
-
-    /// Get total packet length
-    #[inline]
-    pub fn total_length(&self) -> usize {
-        IPV6_HEADER_SIZE + self.header().payload_length() as usize
     }
 }
 
@@ -617,12 +509,6 @@ impl<'a> Ipv6PacketMut<'a> {
     #[inline]
     pub fn header_mut(&mut self) -> Option<&mut Ipv6Header> {
         crate::util::get_mut_ref::<Ipv6Header>(self.data, 0)
-    }
-
-    /// Get immutable header reference
-    #[inline]
-    pub fn header(&self) -> Option<&Ipv6Header> {
-        crate::util::get_ref::<Ipv6Header>(self.data, 0)
     }
 
     /// Set source address
@@ -669,18 +555,6 @@ impl<'a> Ipv6PacketMut<'a> {
     #[inline]
     pub fn payload_mut(&mut self) -> &mut [u8] {
         &mut self.data[IPV6_HEADER_SIZE..]
-    }
-
-    /// Get the full buffer as bytes
-    #[inline]
-    pub fn as_bytes(&self) -> &[u8] {
-        let payload_len = self
-            .header()
-            .map(|h| h.payload_length() as usize)
-            .unwrap_or(0);
-        let total_len = IPV6_HEADER_SIZE + payload_len;
-        // SECURITY: panic を防ぐため physical buffer size へ clamp する。
-        &self.data[..core::cmp::min(total_len, self.data.len())]
     }
 
     /// Finalize packet (set payload length based on actual data written)

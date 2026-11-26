@@ -42,10 +42,6 @@ pub struct TcpStats {
     pub packets_sent: u64,
     pub packets_received: u64,
     pub app_bytes_delivered: u64,
-    pub retransmissions: u64,
-    pub rtt_us: u64,
-    pub oom_dropped_packets: u64,
-    pub oom_dropped_bytes: u64,
 }
 
 impl TcpStats {
@@ -64,11 +60,5 @@ impl TcpStats {
     #[inline]
     pub fn record_rx_delivered(&mut self, len: usize) {
         self.app_bytes_delivered = self.app_bytes_delivered.saturating_add(len as u64);
-    }
-
-    #[inline]
-    pub fn record_oom_drop(&mut self, len: usize) {
-        self.oom_dropped_packets = self.oom_dropped_packets.saturating_add(1);
-        self.oom_dropped_bytes = self.oom_dropped_bytes.saturating_add(len as u64);
     }
 }

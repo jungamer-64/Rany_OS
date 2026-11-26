@@ -19,18 +19,12 @@ impl PmtuEntry {
         Self {
             pmtu: pmtu.clamp(Self::MIN_MTU, Self::MAX_MTU),
             updated_at: timestamp,
-            next_probe: timestamp + Self::TIMEOUT_MS,
         }
     }
 
     /// Check if the entry has expired
     pub fn is_expired(&self, current_time: u64) -> bool {
         current_time.saturating_sub(self.updated_at) > Self::TIMEOUT_MS
-    }
-
-    /// Check if we should probe for a larger MTU
-    pub fn should_probe(&self, current_time: u64) -> bool {
-        current_time >= self.next_probe && self.pmtu < Self::DEFAULT_MTU
     }
 
     /// RFC 1191: Get the next smaller MTU from the plateau list.
@@ -60,13 +54,7 @@ impl PmtuCache {
         Self {
             entries: BTreeMap::new(),
             max_entries,
-            stats: PmtuStats::default(),
         }
-    }
-
-    /// Get statistics
-    pub fn stats(&self) -> &PmtuStats {
-        &self.stats
     }
 
     /// Get PMTU for a destination
@@ -74,10 +62,8 @@ impl PmtuCache {
         if let Some(entry) = self.entries.get(&dst)
             && !entry.is_expired(current_time)
         {
-            self.stats.hits += 1;
             return entry.pmtu;
         }
-        self.stats.misses += 1;
         PmtuEntry::DEFAULT_MTU
     }
 
@@ -89,8 +75,6 @@ impl PmtuCache {
             if clamped_mtu < entry.pmtu {
                 entry.pmtu = clamped_mtu;
                 entry.updated_at = current_time;
-                entry.next_probe = current_time + PmtuEntry::TIMEOUT_MS;
-                self.stats.reductions += 1;
             }
         } else {
             // Evict oldest entry if at capacity
@@ -99,21 +83,7 @@ impl PmtuCache {
             }
             self.entries
                 .insert(dst, PmtuEntry::new(clamped_mtu, current_time));
-            self.stats.discoveries += 1;
         }
-    }
-
-    /// Probe for a larger MTU (called periodically)
-    pub fn probe(&mut self, dst: Ipv4Address, current_time: u64) -> Option<u16> {
-        if let Some(entry) = self.entries.get_mut(&dst)
-            && entry.should_probe(current_time)
-        {
-            // Try a larger MTU
-            let probe_mtu = (entry.pmtu as u32 + 100).min(PmtuEntry::DEFAULT_MTU as u32) as u16;
-            entry.next_probe = current_time + PmtuEntry::TIMEOUT_MS / 2;
-            return Some(probe_mtu);
-        }
-        None
     }
 
     /// Evict the oldest entry
@@ -126,28 +96,5 @@ impl PmtuCache {
         if let Some(key) = oldest {
             self.entries.remove(&key);
         }
-    }
-
-    /// Evict expired entries
-    pub fn evict_expired(&mut self, current_time: u64) {
-        let expired: Vec<_> = self
-            .entries
-            .iter()
-            .filter(|(_, e)| e.is_expired(current_time))
-            .map(|(k, _)| *k)
-            .collect();
-        for key in expired {
-            self.entries.remove(&key);
-        }
-    }
-
-    /// Get the number of entries
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    /// Check if cache is empty
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
     }
 }

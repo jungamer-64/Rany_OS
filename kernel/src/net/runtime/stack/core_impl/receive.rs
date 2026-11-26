@@ -79,10 +79,7 @@ impl NetworkStack {
                     current_time,
                 );
             }
-            IcmpResult::EchoReplyReceived {
-                identifier: _,
-                sequence,
-            } => {
+            IcmpResult::EchoReplyReceived { sequence } => {
                 let rtt_us = 0;
                 crate::net::api::icmp::notify_icmp_echo_reply_in(
                     runtime,
@@ -344,7 +341,6 @@ impl NetworkStack {
                 }
             }
             Icmpv6Result::EchoReplyReceived {
-                src: _,
                 identifier,
                 sequence,
             } => {
@@ -742,7 +738,6 @@ impl NetworkStack {
             }
             NdpResult::RouterAdvertisement {
                 router,
-                router_mac: _,
                 router_lifetime_secs,
                 prefixes,
             } => {

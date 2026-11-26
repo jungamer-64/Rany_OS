@@ -424,6 +424,7 @@ impl FragmentReassembler {
         }
     }
 
+    #[cfg(feature = "qemu-test-export")]
     /// Get statistics
     pub fn stats(&self) -> &FragmentStats {
         &self.stats
@@ -552,6 +553,7 @@ impl FragmentReassembler {
         expired_with_first
     }
 
+    #[cfg(feature = "qemu-test-export")]
     /// Get the number of active reassembly buffers
     pub fn active_buffers(&self) -> usize {
         self.buffers.len()

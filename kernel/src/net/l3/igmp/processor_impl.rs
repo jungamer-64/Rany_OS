@@ -121,21 +121,8 @@ impl IgmpProcessor {
         self.groups.iter().any(|g| g.address == group_addr)
     }
 
-    /// Get list of joined groups
-    pub fn joined_groups(&self) -> &[MulticastGroup] {
-        &self.groups
-    }
-
     pub fn report_version(&self) -> IgmpReportVersion {
         self.report_version
-    }
-
-    pub fn robustness_variable(&self) -> u8 {
-        self.robustness
-    }
-
-    pub fn query_interval_seconds(&self) -> u32 {
-        self.query_interval
     }
 
     pub fn take_pending_report_entries(&mut self) -> Vec<PendingIgmpReportEntry> {

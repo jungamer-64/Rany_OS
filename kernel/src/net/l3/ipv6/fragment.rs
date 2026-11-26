@@ -585,6 +585,7 @@ impl Ipv6FragmentReassembler {
         }
     }
 
+    #[cfg(feature = "qemu-test-export")]
     /// Get statistics
     pub fn stats(&self) -> &Ipv6FragmentStats {
         &self.stats
@@ -700,6 +701,7 @@ impl Ipv6FragmentReassembler {
         expired_with_first
     }
 
+    #[cfg(feature = "qemu-test-export")]
     /// Number of active reassembly buffers
     pub fn active_buffers(&self) -> usize {
         self.buffers.len()

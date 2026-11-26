@@ -226,6 +226,7 @@ impl Socket {
         });
     }
 
+    #[cfg(feature = "qemu-test-export")]
     pub fn push_payload(&self, payload: PacketPayload) -> usize {
         let Some(retention) = super::retention_budget_in(self.runtime).try_charge(&payload) else {
             return 0;

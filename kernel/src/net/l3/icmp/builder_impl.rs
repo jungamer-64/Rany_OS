@@ -57,11 +57,6 @@ impl<'a> IcmpBuilder<'a> {
 
         total_len
     }
-
-    /// Get packet as bytes
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.buffer[..IcmpHeader::SIZE + self.payload_len]
-    }
 }
 
 impl<'a> IcmpEchoBuilder<'a> {
@@ -114,10 +109,5 @@ impl<'a> IcmpEchoBuilder<'a> {
         self.header_mut().base.set_checksum(checksum);
 
         total_len
-    }
-
-    /// Get packet as bytes
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.buffer[..IcmpEchoHeader::SIZE + self.data_len]
     }
 }

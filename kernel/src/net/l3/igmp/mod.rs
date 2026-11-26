@@ -30,14 +30,8 @@ extern crate alloc;
 // Constants
 // ============================================================================
 
-/// IGMP protocol number in IP header
-pub const IGMP_PROTOCOL: u8 = 2;
-
 /// All hosts multicast group (224.0.0.1)
 pub const ALL_HOSTS_GROUP: Ipv4Address = Ipv4Address::new([224, 0, 0, 1]);
-
-/// All routers multicast group (224.0.0.2)
-pub const ALL_ROUTERS_GROUP: Ipv4Address = Ipv4Address::new([224, 0, 0, 2]);
 
 /// IGMPv3 all-routers multicast group (224.0.0.22)
 pub const ALL_ROUTERS_V3_GROUP: Ipv4Address = Ipv4Address::new([224, 0, 0, 22]);
@@ -140,8 +134,6 @@ impl IgmpV3GroupRecordType {
 /// State of a multicast group membership (RFC 2236 Section 6)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GroupState {
-    /// Not a member of this group
-    NonMember,
     /// Delaying response to a query
     DelayingMember,
     /// Idle member (no pending timer)
@@ -172,18 +164,6 @@ impl MulticastGroup {
             timer: 0,
             unsolicited_reports_remaining: UNSOLICITED_REPORT_COUNT,
             last_report_time: 0,
-        }
-    }
-
-    /// Check if timer is active
-    pub fn has_timer(&self) -> bool {
-        self.timer > 0
-    }
-
-    /// Decrement timer by elapsed time
-    pub fn tick(&mut self, elapsed_ms: u64) {
-        if self.timer > 0 {
-            self.timer = self.timer.saturating_sub(elapsed_ms);
         }
     }
 }
@@ -291,8 +271,6 @@ pub enum IgmpError {
     NotMember,
     /// Maximum number of groups reached
     TooManyGroups,
-    /// Buffer too small for message
-    BufferTooSmall,
 }
 
 // ============================================================================

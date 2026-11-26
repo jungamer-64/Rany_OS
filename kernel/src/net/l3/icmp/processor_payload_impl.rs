@@ -125,7 +125,6 @@ impl IcmpProcessor {
         };
 
         IcmpResult::EchoReplyReceived {
-            identifier: u16::from_be_bytes([echo[4], echo[5]]),
             sequence: u16::from_be_bytes([echo[6], echo[7]]),
         }
     }

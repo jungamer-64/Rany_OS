@@ -144,53 +144,17 @@ impl EndpointAddr {
         EndpointAddr::V6 { ip, port }
     }
 
-    /// Any/unspecified (IPv4)
-    pub const ANY: Self = EndpointAddr::V4 {
-        ip: [0, 0, 0, 0],
-        port: 0,
-    };
-
+    #[cfg(test)]
     /// IPv4 loopback
     pub const LOCALHOST: Self = EndpointAddr::V4 {
         ip: [127, 0, 0, 1],
         port: 0,
     };
 
-    /// Any/unspecified (IPv6)
-    pub const ANY_V6: Self = EndpointAddr::V6 {
-        ip: [0u8; 16],
-        port: 0,
-    };
-
-    /// IPv6 loopback ::1
-    pub const LOCALHOST_V6: Self = EndpointAddr::V6 {
-        ip: {
-            let mut a = [0u8; 16];
-            a[15] = 1;
-            a
-        },
-        port: 0,
-    };
-
-    /// Return true if IPv4
-    #[inline(always)]
-    pub fn is_ipv4(&self) -> bool {
-        matches!(self, EndpointAddr::V4 { .. })
-    }
-
     /// Return true if IPv6
     #[inline(always)]
     pub fn is_ipv6(&self) -> bool {
         matches!(self, EndpointAddr::V6 { .. })
-    }
-
-    /// Get default MSS for this address family (RFC 1122 Section 4.2.2.6)
-    pub fn default_mss(&self) -> u16 {
-        if self.is_ipv6() {
-            1220 // IPv6 minimum MTU (1280) - IPv6 header (40) - TCP header (20)
-        } else {
-            536 // IPv4 default (RFC 793/1122)
-        }
     }
 
     /// Get port
@@ -231,12 +195,6 @@ impl EndpointAddr {
                 v6
             }
         }
-    }
-
-    /// Convenience: return IPv4 u32 when available
-    #[inline]
-    pub fn ip_u32(&self) -> Option<u32> {
-        self.as_ipv4().map(|b| u32::from_be_bytes(b))
     }
 
     /// Set port

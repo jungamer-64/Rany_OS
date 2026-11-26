@@ -21,10 +21,6 @@ pub struct RawPayloadSendError {
 }
 
 impl RawPayloadSendError {
-    pub const fn cause(&self) -> EndpointError {
-        self.cause
-    }
-
     pub fn into_parts(self) -> (EndpointError, PacketPayload) {
         (self.cause, self.payload)
     }
@@ -140,10 +136,6 @@ impl RawEndpoint {
         self.socket.socket_id()
     }
 
-    pub fn runtime(&self) -> NetRuntimeHandle {
-        self.socket.runtime()
-    }
-
     pub(crate) fn set_scope(&self, scope: InterfaceScope) {
         let _ = self.socket.with_inner_mut(|inner| {
             inner.scope = scope;
@@ -154,10 +146,6 @@ impl RawEndpoint {
         RawRecvFuture {
             socket: self.socket,
         }
-    }
-
-    pub fn try_recv_payload(&self) -> Result<(PacketPayload, NetIfId), EndpointError> {
-        self.socket.try_recv_raw_payload()
     }
 
     pub async fn send_payload(&self, payload: PacketPayload) -> Result<(), RawPayloadSendError> {

@@ -68,7 +68,6 @@ pub(super) static NETWORK_RUNTIME_CASES: &[(&str, NetworkRuntimeCase)] = &[
     ("net_peripheral_ipv6_reassembly_timer_reclaims_and_quotes_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_peripheral_ipv6_reassembly_timer_reclaims_and_quotes_smoke)),
     ("net_peripheral_ndp_build_na_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_peripheral_ndp_build_na_smoke)),
     ("net_peripheral_ndp_build_ns_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_peripheral_ndp_build_ns_smoke)),
-    ("net_peripheral_ndp_build_rs_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_peripheral_ndp_build_rs_smoke)),
     ("net_peripheral_neighbor_resolution_completion_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_peripheral_neighbor_resolution_completion_smoke)),
     ("net_peripheral_owned_payload_window_rejects_bounds_against_target_payload_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_peripheral_owned_payload_window_rejects_bounds_against_target_payload_smoke)),
     ("net_peripheral_owned_payload_window_takes_bounds_from_same_payload_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_peripheral_owned_payload_window_takes_bounds_from_same_payload_smoke)),

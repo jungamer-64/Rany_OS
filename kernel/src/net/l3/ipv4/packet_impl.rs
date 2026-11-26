@@ -66,24 +66,6 @@ impl<'a> Ipv4Packet<'a> {
         &self.data[header_len..total_len]
     }
 
-    /// Get IP options (if any)
-    pub fn options(&self) -> &'a [u8] {
-        let header_len = self.header().header_len();
-        if header_len > Ipv4Header::MIN_SIZE {
-            &self.data[Ipv4Header::MIN_SIZE..header_len]
-        } else {
-            &[]
-        }
-    }
-
-    /// Get raw packet data
-    #[inline]
-    pub fn as_bytes(&self) -> &'a [u8] {
-        let total_len = self.header().total_length() as usize;
-        // SECURITY: slice indexing の panic を防ぐため physical buffer size へ clamp する。
-        &self.data[..core::cmp::min(total_len, self.data.len())]
-    }
-
     /// Verify header checksum
     pub fn verify_checksum(&self) -> bool {
         let header_len = self.header().header_len();
@@ -265,6 +247,7 @@ impl<'a> Ipv4PacketMut<'a> {
         core::cmp::min(declared_len, self.data.len())
     }
 
+    #[cfg(test)]
     /// Get packet as bytes
     pub fn as_bytes(&self) -> &[u8] {
         &self.data[..self.total_len()]

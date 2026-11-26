@@ -3,6 +3,7 @@
 // ============================================================================
 
 use crate::net::l3::ipv4::IpProtocol;
+#[cfg(feature = "qemu-test-export")]
 use alloc::vec::Vec;
 use kernel_api::resource::net::{PacketByteCount, PacketPayload, PacketPayloadFront, PacketRef};
 
@@ -47,14 +48,6 @@ impl<const N: usize> FixedPayloadBytes<N> {
     pub const fn as_slice(&self) -> &[u8] {
         self.bytes.split_at(self.len).0
     }
-
-    pub const fn len(&self) -> usize {
-        self.len
-    }
-
-    pub const fn is_empty(&self) -> bool {
-        self.len == 0
-    }
 }
 
 impl PayloadRange {
@@ -68,13 +61,6 @@ impl PayloadRange {
         })
     }
 
-    pub const fn from_span(span: PayloadSpanRef<'_>) -> Self {
-        Self {
-            offset: PayloadByteOffset(span.offset),
-            len: PayloadByteLen(span.len),
-        }
-    }
-
     pub const fn offset(&self) -> usize {
         self.offset.get()
     }
@@ -83,6 +69,7 @@ impl PayloadRange {
         self.len.get()
     }
 
+    #[cfg(test)]
     pub const fn checked_end_offset(&self) -> Option<usize> {
         self.offset.get().checked_add(self.len.get())
     }
@@ -168,6 +155,7 @@ fn checked_payload_bounds(
 }
 
 impl PayloadByteOffset {
+    #[cfg(feature = "qemu-test-export")]
     pub const ZERO: Self = Self(0);
 
     pub const fn get(self) -> usize {
@@ -176,8 +164,6 @@ impl PayloadByteOffset {
 }
 
 impl PayloadByteLen {
-    pub const ZERO: Self = Self(0);
-
     pub const fn get(self) -> usize {
         self.0
     }
@@ -201,10 +187,7 @@ impl<'a> PayloadSpanRef<'a> {
         })
     }
 
-    pub const fn payload(&self) -> &'a PacketPayload {
-        self.payload
-    }
-
+    #[cfg(feature = "qemu-test-export")]
     pub const fn offset(&self) -> usize {
         self.offset
     }
@@ -268,10 +251,6 @@ impl<'a> PayloadSpanRef<'a> {
     pub fn read_u24_be(&self, index: usize) -> Option<u32> {
         self.read_array::<3>(index)
             .map(|bytes| ((bytes[0] as u32) << 16) | ((bytes[1] as u32) << 8) | bytes[2] as u32)
-    }
-
-    pub fn read_u32_be(&self, index: usize) -> Option<u32> {
-        self.read_array::<4>(index).map(u32::from_be_bytes)
     }
 
     pub fn for_each_chunk(&self, mut f: impl FnMut(&[u8])) {
@@ -415,31 +394,6 @@ impl<'a> PayloadSpanRef<'a> {
             PayloadRange::checked(self.payload, self.offset.checked_add(start)?, end - start)?,
         )
     }
-
-    pub fn starts_with(&self, prefix: &[u8]) -> bool {
-        prefix
-            .iter()
-            .enumerate()
-            .all(|(index, expected)| self.byte_at(index) == Some(*expected))
-    }
-
-    pub fn ends_with(&self, suffix: &[u8]) -> bool {
-        let Some(start) = self.len.checked_sub(suffix.len()) else {
-            return false;
-        };
-        suffix
-            .iter()
-            .enumerate()
-            .all(|(index, expected)| self.byte_at(start + index) == Some(*expected))
-    }
-
-    pub fn cursor(&self) -> PacketPayloadCursor<'a> {
-        PacketPayloadCursor {
-            view: PacketPayloadView::new(self.payload),
-            offset: self.offset,
-            end: self.offset.saturating_add(self.len),
-        }
-    }
 }
 
 pub struct OwnedPayloadWindow {
@@ -453,6 +407,7 @@ pub struct GeneratedPacketWriter {
 }
 
 impl OwnedPayloadWindow {
+    #[cfg(feature = "qemu-test-export")]
     pub fn whole(payload: PacketPayload) -> Self {
         let range = PayloadRange {
             offset: PayloadByteOffset::ZERO,
@@ -536,14 +491,6 @@ impl GeneratedPacketWriter {
         self.write_generated_bytes(&value.to_be_bytes())
     }
 
-    pub fn write_u24_be(&mut self, value: u32) -> Option<()> {
-        self.write_generated_bytes(&[
-            ((value >> 16) & 0xff) as u8,
-            ((value >> 8) & 0xff) as u8,
-            (value & 0xff) as u8,
-        ])
-    }
-
     pub fn write_u32_be(&mut self, value: u32) -> Option<()> {
         self.write_generated_bytes(&value.to_be_bytes())
     }
@@ -567,6 +514,7 @@ impl GeneratedPacketWriter {
     }
 }
 
+#[cfg(feature = "qemu-test-export")]
 pub fn packet_payload_from_segments(
     segments: Vec<PacketRef>,
 ) -> Result<PacketPayload, kernel_api::resource::net::PacketPayloadOwnershipError<Vec<PacketRef>>> {
@@ -596,19 +544,11 @@ impl<'a> PacketPayloadView<'a> {
         self.payload.total_len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.total_len() == 0
-    }
-
     pub fn first_byte(&self) -> Option<u8> {
         self.payload
             .segments()
             .iter()
             .find_map(|segment| segment.data().first().copied())
-    }
-
-    pub fn first_segment(&self) -> Option<&'a PacketRef> {
-        self.payload.segments().first()
     }
 
     pub fn for_each_chunk(&self, mut f: impl FnMut(&[u8])) {
@@ -704,21 +644,9 @@ impl<'a> PacketPayloadView<'a> {
         self.read_array::<2>(offset).map(u16::from_be_bytes)
     }
 
-    pub fn read_u24_be(&self, offset: usize) -> Option<u32> {
-        self.read_array::<3>(offset)
-            .map(|bytes| ((bytes[0] as u32) << 16) | ((bytes[1] as u32) << 8) | bytes[2] as u32)
-    }
-
+    #[cfg(feature = "qemu-test-export")]
     pub fn read_u32_be(&self, offset: usize) -> Option<u32> {
         self.read_array::<4>(offset).map(u32::from_be_bytes)
-    }
-
-    pub fn cursor(&self) -> PacketPayloadCursor<'_> {
-        PacketPayloadCursor {
-            view: PacketPayloadView::new(self.payload),
-            offset: 0,
-            end: self.total_len(),
-        }
     }
 }
 
@@ -753,72 +681,6 @@ impl<'a> PayloadSpanMut<'a> {
                 f(&mut segment[local_start..local_end]);
             }
         }
-    }
-}
-
-pub struct PacketPayloadCursor<'a> {
-    view: PacketPayloadView<'a>,
-    offset: usize,
-    end: usize,
-}
-
-impl<'a> PacketPayloadCursor<'a> {
-    pub fn offset(&self) -> usize {
-        self.offset
-    }
-
-    pub fn remaining(&self) -> usize {
-        self.end.saturating_sub(self.offset)
-    }
-
-    pub fn skip(&mut self, len: usize) -> bool {
-        if len > self.remaining() {
-            return false;
-        }
-        self.offset += len;
-        true
-    }
-
-    pub fn read_array<const N: usize>(&mut self) -> Option<[u8; N]> {
-        let out = self.view.read_array::<N>(self.offset)?;
-        self.offset += N;
-        Some(out)
-    }
-
-    pub fn read_u8(&mut self) -> Option<u8> {
-        self.read_array::<1>().map(|bytes| bytes[0])
-    }
-
-    pub fn read_u16_be(&mut self) -> Option<u16> {
-        self.read_array::<2>().map(u16::from_be_bytes)
-    }
-
-    pub fn read_u32_be(&mut self) -> Option<u32> {
-        self.read_array::<4>().map(u32::from_be_bytes)
-    }
-
-    pub fn read_u24_be(&mut self) -> Option<u32> {
-        self.read_array::<3>()
-            .map(|bytes| ((bytes[0] as u32) << 16) | ((bytes[1] as u32) << 8) | bytes[2] as u32)
-    }
-
-    pub fn take_span(&mut self, len: usize) -> Option<PayloadSpanRef<'a>> {
-        if len > self.remaining() {
-            return None;
-        }
-        let span = PayloadSpanRef::from_range(
-            self.view.payload(),
-            PayloadRange::checked(self.view.payload(), self.offset, len)?,
-        )?;
-        self.offset += len;
-        Some(span)
-    }
-
-    pub fn remaining_span(&self) -> Option<PayloadSpanRef<'a>> {
-        PayloadSpanRef::from_range(
-            self.view.payload(),
-            PayloadRange::checked(self.view.payload(), self.offset, self.remaining())?,
-        )
     }
 }
 

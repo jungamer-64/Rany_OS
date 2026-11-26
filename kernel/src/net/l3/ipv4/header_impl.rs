@@ -7,9 +7,6 @@ use super::*;
 impl Ipv4Header {
     /// Minimum header size (no options)
     pub const MIN_SIZE: usize = 20;
-    /// Maximum header size (with options)
-    pub const MAX_SIZE: usize = 60;
-
     /// Get IP version (should be 4)
     pub const fn version(&self) -> u8 {
         self.version_ihl >> 4
@@ -23,16 +20,6 @@ impl Ipv4Header {
     /// Get header length in bytes
     pub const fn header_len(&self) -> usize {
         (self.ihl() as usize) * 4
-    }
-
-    /// Get DSCP (Differentiated Services Code Point)
-    pub const fn dscp(&self) -> u8 {
-        self.dscp_ecn >> 2
-    }
-
-    /// Get ECN (Explicit Congestion Notification)
-    pub const fn ecn(&self) -> u8 {
-        self.dscp_ecn & 0x03
     }
 
     /// Get total length
@@ -71,16 +58,6 @@ impl Ipv4Header {
             flags |= 0x20;
         }
         self.flags_fragment = [flags | ((offset >> 8) as u8), offset as u8];
-    }
-
-    /// Get flags
-    pub fn flags(&self) -> u8 {
-        self.flags_fragment[0] >> 5
-    }
-
-    /// Check "Don't Fragment" flag
-    pub fn dont_fragment(&self) -> bool {
-        (self.flags_fragment[0] & 0x40) != 0
     }
 
     /// Check "More Fragments" flag
@@ -136,11 +113,6 @@ impl Ipv4Header {
     /// Set destination address
     pub fn set_destination(&mut self, addr: Ipv4Address) {
         self.dst_addr = *addr.as_bytes();
-    }
-
-    /// Get payload length
-    pub fn payload_len(&self) -> usize {
-        (self.total_length() as usize).saturating_sub(self.header_len())
     }
 
     /// Header checksum to store in bytes 10-11 of `header` (RFC 791), computed

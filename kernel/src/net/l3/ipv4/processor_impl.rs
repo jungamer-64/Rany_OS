@@ -27,8 +27,6 @@ pub struct Ipv4Processor {
 pub struct Ipv4Stats {
     /// Packets received
     pub rx_packets: u64,
-    /// Packets transmitted
-    pub tx_packets: u64,
     /// Invalid packets
     pub rx_errors: u64,
     /// Dropped packets (not for us)
@@ -57,6 +55,4 @@ pub enum Ipv4ProcessResult {
     Dropped,
     /// Error
     Error,
-    /// Success (Consumed internally)
-    Success,
 }

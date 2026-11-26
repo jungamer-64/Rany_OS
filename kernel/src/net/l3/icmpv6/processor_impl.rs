@@ -152,7 +152,7 @@ impl Icmpv6Processor {
             }
             Icmpv6Type::EchoReply => {
                 self.stats.rx_echo_replies.fetch_add(1, Ordering::Relaxed);
-                self.handle_echo_reply_payload(&view, src)
+                self.handle_echo_reply_payload(&view)
             }
             Icmpv6Type::DestinationUnreachable => {
                 self.handle_quoted_error_payload(payload, |code, _arg, src, dst, packet| {
@@ -262,11 +262,7 @@ impl Icmpv6Processor {
     }
 
     /// Handle Echo Reply (response to our ping)
-    fn handle_echo_reply_payload(
-        &self,
-        view: &PacketPayloadView<'_>,
-        src: Ipv6Address,
-    ) -> Icmpv6Result {
+    fn handle_echo_reply_payload(&self, view: &PacketPayloadView<'_>) -> Icmpv6Result {
         if view.total_len() < ICMPV6_ECHO_HEADER_SIZE {
             return Icmpv6Result::Error;
         }
@@ -281,7 +277,6 @@ impl Icmpv6Processor {
         let sequence = u16::from_be_bytes(sequence_bytes);
 
         Icmpv6Result::EchoReplyReceived {
-            src,
             identifier,
             sequence,
         }

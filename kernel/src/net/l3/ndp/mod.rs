@@ -37,7 +37,6 @@ pub const NS_MIN_SIZE: usize = 24;
 pub const NA_MIN_SIZE: usize = 24;
 
 /// Minimum Router Solicitation size: ICMPv6 header (4) + reserved (4) = 8
-pub const RS_MIN_SIZE: usize = 8;
 
 /// Reachable timeout (30 seconds default, RFC 4861 Section 6.3.2)
 pub const REACHABLE_TIME_MS: u64 = 30_000;
@@ -119,105 +118,11 @@ pub enum NdpOption {
         preferred_lifetime: u32,
         prefix: Ipv6Address,
     },
-    /// MTU option
-    Mtu(u32),
     /// Recursive DNS Server (RDNSS)
     RecursiveDnsServer {
         lifetime: u32,
         servers: Vec<Ipv6Address>,
     },
-}
-
-/// Parse NDP options from the data following the fixed NDP message fields
-pub fn parse_ndp_options(data: &[u8]) -> Vec<NdpOption> {
-    let mut options = Vec::new();
-    let mut offset = 0;
-
-    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-    while offset + 2 <= data.len() {
-        let opt_type = NdpOptionType::from(data[offset]);
-        let opt_len_units = data[offset + 1] as usize;
-
-        // Length 0 is invalid — prevent infinite loop
-        if opt_len_units == 0 {
-            break;
-        }
-
-        let opt_len = opt_len_units * 8; // in bytes
-        if offset + opt_len > data.len() {
-            break;
-        }
-
-        let opt_data = &data[offset..offset + opt_len];
-
-        match opt_type {
-            NdpOptionType::SourceLinkLayerAddress | NdpOptionType::TargetLinkLayerAddress => {
-                if opt_len >= 8 {
-                    let mut mac = [0u8; 6];
-                    mac.copy_from_slice(&opt_data[2..8]);
-                    options.push(NdpOption::LinkLayerAddress {
-                        option_type: opt_type,
-                        mac,
-                    });
-                }
-            }
-            NdpOptionType::PrefixInformation => {
-                if opt_len >= 32 {
-                    let prefix_len = opt_data[2];
-                    let flags = opt_data[3];
-                    let on_link = (flags & 0x80) != 0;
-                    let autonomous = (flags & 0x40) != 0;
-                    let valid_lifetime =
-                        u32::from_be_bytes([opt_data[4], opt_data[5], opt_data[6], opt_data[7]]);
-                    let preferred_lifetime =
-                        u32::from_be_bytes([opt_data[8], opt_data[9], opt_data[10], opt_data[11]]);
-                    // Bytes 12-15: reserved
-                    let mut prefix_bytes = [0u8; 16];
-                    prefix_bytes.copy_from_slice(&opt_data[16..32]);
-                    options.push(NdpOption::PrefixInfo {
-                        prefix_len,
-                        on_link,
-                        autonomous,
-                        valid_lifetime,
-                        preferred_lifetime,
-                        prefix: Ipv6Address::new(prefix_bytes),
-                    });
-                }
-            }
-            NdpOptionType::Mtu => {
-                if opt_len >= 8 {
-                    // Bytes 2-3: reserved
-                    let mtu =
-                        u32::from_be_bytes([opt_data[4], opt_data[5], opt_data[6], opt_data[7]]);
-                    options.push(NdpOption::Mtu(mtu));
-                }
-            }
-            NdpOptionType::RecursiveDnsServer => {
-                if opt_len >= 24 {
-                    // RFC 8106: Type(1), Length(1), Reserved(2), Lifetime(4), Addresses(Nx16)
-                    let lifetime =
-                        u32::from_be_bytes([opt_data[4], opt_data[5], opt_data[6], opt_data[7]]);
-                    let mut servers = Vec::new();
-                    let mut addr_offset = 8;
-                    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-                    while addr_offset + 16 <= opt_len {
-                        let mut addr_bytes = [0u8; 16];
-                        addr_bytes.copy_from_slice(&opt_data[addr_offset..addr_offset + 16]);
-                        servers.push(Ipv6Address::new(addr_bytes));
-                        addr_offset += 16;
-                    }
-                    options.push(NdpOption::RecursiveDnsServer { lifetime, servers });
-                }
-            }
-            _ => {
-                // Skip unknown options
-            }
-        }
-
-        offset += opt_len;
-    }
-
-    options
 }
 
 pub fn parse_ndp_options_view(view: &PacketPayloadView<'_>, start_offset: usize) -> Vec<NdpOption> {
@@ -284,13 +189,6 @@ pub fn parse_ndp_options_view(view: &PacketPayloadView<'_>, start_offset: usize)
                         preferred_lifetime,
                         prefix: Ipv6Address::new(prefix_bytes),
                     });
-                }
-            }
-            NdpOptionType::Mtu => {
-                if opt_len >= 8
-                    && let Some(mtu_bytes) = view.read_array::<4>(offset + 4)
-                {
-                    options.push(NdpOption::Mtu(u32::from_be_bytes(mtu_bytes)));
                 }
             }
             NdpOptionType::RecursiveDnsServer => {
@@ -455,7 +353,8 @@ impl NeighborCache {
     }
 
     /// Remove an entry
-    pub fn remove(&mut self, ip: &Ipv6Address) -> Option<NeighborEntry> {
+    #[cfg(test)]
+    fn remove(&mut self, ip: &Ipv6Address) -> Option<NeighborEntry> {
         self.entries.remove(ip.as_bytes())
     }
 
@@ -584,18 +483,15 @@ impl NeighborCache {
     }
 
     /// Get number of entries
-    pub fn len(&self) -> usize {
+    #[cfg(test)]
+    fn len(&self) -> usize {
         self.entries.len()
     }
 
     /// Check if cache is empty
-    pub fn is_empty(&self) -> bool {
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
         self.entries.is_empty()
-    }
-
-    /// Iterate over all entries
-    pub fn iter(&self) -> impl Iterator<Item = &NeighborEntry> {
-        self.entries.values()
     }
 
     /// Evict one entry (prefer Stale, then oldest)
@@ -649,7 +545,6 @@ pub enum NdpResult {
     /// Router Advertisement received (prefix/gateway info)
     RouterAdvertisement {
         router: Ipv6Address,
-        router_mac: Option<[u8; 6]>,
         router_lifetime_secs: u16,
         prefixes: Vec<NdpOption>,
     },
@@ -681,8 +576,6 @@ pub struct NdpProcessor {
 pub struct NdpStats {
     pub ns_received: AtomicU64,
     pub na_received: AtomicU64,
-    pub rs_sent: AtomicU64,
     pub ra_received: AtomicU64,
     pub ns_sent: AtomicU64,
-    pub na_sent: AtomicU64,
 }

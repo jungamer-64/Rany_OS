@@ -168,29 +168,14 @@ impl IcmpHeader {
     /// Header size
     pub const SIZE: usize = 4;
 
-    /// Get message type
-    pub fn icmp_type(&self) -> IcmpType {
-        IcmpType::from(self.icmp_type)
-    }
-
     /// Set message type
     pub fn set_type(&mut self, icmp_type: IcmpType) {
         self.icmp_type = icmp_type.into();
     }
 
-    /// Get code
-    pub const fn code(&self) -> u8 {
-        self.code
-    }
-
     /// Set code
     pub fn set_code(&mut self, code: u8) {
         self.code = code;
-    }
-
-    /// Get checksum
-    pub fn checksum(&self) -> u16 {
-        u16::from_be_bytes(self.checksum)
     }
 
     /// Set checksum
@@ -215,19 +200,9 @@ impl IcmpEchoHeader {
     /// Header size
     pub const SIZE: usize = 8;
 
-    /// Get identifier
-    pub fn identifier(&self) -> u16 {
-        u16::from_be_bytes(self.identifier)
-    }
-
     /// Set identifier
     pub fn set_identifier(&mut self, id: u16) {
         self.identifier = id.to_be_bytes();
-    }
-
-    /// Get sequence number
-    pub fn sequence(&self) -> u16 {
-        u16::from_be_bytes(self.sequence)
     }
 
     /// Set sequence number
@@ -271,8 +246,6 @@ pub struct IcmpStats {
     pub echo_requests_rx: u64,
     /// Echo replies received
     pub echo_replies_rx: u64,
-    /// Echo replies sent
-    pub echo_replies_tx: u64,
     /// Error messages received
     pub errors_rx: u64,
     /// Invalid packets
@@ -290,7 +263,7 @@ pub enum IcmpResult {
         data_len: usize,
     },
     /// Received echo reply
-    EchoReplyReceived { identifier: u16, sequence: u16 },
+    EchoReplyReceived { sequence: u16 },
     /// Error message
     Error { icmp_type: IcmpType, code: u8 },
     /// ICMP Redirect message (RFC 792)

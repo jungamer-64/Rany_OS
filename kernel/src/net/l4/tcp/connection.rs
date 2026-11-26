@@ -37,10 +37,6 @@ pub struct TcpPayloadSendError {
 }
 
 impl TcpPayloadSendError {
-    pub const fn cause(&self) -> TcpError {
-        self.cause
-    }
-
     pub fn into_parts(self) -> (TcpError, PacketPayload) {
         (self.cause, self.payload)
     }
@@ -303,16 +299,6 @@ impl TcpConnection {
         self.runtime
     }
 
-    pub fn local_addr(&self) -> EndpointAddr {
-        self.socket
-            .local_addr()
-            .unwrap_or_else(|| EndpointAddr::new([0, 0, 0, 0], 0))
-    }
-
-    pub fn peer_addr(&self) -> Option<EndpointAddr> {
-        self.socket.remote_addr()
-    }
-
     pub async fn recv_payload(&mut self) -> Result<Option<PacketPayload>, TcpError> {
         RecvPayloadFuture { connection: self }.await
     }
@@ -475,16 +461,6 @@ impl TcpAcceptor {
         backlog: u32,
     ) -> Result<Self, TcpError> {
         TcpAcceptorBindDispatchFuture::new(runtime, scope, addr, backlog).await
-    }
-
-    pub fn local_addr(&self) -> EndpointAddr {
-        self.socket
-            .local_addr()
-            .unwrap_or_else(|| EndpointAddr::new([0, 0, 0, 0], 0))
-    }
-
-    pub const fn runtime(&self) -> NetRuntimeHandle {
-        self.runtime
     }
 
     pub async fn next_connection(&self) -> Result<(TcpConnection, EndpointAddr), TcpError> {

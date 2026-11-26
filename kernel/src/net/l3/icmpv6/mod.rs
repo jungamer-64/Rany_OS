@@ -184,8 +184,6 @@ pub enum Icmpv6Result {
     },
     /// Echo Reply received (from our ping)
     EchoReplyReceived {
-        /// Source of reply
-        src: Ipv6Address,
         /// Echo identifier
         identifier: u16,
         /// Echo sequence number
@@ -275,8 +273,6 @@ pub struct Icmpv6Stats {
     pub rx_ndp: AtomicU64,
     /// Messages with checksum errors
     pub checksum_errors: AtomicU64,
-    /// Total messages transmitted
-    pub tx_messages: AtomicU64,
     /// Total messages dropped due to rate limit
     pub dropped_rate_limit: AtomicU64,
 }

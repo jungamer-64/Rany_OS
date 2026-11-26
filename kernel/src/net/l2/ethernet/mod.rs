@@ -175,11 +175,6 @@ pub struct EthernetFrame<'a> {
 impl<'a> EthernetFrame<'a> {
     /// Minimum Ethernet frame size (without FCS)
     pub const MIN_SIZE: usize = 60;
-    /// Maximum Ethernet frame size (without FCS)  
-    pub const MAX_SIZE: usize = 1514;
-    /// Maximum payload size (MTU)
-    pub const MTU: usize = 1500;
-
     /// Parse an Ethernet frame from raw bytes (zero-copy)
     pub fn parse(data: &'a [u8]) -> Option<Self> {
         let header = crate::util::get_ref::<EthernetHeader>(data, 0)?;
@@ -209,11 +204,6 @@ impl<'a> EthernetFrame<'a> {
     /// Get the payload (zero-copy)
     pub fn payload(&self) -> &'a [u8] {
         &self.data[EthernetHeader::SIZE..]
-    }
-
-    /// Get the entire raw frame data
-    pub fn as_bytes(&self) -> &'a [u8] {
-        self.data
     }
 }
 

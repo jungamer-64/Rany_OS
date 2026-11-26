@@ -604,7 +604,6 @@ impl RuntimeCommandHandler {
                     stats.record_rx_error();
                 }
             }
-            crate::net::l3::ipv4::Ipv4ProcessResult::Success => {}
             crate::net::l3::ipv4::Ipv4ProcessResult::UnknownProtocol(
                 proto,
                 src,

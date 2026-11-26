@@ -4,6 +4,17 @@
 
 use super::*;
 
+#[cfg(test)]
+use crate::net::payload::PacketPayloadView;
+
+#[cfg(test)]
+fn fixture_payload(bytes: &[u8]) -> kernel_api::resource::net::PacketPayload {
+    use crate::net::l4::test_support::packet_fixture_with_data;
+    kernel_api::resource::net::PacketPayload::try_single(packet_fixture_with_data(bytes))
+        .expect("nonempty NDP fixture")
+}
+
+#[cfg(test)]
 // RFC 4861 section 4.3: fe80::2 solicits fe80::5054:ff:fe12:3456 at
 // ff02::1:ff12:3456. The checksum includes that IPv6 pseudo-header.
 const RECEIVED_NS: [u8; 32] = [
@@ -88,10 +99,12 @@ pub fn test_neighbor_cache_expiry() {
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+#[cfg(test)]
 pub fn test_parse_slla_option() {
     // Source Link-Layer Address: type=1, len=1 (8 bytes), mac=52:54:00:12:34:56
     let data = [1, 1, 0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
-    let options = parse_ndp_options(&data);
+    let payload = fixture_payload(&data);
+    let options = parse_ndp_options_view(&PacketPayloadView::new(&payload), 0);
     assert_eq!(options.len(), 1);
     match &options[0] {
         NdpOption::LinkLayerAddress { option_type, mac } => {
@@ -104,6 +117,7 @@ pub fn test_parse_slla_option() {
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+#[cfg(test)]
 pub fn test_parse_prefix_info_option() {
     // Prefix Information: type=3, len=4 (32 bytes)
     let mut data = [0u8; 32];
@@ -126,7 +140,8 @@ pub fn test_parse_prefix_info_option() {
     data[18] = 0x0d;
     data[19] = 0xb8;
 
-    let options = parse_ndp_options(&data);
+    let payload = fixture_payload(&data);
+    let options = parse_ndp_options_view(&PacketPayloadView::new(&payload), 0);
     assert_eq!(options.len(), 1);
     match &options[0] {
         NdpOption::PrefixInfo {
@@ -213,30 +228,6 @@ pub fn test_build_na() {
     assert_eq!(cksum, 0);
 }
 
-#[cfg(feature = "qemu-test-export")]
-pub fn test_build_rs() {
-    let src = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
-    let mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
-
-    let msg = NdpProcessor::build_rs(&src, &mac).expect("rs");
-    let msg = payload_bytes(&msg);
-    assert_eq!(
-        msg.as_slice(),
-        &[
-            0x85, 0x00, 0xf5, 0x70, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x52, 0x54, 0x00, 0x12,
-            0x34, 0x56,
-        ]
-    );
-    assert_eq!(msg.len(), 16);
-    assert_eq!(msg[0], u8::from(Icmpv6Type::RouterSolicitation));
-
-    // Verify checksum
-    let dst = Ipv6Address::ALL_ROUTERS_LINK_LOCAL;
-    let pseudo = ipv6_pseudo_header_checksum(&src, &dst, IpProtocol::Icmpv6, msg.len() as u32);
-    let cksum = data_checksum(&msg, pseudo);
-    assert_eq!(cksum, 0);
-}
-
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_multicast_mac() {
@@ -261,6 +252,7 @@ pub fn test_resolve_multicast() {
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+#[cfg(test)]
 pub fn test_ns_processing() {
     let our_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
     let our_ip = Ipv6Address::new([
@@ -272,9 +264,9 @@ pub fn test_ns_processing() {
     let sender_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
     let dst = our_ip.solicited_node();
 
-    let result = processor.process(
+    let result = processor.process_payload(
         Icmpv6Type::NeighborSolicitation,
-        &RECEIVED_NS,
+        &fixture_payload(&RECEIVED_NS),
         sender_ip,
         dst,
         sender_mac,
@@ -304,6 +296,7 @@ pub fn test_ns_processing() {
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+#[cfg(test)]
 pub fn test_ndp_spoofing_detection() {
     let our_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
     let our_ip = Ipv6Address::new([
@@ -318,9 +311,9 @@ pub fn test_ndp_spoofing_detection() {
     // but the actual Ethernet source MAC is different (spoofed).
     let actual_eth_mac = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE];
 
-    let result = processor.process(
+    let result = processor.process_payload(
         Icmpv6Type::NeighborSolicitation,
-        &RECEIVED_NS,
+        &fixture_payload(&RECEIVED_NS),
         sender_ip,
         dst,
         actual_eth_mac,
@@ -336,6 +329,7 @@ pub fn test_ndp_spoofing_detection() {
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+#[cfg(test)]
 pub fn test_na_multicast_target_rejection() {
     let our_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
     let our_ip = Ipv6Address::new([
@@ -354,9 +348,9 @@ pub fn test_na_multicast_target_rejection() {
         0xee, 0xff,
     ];
 
-    let result = processor.process(
+    let result = processor.process_payload(
         Icmpv6Type::NeighborAdvertisement,
-        &na,
+        &fixture_payload(&na),
         sender_ip,
         our_ip,
         sender_mac,
@@ -372,6 +366,7 @@ pub fn test_na_multicast_target_rejection() {
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+#[cfg(test)]
 pub fn test_na_discard_unknown_target() {
     let our_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
     let our_ip = Ipv6Address::new([
@@ -390,9 +385,9 @@ pub fn test_na_discard_unknown_target() {
         0xee, 0xff,
     ];
 
-    let result = processor.process(
+    let result = processor.process_payload(
         Icmpv6Type::NeighborAdvertisement,
-        &na,
+        &fixture_payload(&na),
         sender_ip,
         our_ip,
         sender_mac,
@@ -408,6 +403,7 @@ pub fn test_na_discard_unknown_target() {
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+#[cfg(test)]
 pub fn test_ra_processing() {
     let our_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
     let our_ip = Ipv6Address::from_eui64(&our_mac);
@@ -427,9 +423,9 @@ pub fn test_ra_processing() {
     ra.push(1); // len=1
     ra.extend_from_slice(&router_mac);
 
-    let result = processor.process(
+    let result = processor.process_payload(
         Icmpv6Type::RouterAdvertisement,
-        &ra,
+        &fixture_payload(&ra),
         router_ip,
         our_ip,
         router_mac,
@@ -439,12 +435,10 @@ pub fn test_ra_processing() {
     match result {
         NdpResult::RouterAdvertisement {
             router,
-            router_mac: learned_mac,
             router_lifetime_secs,
             ..
         } => {
             assert_eq!(router, router_ip);
-            assert_eq!(learned_mac, Some(router_mac));
             assert_eq!(router_lifetime_secs, 1800);
         }
         _ => panic!("Expected RouterAdvertisement result"),

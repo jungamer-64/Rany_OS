@@ -147,7 +147,6 @@ pub(in crate::net::l4::tcp) enum SynReceivedOrigin {
 #[derive(Debug)]
 enum TcpTcbState {
     Closed,
-    Listen,
     SynSent(TcpHandshakeData),
     SynReceived {
         data: TcpHandshakeData,
@@ -166,7 +165,6 @@ impl TcpTcbState {
     fn kind(&self) -> TcpConnectionState {
         match self {
             Self::Closed => TcpConnectionState::Closed,
-            Self::Listen => TcpConnectionState::Listen,
             Self::SynSent(_) => TcpConnectionState::SynSent,
             Self::SynReceived { .. } => TcpConnectionState::SynReceived,
             Self::Established(_) => TcpConnectionState::Established,
@@ -181,7 +179,7 @@ impl TcpTcbState {
 
     fn sequence(&self) -> Option<TcpSequenceSpace> {
         match self {
-            Self::Closed | Self::Listen => None,
+            Self::Closed => None,
             Self::SynSent(data) | Self::SynReceived { data, .. } => Some(data.seq),
             Self::Established(data)
             | Self::FinWait1(data)
@@ -195,7 +193,7 @@ impl TcpTcbState {
 
     fn sequence_mut(&mut self) -> Option<&mut TcpSequenceSpace> {
         match self {
-            Self::Closed | Self::Listen => None,
+            Self::Closed => None,
             Self::SynSent(data) | Self::SynReceived { data, .. } => Some(&mut data.seq),
             Self::Established(data)
             | Self::FinWait1(data)

@@ -198,10 +198,6 @@ impl TcpSendBuffer {
         self.len
     }
 
-    fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
     fn clear(&mut self) {
         self.chunks.clear();
         self.len = 0;
@@ -679,6 +675,7 @@ impl SocketState {
         tcp.send_buffer.take_segment_window(max_len, max_segments)
     }
 
+    #[cfg(feature = "qemu-test-export")]
     #[inline]
     pub fn push_recv_payload(
         &mut self,

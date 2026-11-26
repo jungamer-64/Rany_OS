@@ -83,6 +83,7 @@ pub fn net_mempool() -> Option<&'static PacketPool> {
     net_mempool_in(crate::net::runtime::default_runtime())
 }
 
+#[cfg(feature = "qemu-test-export")]
 /// 境界コード用。通常の runtime path では `alloc_packet_in` を使う。
 pub fn alloc_packet() -> Option<PacketRef> {
     alloc_packet_in(crate::net::runtime::default_runtime())
