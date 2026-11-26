@@ -214,22 +214,6 @@ fn panic_save_iommu_record(message_slice: &[u8]) {
     }
 }
 
-/// Attempt domain-specific panic handling if running in a non-zero domain.
-fn panic_notify_domain(domain_id: u64, message_slice: &[u8]) {
-    if domain_id == 0 {
-        return;
-    }
-    crate::io::log::early_print("Domain ID: ");
-    crate::io::log::early_print_dec(domain_id);
-    crate::io::log::early_print("\n");
-
-    if let Ok(s) = core::str::from_utf8(message_slice)
-        && try_handle_domain_panic(domain_id, s)
-    {
-        crate::io::log::early_print("Domain resources terminated before system halt.\n");
-    }
-}
-
 /// Build a BsodInfo struct with panic-safe metadata for BSOD rendering.
 fn panic_build_bsod(message_slice: &[u8]) -> BsodInfo<'_> {
     // Keep the panic path minimal and allocation-free. Register capture has
@@ -319,39 +303,6 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
     }
 }
 
-/// ドメイン固有のパニック処理を試みる
-fn try_handle_domain_panic(domain_id: u64, message: &str) -> bool {
-    use crate::ipc::rref::DomainId;
-
-    let id = DomainId::new(domain_id);
-    let sas_domain_id = crate::sas::DomainId::new(domain_id);
-    let target_domain_id = crate::domain::DomainId::new(domain_id);
-
-    // 【設計書 8.4】ドメインが所有する全オブジェクトをポイズニング
-    let poisoned_count = crate::sas::poison_domain_objects(sas_domain_id);
-    if poisoned_count > 0 {
-        crate::io::log::early_print("[PanicHandler] Poisoned objects owned by domain\n");
-    }
-
-    if crate::driver_domain::driver_domain_manager()
-        .find_by_domain(target_domain_id)
-        .is_some()
-    {
-        crate::driver_domain::fault::notify_domain_panic(
-            target_domain_id,
-            alloc::string::String::from(message),
-        );
-        return true;
-    }
-
-    // 終了を要求し、実行中の所有権が残る場合は保持する。
-    if let Err(error) = crate::domain::terminate_domain(id) {
-        log::warn!("Panic cleanup retains domain {id}: {error}");
-    }
-
-    true
-}
-
 /// パニック統計を取得 (Lock-Free read attempt)
 /// 注意: Stringを返すため、アロケーションが発生します。パニックハンドラ内では使用しないでください。
 pub fn panic_stats() -> PanicStats {
@@ -372,43 +323,6 @@ pub fn panic_stats() -> PanicStats {
 pub struct PanicStats {
     pub total_panics: u64,
     pub last_panic: Option<alloc::string::String>,
-}
-
-// ============================================================================
-// Double Fault Handler
-// ============================================================================
-
-/// Double Fault発生時のハンドラ
-pub fn handle_double_fault(
-    stack_frame: &x86_64::structures::idt::InterruptStackFrame,
-    error_code: u64,
-) -> ! {
-    x86_64::instructions::interrupts::disable();
-
-    // Ensure we can print even if locks are held
-    crate::io::log::enter_panic_mode();
-
-    crate::io::log::early_print("\n!!! DOUBLE FAULT !!!\n");
-    crate::io::log::early_print("Error Code: ");
-    crate::io::log::early_print_dec(error_code);
-    crate::io::log::early_print("\n");
-
-    // Stack frame dump would require formatting wrapper for early_print,
-    // or we can just rely on the fact that enter_panic_mode allows log::info! to work without locks?
-    // Let's stick to early_print where possible for absolute safety, but accessing the logger might work now.
-    // However, log::info! macro expands to allocating code sometimes (formatting arguments).
-    // Safest is to just print what we can simply.
-
-    // BSOD表示を試みる
-    #[cfg(not(any(test, feature = "bench")))]
-    {
-        crate::graphics::bsod::show_double_fault_bsod(stack_frame, error_code);
-    }
-
-    // LOOP_PROOF: mode=halt; reason=Double fault handler intentionally halts forever because continuing execution is unsafe.;
-    loop {
-        x86_64::instructions::hlt();
-    }
 }
 
 // ============================================================================
