@@ -54,8 +54,8 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 | ownership-based buffering | queue / endpoint / protocol 層が payload 所有権を明示して受け渡す設計 | `net::l4::endpoint`, `net::datapath`, `kernel_api::resource::net` |
 | end-to-end zero-copy | driver -> protocol -> app まで packet ownership を維持する経路 | `Canonical target` |
 | retained payload | 凍結した共有 payload。どの handle からも書き込めず、最後の handle と device region が返却されるまで内容を保つ | `RetainedPayload` |
-| adaptive polling | 低負荷では interrupt、高負荷では polling / hybrid へ切り替えるモデル | `net::datapath::optimization`, runtime device control |
-| batch processing | 複数 packet をまとめて処理する最適化 | `PacketBatch`, `BatchProcessor` |
+| adaptive polling | 低負荷では interrupt、高負荷では polling / hybrid へ切り替えるモデル | runtime device control |
+| batch processing | 複数 packet をまとめて処理する最適化 | packet queue と driver submission |
 | scatter-gather | multi-buffer DMA / descriptor chaining による送受信 | `PacketPayload` と backing を保持する packet region による driver queue submission |
 
 ## 3. Datapath and polling
