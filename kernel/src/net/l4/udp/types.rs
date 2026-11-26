@@ -6,18 +6,12 @@ use super::*;
 use crate::net::l4::socket::find_udp_by_port_in;
 use crate::net::runtime::NetRuntimeHandle;
 
-/// UDP processor for handling UDP packets
-
-pub struct UdpProcessor {
-    /// Codec / validation statistics
-    stats: UdpStats,
-}
+/// Validates received UDP datagrams and transfers their payload to a socket.
+pub struct UdpProcessor;
 
 /// Result of UDP processing
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum UdpResult {
-    /// Delivered to socket
-    Delivered,
     /// No socket for this port
     NoEndpoint,
     /// Checksum error
@@ -27,56 +21,6 @@ pub enum UdpResult {
 }
 
 impl UdpProcessor {
-    /// Create a new UDP processor
-    pub fn new() -> Self {
-        UdpProcessor {
-            stats: UdpStats::default(),
-        }
-    }
-
-    pub fn stats(&self) -> (u64, u64, u64, u64) {
-        self.stats.snapshot()
-    }
-
-    fn deliver_payload(
-        &self,
-        runtime: NetRuntimeHandle,
-        if_id: NetIfId,
-        src: crate::net::l4::EndpointAddr,
-        dst_port: u16,
-        ttl: u8,
-        payload: PacketPayload,
-    ) -> bool {
-        let Some(endpoint) = find_udp_by_port_in(runtime, dst_port, if_id) else {
-            self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
-            return false;
-        };
-
-        if endpoint
-            .deliver_udp_payload(if_id, src, ttl, payload)
-            .is_ok()
-        {
-            self.stats.rx_datagrams.fetch_add(1, Ordering::Relaxed);
-            true
-        } else {
-            self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
-            false
-        }
-    }
-
-    fn lookup_socket(
-        &self,
-        runtime: NetRuntimeHandle,
-        if_id: NetIfId,
-        dst_port: u16,
-    ) -> Option<Socket> {
-        let endpoint = find_udp_by_port_in(runtime, dst_port, if_id);
-        if endpoint.is_none() {
-            self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
-        }
-        endpoint
-    }
-
     fn payload_span_checksum(span: crate::net::payload::PayloadSpanRef<'_>, initial: u32) -> u16 {
         let mut sum = initial;
         let mut trailing = None;
@@ -119,7 +63,6 @@ impl UdpProcessor {
     }
 
     pub fn process_window_on(
-        &self,
         runtime: NetRuntimeHandle,
         if_id: NetIfId,
         packet: OwnedPayloadWindow,
@@ -127,20 +70,6 @@ impl UdpProcessor {
         dst_ip: Ipv4Address,
         ttl: u8,
     ) -> Result<(), (UdpResult, PacketPayload)> {
-        self.process_window_impl(runtime, if_id, packet, src_ip, dst_ip, ttl)
-    }
-
-    fn process_window_impl(
-        &self,
-        runtime: NetRuntimeHandle,
-        if_id: NetIfId,
-        packet: OwnedPayloadWindow,
-        src_ip: Ipv4Address,
-        dst_ip: Ipv4Address,
-        ttl: u8,
-    ) -> Result<(), (UdpResult, PacketPayload)> {
-        use core::sync::atomic::Ordering;
-
         let segment = packet.span();
         let Some(header) = segment.read_array::<8>(0) else {
             return Err((UdpResult::Invalid, packet.into_original_payload()));
@@ -159,7 +88,6 @@ impl UdpProcessor {
                 return Err((UdpResult::Invalid, packet.into_original_payload()));
             };
             if Self::payload_span_checksum(checksum_span, pseudo) != 0 {
-                self.stats.checksum_errors.fetch_add(1, Ordering::Relaxed);
                 return Err((UdpResult::ChecksumError, packet.into_original_payload()));
             }
         }
@@ -169,14 +97,13 @@ impl UdpProcessor {
             u16::from_be_bytes([header[0], header[1]]),
         );
         let dst_port = u16::from_be_bytes([header[2], header[3]]);
-        let Some(endpoint) = self.lookup_socket(runtime, if_id, dst_port) else {
+        let Some(endpoint) = find_udp_by_port_in(runtime, dst_port, if_id) else {
             return Err((UdpResult::NoEndpoint, packet.into_original_payload()));
         };
 
         let udp_segment = match packet.into_payload() {
             Ok(payload) => payload,
             Err(error) => {
-                self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
                 return Err((UdpResult::Invalid, error.into_owner()));
             }
         };
@@ -185,7 +112,6 @@ impl UdpProcessor {
             UdpHeader::SIZE,
             length - UdpHeader::SIZE,
         ) else {
-            self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
             return Err((UdpResult::Invalid, udp_segment));
         };
         let window = bounds
@@ -194,25 +120,16 @@ impl UdpProcessor {
         let udp_payload = match window.into_payload() {
             Ok(payload) => payload,
             Err(error) => {
-                self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
                 return Err((UdpResult::Invalid, error.into_owner()));
             }
         };
 
-        match endpoint.deliver_udp_payload(if_id, src, ttl, udp_payload) {
-            Ok(()) => {
-                self.stats.rx_datagrams.fetch_add(1, Ordering::Relaxed);
-                Ok(())
-            }
-            Err((_, payload)) => {
-                self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
-                Err((UdpResult::Invalid, payload))
-            }
-        }
+        endpoint
+            .deliver_udp_payload(if_id, src, ttl, udp_payload)
+            .map_err(|(_, payload)| (UdpResult::Invalid, payload))
     }
 
     pub fn process_window_v6_on(
-        &self,
         runtime: NetRuntimeHandle,
         if_id: NetIfId,
         packet: OwnedPayloadWindow,
@@ -220,20 +137,6 @@ impl UdpProcessor {
         dst_ip: Ipv6Address,
         ttl: u8,
     ) -> Result<(), (UdpResult, PacketPayload)> {
-        self.process_window_v6_impl(runtime, if_id, packet, src_ip, dst_ip, ttl)
-    }
-
-    fn process_window_v6_impl(
-        &self,
-        runtime: NetRuntimeHandle,
-        if_id: NetIfId,
-        packet: OwnedPayloadWindow,
-        src_ip: Ipv6Address,
-        dst_ip: Ipv6Address,
-        ttl: u8,
-    ) -> Result<(), (UdpResult, PacketPayload)> {
-        use core::sync::atomic::Ordering;
-
         let segment = packet.span();
         let Some(header) = segment.read_array::<8>(0) else {
             return Err((UdpResult::Invalid, packet.into_original_payload()));
@@ -247,7 +150,6 @@ impl UdpProcessor {
 
         let checksum = u16::from_be_bytes([header[6], header[7]]);
         if checksum == 0 {
-            self.stats.checksum_errors.fetch_add(1, Ordering::Relaxed);
             return Err((UdpResult::ChecksumError, packet.into_original_payload()));
         }
 
@@ -256,7 +158,6 @@ impl UdpProcessor {
             return Err((UdpResult::Invalid, packet.into_original_payload()));
         };
         if Self::payload_span_checksum(checksum_span, pseudo) != 0 {
-            self.stats.checksum_errors.fetch_add(1, Ordering::Relaxed);
             return Err((UdpResult::ChecksumError, packet.into_original_payload()));
         }
 
@@ -265,14 +166,13 @@ impl UdpProcessor {
             u16::from_be_bytes([header[0], header[1]]),
         );
         let dst_port = u16::from_be_bytes([header[2], header[3]]);
-        let Some(endpoint) = self.lookup_socket(runtime, if_id, dst_port) else {
+        let Some(endpoint) = find_udp_by_port_in(runtime, dst_port, if_id) else {
             return Err((UdpResult::NoEndpoint, packet.into_original_payload()));
         };
 
         let udp_segment = match packet.into_payload() {
             Ok(payload) => payload,
             Err(error) => {
-                self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
                 return Err((UdpResult::Invalid, error.into_owner()));
             }
         };
@@ -281,7 +181,6 @@ impl UdpProcessor {
             UdpHeader::SIZE,
             length - UdpHeader::SIZE,
         ) else {
-            self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
             return Err((UdpResult::Invalid, udp_segment));
         };
         let window = bounds
@@ -290,164 +189,12 @@ impl UdpProcessor {
         let udp_payload = match window.into_payload() {
             Ok(payload) => payload,
             Err(error) => {
-                self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
                 return Err((UdpResult::Invalid, error.into_owner()));
             }
         };
 
-        match endpoint.deliver_udp_payload(if_id, src, ttl, udp_payload) {
-            Ok(()) => {
-                self.stats.rx_datagrams.fetch_add(1, Ordering::Relaxed);
-                Ok(())
-            }
-            Err((_, payload)) => {
-                self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
-                Err((UdpResult::Invalid, payload))
-            }
-        }
-    }
-
-    /// Process an incoming UDP payload that may be backed by a packet chain (zero-copy, IPv4).
-    pub fn process_payload_on(
-        &self,
-        runtime: NetRuntimeHandle,
-        if_id: NetIfId,
-        payload: PacketPayload,
-        src_ip: Ipv4Address,
-        dst_ip: Ipv4Address,
-        ttl: u8,
-    ) -> UdpResult {
-        self.process_payload_impl(runtime, if_id, payload, src_ip, dst_ip, ttl)
-    }
-
-    fn process_payload_impl(
-        &self,
-        runtime: NetRuntimeHandle,
-        if_id: NetIfId,
-        payload: PacketPayload,
-        src_ip: Ipv4Address,
-        dst_ip: Ipv4Address,
-        ttl: u8,
-    ) -> UdpResult {
-        use core::sync::atomic::Ordering;
-
-        let view = PacketPayloadView::new(&payload);
-        let Some(header) = view.read_array::<8>(0) else {
-            return UdpResult::Invalid;
-        };
-        let length = u16::from_be_bytes([header[4], header[5]]) as usize;
-        if !(UdpHeader::SIZE..=view.total_len()).contains(&length) || length != view.total_len() {
-            return UdpResult::Invalid;
-        }
-
-        let checksum = u16::from_be_bytes([header[6], header[7]]);
-        if checksum != 0 {
-            let pseudo = pseudo_header_checksum(src_ip, dst_ip, IpProtocol::Udp, length as u16);
-            if payload_checksum(&view, pseudo) != 0 {
-                self.stats.checksum_errors.fetch_add(1, Ordering::Relaxed);
-                return UdpResult::ChecksumError;
-            }
-        }
-
-        let Some(bounds) = crate::net::payload::OwnedPayloadBounds::checked(
-            &payload,
-            UdpHeader::SIZE,
-            length - UdpHeader::SIZE,
-        ) else {
-            return UdpResult::Invalid;
-        };
-        let Some(udp_payload) = bounds
-            .take_from(payload)
-            .and_then(|window| window.into_payload().ok())
-        else {
-            return UdpResult::Invalid;
-        };
-        let src = crate::net::l4::EndpointAddr::new(
-            src_ip.octets(),
-            u16::from_be_bytes([header[0], header[1]]),
-        );
-        let dst_port = u16::from_be_bytes([header[2], header[3]]);
-
-        if self.deliver_payload(runtime, if_id, src, dst_port, ttl, udp_payload) {
-            UdpResult::Delivered
-        } else {
-            UdpResult::NoEndpoint
-        }
-    }
-
-    /// Process an incoming UDP payload that may be backed by a packet chain (zero-copy, IPv6).
-    pub fn process_payload_v6_on(
-        &self,
-        runtime: NetRuntimeHandle,
-        if_id: NetIfId,
-        payload: PacketPayload,
-        src_ip: Ipv6Address,
-        dst_ip: Ipv6Address,
-        ttl: u8,
-    ) -> UdpResult {
-        self.process_payload_v6_impl(runtime, if_id, payload, src_ip, dst_ip, ttl)
-    }
-
-    fn process_payload_v6_impl(
-        &self,
-        runtime: NetRuntimeHandle,
-        if_id: NetIfId,
-        payload: PacketPayload,
-        src_ip: Ipv6Address,
-        dst_ip: Ipv6Address,
-        ttl: u8,
-    ) -> UdpResult {
-        use core::sync::atomic::Ordering;
-
-        let view = PacketPayloadView::new(&payload);
-        let Some(header) = view.read_array::<8>(0) else {
-            return UdpResult::Invalid;
-        };
-        let length = u16::from_be_bytes([header[4], header[5]]) as usize;
-        if !(UdpHeader::SIZE..=view.total_len()).contains(&length) || length != view.total_len() {
-            return UdpResult::Invalid;
-        }
-
-        let checksum = u16::from_be_bytes([header[6], header[7]]);
-        if checksum == 0 {
-            return UdpResult::ChecksumError;
-        }
-
-        let pseudo = ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Udp, length as u32);
-        if payload_checksum(&view, pseudo) != 0 {
-            self.stats.checksum_errors.fetch_add(1, Ordering::Relaxed);
-            return UdpResult::ChecksumError;
-        }
-
-        let Some(bounds) = crate::net::payload::OwnedPayloadBounds::checked(
-            &payload,
-            UdpHeader::SIZE,
-            length - UdpHeader::SIZE,
-        ) else {
-            return UdpResult::Invalid;
-        };
-        let Some(udp_payload) = bounds
-            .take_from(payload)
-            .and_then(|window| window.into_payload().ok())
-        else {
-            return UdpResult::Invalid;
-        };
-        let src = crate::net::l4::EndpointAddr::new_v6(
-            src_ip.octets(),
-            u16::from_be_bytes([header[0], header[1]]),
-        );
-        let dst_port = u16::from_be_bytes([header[2], header[3]]);
-
-        if self.deliver_payload(runtime, if_id, src, dst_port, ttl, udp_payload) {
-            UdpResult::Delivered
-        } else {
-            UdpResult::NoEndpoint
-        }
-    }
-}
-
-impl Default for UdpProcessor {
-    fn default() -> Self {
-        Self::new()
+        endpoint
+            .deliver_udp_payload(if_id, src, ttl, udp_payload)
+            .map_err(|(_, payload)| (UdpResult::Invalid, payload))
     }
 }

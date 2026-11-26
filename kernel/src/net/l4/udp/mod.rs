@@ -6,14 +6,14 @@
 //! This module implements zero-copy UDP packet processing
 //! for the ExoRust networking stack.
 
-use crate::net::l3::ipv4::{IpProtocol, Ipv4Address, data_checksum, pseudo_header_checksum};
+use crate::net::l3::ipv4::{IpProtocol, Ipv4Address, pseudo_header_checksum};
 use crate::net::l3::ipv6::{Ipv6Address, ipv6_pseudo_header_checksum};
 use crate::net::l4::EndpointAddr;
 use crate::net::l4::socket::{
     Socket, allocate_udp_ephemeral_port_in, bind_udp_dual_stack_in, unregister_socket_in,
 };
 use crate::net::l4::types::EndpointError;
-use crate::net::payload::{OwnedPayloadWindow, PacketPayloadView};
+use crate::net::payload::OwnedPayloadWindow;
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::command::CommandDispatch;
 use crate::net::runtime::manager::NetIfId;
@@ -21,64 +21,11 @@ use crate::net::types::InterfaceScope;
 use crate::net::types::NetworkError;
 use core::future::Future;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::{Context, Poll};
 use kernel_api::resource::net::PacketPayload;
 
 extern crate alloc;
 
-#[inline]
-fn ipv6_checksum(
-    src: &Ipv6Address,
-    dst: &Ipv6Address,
-    next_header: IpProtocol,
-    data: &[u8],
-) -> u16 {
-    let pseudo = ipv6_pseudo_header_checksum(src, dst, next_header, data.len() as u32);
-    data_checksum(data, pseudo)
-}
-
-fn payload_checksum(view: &PacketPayloadView<'_>, initial: u32) -> u16 {
-    let mut sum = initial;
-    let mut trailing = None;
-
-    view.for_each_chunk(|chunk| {
-        let mut index = 0usize;
-        if let Some(prev) = trailing.take() {
-            if let Some((&first, rest)) = chunk.split_first() {
-                sum = sum.saturating_add(u16::from_be_bytes([prev, first]) as u32);
-                index = 1;
-                if rest.is_empty() {
-                    return;
-                }
-            } else {
-                trailing = Some(prev);
-                return;
-            }
-        }
-
-        // LOOP_PROOF: mode=bounded; reason=index advances by two through the finite UDP payload chunk and leaves at most one trailing byte.;
-        while index + 1 < chunk.len() {
-            sum = sum.saturating_add(u16::from_be_bytes([chunk[index], chunk[index + 1]]) as u32);
-            index += 2;
-        }
-        if index < chunk.len() {
-            trailing = Some(chunk[index]);
-        }
-    });
-
-    if let Some(last) = trailing {
-        sum = sum.saturating_add(u16::from_be_bytes([last, 0]) as u32);
-    }
-
-    // LOOP_PROOF: mode=condition; reason=Carry folding reduces the high half of this 32-bit checksum until the accumulator fits in 16 bits.;
-    while (sum >> 16) != 0 {
-        sum = (sum & 0xffff) + (sum >> 16);
-    }
-    !(sum as u16)
-}
-
-/// UDP header
 mod types;
 pub use types::*;
 #[derive(Debug, Clone, Copy)]
@@ -98,19 +45,9 @@ impl UdpHeader {
     /// Header size
     pub const SIZE: usize = 8;
 
-    /// Get source port
-    pub fn src_port(&self) -> u16 {
-        u16::from_be_bytes(self.src_port)
-    }
-
     /// Set source port
     pub fn set_src_port(&mut self, port: u16) {
         self.src_port = port.to_be_bytes();
-    }
-
-    /// Get destination port
-    pub fn dst_port(&self) -> u16 {
-        u16::from_be_bytes(self.dst_port)
     }
 
     /// Set destination port
@@ -118,19 +55,9 @@ impl UdpHeader {
         self.dst_port = port.to_be_bytes();
     }
 
-    /// Get length
-    pub fn length(&self) -> u16 {
-        u16::from_be_bytes(self.length)
-    }
-
     /// Set length
     pub fn set_length(&mut self, len: u16) {
         self.length = len.to_be_bytes();
-    }
-
-    /// Get checksum
-    pub fn checksum(&self) -> u16 {
-        u16::from_be_bytes(self.checksum)
     }
 
     /// Set checksum
@@ -509,25 +436,6 @@ impl Future for UdpSendFuture {
             Poll::Ready(Err(err)) => Poll::Ready(Err(socket_error_to_network(err))),
             Poll::Pending => Poll::Pending,
         }
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct UdpStats {
-    pub rx_datagrams: AtomicU64,
-    pub tx_datagrams: AtomicU64,
-    pub rx_dropped: AtomicU64,
-    pub checksum_errors: AtomicU64,
-}
-
-impl UdpStats {
-    pub fn snapshot(&self) -> (u64, u64, u64, u64) {
-        (
-            self.rx_datagrams.load(Ordering::Relaxed),
-            self.tx_datagrams.load(Ordering::Relaxed),
-            self.rx_dropped.load(Ordering::Relaxed),
-            self.checksum_errors.load(Ordering::Relaxed),
-        )
     }
 }
 

@@ -102,14 +102,17 @@ impl NetworkStack {
         current_time: u64,
     ) {
         let resolved_if_id = if_id;
-        let result = {
-            let Some(state) = self.interfaces.get_mut(&resolved_if_id) else {
-                return;
-            };
-            state
-                .udp
-                .process_window_on(self.runtime, resolved_if_id, packet, src_ip, dst_ip, ttl)
-        };
+        if !self.interfaces.contains_key(&resolved_if_id) {
+            return;
+        }
+        let result = UdpProcessor::process_window_on(
+            self.runtime,
+            resolved_if_id,
+            packet,
+            src_ip,
+            dst_ip,
+            ttl,
+        );
         match result {
             Ok(()) => {}
             Err((UdpResult::NoEndpoint, original_packet)) => {
@@ -132,7 +135,6 @@ impl NetworkStack {
                     stats.record_rx_error();
                 }
             }
-            Err((UdpResult::Delivered, _)) => unreachable!(),
         }
     }
 
@@ -145,19 +147,17 @@ impl NetworkStack {
         hop_limit: u8,
     ) {
         let resolved_if_id = if_id;
-        let result = {
-            let Some(state) = self.interfaces.get_mut(&resolved_if_id) else {
-                return;
-            };
-            state.udp.process_window_v6_on(
-                self.runtime,
-                resolved_if_id,
-                packet,
-                src,
-                dst,
-                hop_limit,
-            )
-        };
+        if !self.interfaces.contains_key(&resolved_if_id) {
+            return;
+        }
+        let result = UdpProcessor::process_window_v6_on(
+            self.runtime,
+            resolved_if_id,
+            packet,
+            src,
+            dst,
+            hop_limit,
+        );
         match result {
             Ok(()) => {}
             Err((UdpResult::NoEndpoint, original_packet)) => {
@@ -171,7 +171,6 @@ impl NetworkStack {
                     stats.record_rx_error();
                 }
             }
-            Err((UdpResult::Delivered, _)) => unreachable!(),
         }
     }
 }

@@ -4,8 +4,8 @@
 
 use crate::net::l3::{igmp, ipv4::Ipv4Address};
 use crate::net::l4::socket::{Socket, bind_udp_dual_stack_in, find_udp_by_port_in};
-use crate::net::l4::udp::{UdpProcessor, UdpResult};
-use crate::net::payload::alloc_packet_with_headroom;
+use crate::net::l4::udp::UdpProcessor;
+use crate::net::payload::{OwnedPayloadWindow, alloc_packet_with_headroom};
 use crate::net::runtime::create_runtime;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::services::dhcp;
@@ -407,18 +407,18 @@ pub fn runtime_udp_concrete_ingress_interface_is_preserved_smoke() -> bool {
         return false;
     };
     packet.data_mut().copy_from_slice(&datagram);
-    let processor = UdpProcessor::new();
     let Ok(payload) = PacketPayload::try_single(packet) else {
         return false;
     };
-    if processor.process_payload_on(
+    if UdpProcessor::process_window_on(
         runtime,
         if_id,
-        payload,
+        OwnedPayloadWindow::whole(payload),
         Ipv4Address::new([10, 23, 0, 1]),
         Ipv4Address::new([10, 23, 0, 2]),
         64,
-    ) != UdpResult::Delivered
+    )
+    .is_err()
     {
         return false;
     }
