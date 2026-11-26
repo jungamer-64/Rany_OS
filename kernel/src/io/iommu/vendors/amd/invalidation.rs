@@ -412,23 +412,11 @@ impl AmdIommuDriver {
     /// Invalidate all IOTLB entries globally.
     ///
     /// # Errors
-    /// Missing command state, allocation, command/ATS failures, or generation
-    /// exhaustion retain IOVA quarantine; partial hardware progress cannot release it.
-    #[deny(unsafe_code)]
+    /// Propagates command or device-TLB failures. Success requires completion
+    /// from each participating unit and device.
     pub(crate) fn invalidate_iotlb_global(&self) -> Result<(), IommuError> {
-        let flush = self.iova_allocator.begin_global_flush()?;
         self.invalidate_all_entries()?;
-        self.invalidate_global_device_tlbs()?;
-        // SAFETY: every unit and attached device completed translation-cache
-        // invalidation after the allocator retirement boundary was captured.
-        #[expect(
-            unsafe_code,
-            reason = "all IOMMU and Device-TLB command completions were observed above"
-        )]
-        unsafe {
-            flush.complete_after_global_invalidation()
-        };
-        Ok(())
+        self.invalidate_global_device_tlbs()
     }
 
     /// Invalidate context cache globally.

@@ -42,37 +42,12 @@ pub fn map_rref_slice_for_device<T: DmaElement>(
     DmaHandle::map_rref_slice_for_device(rref, device, direction)
 }
 
-/// Map a physical address range for a specific device (Device-Aware)
-///
-/// Uses the optimized `get_domain_for_device` path to map only in the
-/// device's assigned domain.
-///
-/// # TOCTOU Safety
-///
-/// This function is TOCTOU-safe: the backend applies DMA mask constraints
-/// during IOVA allocation via `allocate_iova_masked()`, ensuring no
-/// invalid mapping ever exists in the page tables.
+/// Maps an owned aligned physical extent through the device's current domain
+/// with explicit access permissions. The backend applies the DMA mask while
+/// reserving IOVA space, before publishing any IOMMU leaf.
 ///
 /// # Safety
-///
-/// Same requirements as any raw DMA mapping helper. The caller must guarantee the physical
-/// address is owned, valid for DMA, and not a critical system structure.
-pub(crate) unsafe fn map_for_device(
-    device: &DeviceId,
-    phys_addr: PhysAddr,
-    size: u64,
-) -> Result<DeviceMappedRange, DeviceMapFailure> {
-    // Pre-validate that size can fit within device's DMA mask
-    let _ = validate_dma_mask_pre_allocation(device, size)?;
-
-    let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
-    // SAFETY: Caller must uphold safety requirements of map_for_device.
-    // Note: Backend applies DMA mask during IOVA allocation (TOCTOU-safe).
-    let iova = unsafe { driver.map_for_device(device, phys_addr, size) }?;
-    inc_map_count();
-    Ok(iova)
-}
-
+/// The caller retains the backing RAM until translation retirement completes.
 pub(crate) unsafe fn map_for_device_with_perms(
     device: &DeviceId,
     phys_addr: PhysAddr,
@@ -91,7 +66,7 @@ pub(crate) unsafe fn map_for_device_with_perms(
     Ok(iova)
 }
 
-/// Async variant of `map_for_device` that offloads to the controller's CommandQueue
+/// Asynchronous device mapping that offloads to the controller's CommandQueue
 /// and `await`s completion when configured.
 ///
 /// # Async Behavior
@@ -104,7 +79,7 @@ pub(crate) unsafe fn map_for_device_with_perms(
 /// # TOCTOU Safety
 ///
 /// This function is TOCTOU-safe: the backend applies DMA mask constraints
-/// during IOVA allocation via `allocate_iova_masked()`.
+/// during IOVA allocation.
 ///
 /// # Safety
 ///

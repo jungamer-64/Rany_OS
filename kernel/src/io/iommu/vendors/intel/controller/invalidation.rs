@@ -9,30 +9,12 @@
 
 use super::IommuController;
 use super::qi_ops::InvalidationOps;
-use crate::io::iommu::common::dma::iova_allocator::PendingGlobalIovaFlush;
 use crate::io::iommu::common::domain::{
     InvalidateFlags, InvalidateKind, InvalidateRequest, IommuInvalidator,
 };
 use crate::io::iommu::types::IommuError;
 
 impl IommuController {
-    /// Bind an outstanding global flush to the current allocator, not a later replacement.
-    ///
-    /// # Errors
-    /// A poisoned owner or exhausted retirement generation leaves quarantine unchanged.
-    pub(super) fn begin_iova_global_flush(
-        &self,
-    ) -> Result<Option<PendingGlobalIovaFlush>, IommuError> {
-        let guard = self
-            .iova_allocator
-            .lock()
-            .map_err(|_| IommuError::Poisoned)?;
-        guard
-            .as_ref()
-            .map(|allocator| allocator.begin_global_flush())
-            .transpose()
-    }
-
     pub(crate) fn process_single_invalidation_nosync(
         &self,
         req: &InvalidateRequest,
@@ -212,16 +194,6 @@ impl IommuInvalidator for IommuController {
             return Ok(());
         }
 
-        // Only an allocator-wide IOTLB + ATS flush covers every retirement ring.
-        let flush = if requests
-            .iter()
-            .any(|request| matches!(request.kind, InvalidateKind::Global))
-        {
-            self.begin_iova_global_flush()?
-        } else {
-            None
-        };
-
         let any_ats = requests
             .iter()
             .any(|r| r.flags.contains(InvalidateFlags::ATS_AWARE));
@@ -239,18 +211,6 @@ impl IommuInvalidator for IommuController {
             self.qi_wait_sync()?;
         }
 
-        if let Some(flush) = flush {
-            // SAFETY: a Global request invalidated all IOTLB/ATS entries and
-            // the batch's hardware completion was observed above.
-            #[expect(
-                unsafe_code,
-                reason = "the batch contains a completed global IOTLB and ATS flush"
-            )]
-            unsafe {
-                flush.complete_after_global_invalidation()
-            };
-        }
-
         Ok(())
     }
 
@@ -259,28 +219,12 @@ impl IommuInvalidator for IommuController {
         request: InvalidateRequest,
     ) -> impl core::future::Future<Output = Result<(), IommuError>> + Send {
         async move {
-            let flush = if matches!(request.kind, InvalidateKind::Global) {
-                self.begin_iova_global_flush()?
-            } else {
-                None
-            };
             let any_ats = request.flags.contains(InvalidateFlags::ATS_AWARE);
             self.process_single_invalidation_nosync(&request, any_ats)?;
             if self.is_queued_invalidation_enabled() {
                 self.qi_wait_async().await?;
             }
 
-            if let Some(flush) = flush {
-                // SAFETY: the Global request covers all IOTLB/ATS caches and
-                // asynchronous hardware completion was observed above.
-                #[expect(
-                    unsafe_code,
-                    reason = "the global IOTLB and ATS wait completed successfully"
-                )]
-                unsafe {
-                    flush.complete_after_global_invalidation()
-                };
-            }
             Ok(())
         }
     }

@@ -296,18 +296,13 @@ fn test_map_device_nonblocking() {
 
     let size = PAGE_SIZE_4K as u64;
     let allocator = IovaAllocator::new(PAGE_SIZE_4K as u64, (1u64 << 20) - PAGE_SIZE_4K as u64);
-    let iova = allocator
-        .allocate(
-            size,
-            crate::io::iommu::common::dma::iova_allocator::PageGranularity::Page4K,
-        )
-        .unwrap();
+    let iova = allocator.allocate_contiguous(size, size).unwrap();
 
     domain.map(iova, 0x10000, size, true, true).unwrap();
     assert!(domain.mapping(iova).is_some());
 
     domain.unmap(iova).unwrap();
-    allocator.free(iova, size).unwrap();
+    allocator.free_immediate(iova, size).unwrap();
     assert!(domain.mapping(iova).is_none());
 }
 
@@ -327,7 +322,7 @@ fn test_dma_mask_respects_32bit_limit() {
         )
         .unwrap();
     assert!(iova < 0x1_0000_0000, "IOVA {:#x} exceeds 32-bit mask", iova);
-    allocator.free(iova, size).unwrap();
+    allocator.free_immediate(iova, size).unwrap();
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

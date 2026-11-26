@@ -593,17 +593,6 @@ pub async fn test_iommu() -> IntegrationTestSuite {
     }));
 
     #[cfg(feature = "qemu-test-export")]
-    suite.add_result(run_test("iommu_iova_retirement_ownership", || {
-        if crate::io::iommu::qemu_tests::iova_retirement_preserves_later_extents_smoke() {
-            Ok(String::from(
-                "Retirement returns only extents covered by completion",
-            ))
-        } else {
-            Err(String::from("IOVA retirement ownership failed"))
-        }
-    }));
-
-    #[cfg(feature = "qemu-test-export")]
     suite.add_result(run_test("iommu_page_table_recycling_ownership", || {
         if crate::io::iommu::qemu_tests::page_table_recycling_retains_ownership_smoke() {
             Ok(String::from(

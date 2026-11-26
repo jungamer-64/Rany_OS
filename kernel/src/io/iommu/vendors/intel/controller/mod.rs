@@ -495,8 +495,8 @@ impl IommuController {
     /// Used for emergency device isolation.
     ///
     /// # Errors
-    /// Missing registers, command/ATS failures, poisoned ownership, or retirement
-    /// exhaustion leave pending IOVAs quarantined. Submission is not completion.
+    /// Propagates register, command, or ATS failures. The call succeeds after
+    /// hardware completion has been observed.
     #[deny(unsafe_code)]
     pub fn invalidate_iotlb_global_sync(&self) -> Result<(), IommuError> {
         use crate::io::iommu::common::domain::{InvalidateRequest, IommuInvalidator};

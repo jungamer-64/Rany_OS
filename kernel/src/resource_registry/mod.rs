@@ -459,9 +459,7 @@ impl NetPacketMappingError {
             Self::Iommu(IommuError::OutOfMemory | IommuError::MetadataAllocation) => {
                 AbiErrorCode::OutOfMemory
             }
-            Self::Iommu(
-                IommuError::OutOfIova | IommuError::GenerationExhausted | IommuError::InUse,
-            ) => AbiErrorCode::DeviceBusy,
+            Self::Iommu(IommuError::OutOfIova | IommuError::InUse) => AbiErrorCode::DeviceBusy,
             Self::Iommu(
                 IommuError::InvalidAddress
                 | IommuError::InvalidAlignment

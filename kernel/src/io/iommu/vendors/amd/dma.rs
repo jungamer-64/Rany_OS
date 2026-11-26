@@ -64,14 +64,6 @@ impl AmdIommuDriver {
         }
         Ok(mapping)
     }
-    pub(crate) unsafe fn map_for_device(
-        self: &alloc::sync::Arc<Self>,
-        device: &DeviceId,
-        phys_addr: PhysAddr,
-        size: u64,
-    ) -> Result<DeviceMappedRange, DeviceMapFailure> {
-        unsafe { self.map_for_device_with_perms(device, phys_addr, size, true, true) }
-    }
     pub(crate) unsafe fn map_for_device_with_perms(
         self: &alloc::sync::Arc<Self>,
         device: &DeviceId,

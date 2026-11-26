@@ -13,7 +13,6 @@ use crate::io::iommu::runtime::fault_log::FaultRecord;
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 use crate::io::iommu::vendors::intel::controller::IommuController;
 use crate::io::iommu::vendors::intel::controller::dma::DomainManager;
-use crate::io::iommu::vendors::intel::controller::iova::IovaManager;
 use crate::io::iommu::vendors::intel::controller::qi_init::QIManager;
 #[cfg(feature = "qemu-test-export")]
 use crate::io::iommu::vendors::intel::controller::qi_ops::InvalidationOps;
@@ -165,49 +164,6 @@ fn test_set_domain_numa_poisoned_returns_hw_error() {
         ctrl.set_domain_numa(0, Some(0)).err(),
         Some(IommuError::HardwareError)
     );
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_iova_allocator_basic() {
-    let ctrl = controller();
-    // Small IOVA space for testing (64KB)
-    ctrl.init_iova(0x1000_0000, 0x10000)
-        .expect("init_iova failed");
-
-    let a = match ctrl.allocate_iova(4096) {
-        Ok(v) => v,
-        Err(IommuError::OutOfMemory) | Err(IommuError::OutOfIova) => {
-            log::warn!("[IOMMU][TEST] test_iova_allocator_basic: skipped due allocator pressure");
-            return;
-        }
-        Err(e) => panic!("alloc 4K: {:?}", e),
-    };
-    assert_eq!(a % 4096, 0);
-
-    let b = match ctrl.allocate_iova(8192) {
-        Ok(v) => v,
-        Err(IommuError::OutOfMemory) | Err(IommuError::OutOfIova) => {
-            log::warn!("[IOMMU][TEST] test_iova_allocator_basic: skipped due allocator pressure");
-            return;
-        }
-        Err(e) => panic!("alloc 8K: {:?}", e),
-    };
-    assert_ne!(a, b);
-
-    if let Err(e) = ctrl.free_iova(a, 4096) {
-        panic!("free failed: {:?}", e);
-    }
-
-    match ctrl.allocate_iova(4096) {
-        Ok(_) => {}
-        Err(IommuError::OutOfMemory) | Err(IommuError::OutOfIova) => {
-            log::warn!(
-                "[IOMMU][TEST] test_iova_allocator_basic: post-free alloc skipped due allocator pressure"
-            );
-        }
-        Err(e) => panic!("alloc after free: {:?}", e),
-    }
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -367,35 +323,6 @@ fn test_qi_metrics_pressure() {
     assert_eq!(stats.submits, safe_submissions as u64);
 }
 
-/// Test that IOVA allocation produces non-identity addresses.
-/// IOVA should NEVER equal physical address (except for RMRR regions).
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_iova_not_equal_phys() {
-    let ctrl = controller();
-    // Start IOVA range at high address to avoid collision with typical phys
-    ctrl.init_iova(0xF000_0000, 0x10000).expect("init_iova");
-
-    let size = 0x1000;
-    let iova = match ctrl.allocate_iova(size) {
-        Ok(v) => v,
-        Err(IommuError::OutOfMemory) | Err(IommuError::OutOfIova) => {
-            log::warn!("[IOMMU][TEST] test_iova_not_equal_phys: skipped due allocator pressure");
-            return;
-        }
-        Err(e) => panic!("allocate_iova: {:?}", e),
-    };
-
-    // Typical physical address range is lower, IOVA should be higher
-    // This is a simple sanity check - real test would compare actual phys
-    assert!(
-        iova >= 0xF000_0000,
-        "IOVA should be in allocated range, not identity mapped"
-    );
-
-    ctrl.free_iova(iova, size).expect("free failed");
-}
-
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_ats_admission_requires_controller_resources() {
@@ -404,64 +331,6 @@ fn test_ats_admission_requires_controller_resources() {
         ctrl.check_ats_admission(crate::io::iommu::runtime::security::DeviceTrustLevel::Trusted),
         Err(IommuError::NotSupported),
     );
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_iova_quarantine_and_epoch_drain() {
-    let ctrl = controller();
-    // Initialize with a small space
-    ctrl.init_iova(0x1000_0000, 0x10000).expect("init_iova");
-
-    let iova = match ctrl.allocate_iova(4096) {
-        Ok(v) => v,
-        Err(IommuError::OutOfMemory) | Err(IommuError::OutOfIova) => {
-            log::warn!(
-                "[IOMMU][TEST] test_iova_quarantine_and_epoch_drain: skipped due allocator pressure"
-            );
-            return;
-        }
-        Err(e) => panic!("alloc: {:?}", e),
-    };
-
-    // Free the IOVA - it should go to quarantine
-    ctrl.free_iova(iova, 4096).expect("free");
-
-    // Try to allocate the SAME IOVA immediately - it should NOT be available yet
-    // (Bitmap might find another slot if available, but if we exhaust space...)
-    // Let's exhaust most of the space first.
-    let mut allocated = alloc::vec::Vec::new();
-    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-    while let Ok(addr) = ctrl.allocate_iova(4096) {
-        allocated.push(addr);
-    }
-
-    // This allocator fixture is not attached to hardware. There are no IOTLB
-    // or ATS entries; use the production pending-flush transition, not a raw epoch.
-    let flush = {
-        let guard = ctrl.iova_allocator.lock().expect("allocator owner");
-        guard
-            .as_ref()
-            .expect("initialized allocator")
-            .begin_global_flush()
-            .expect("flush boundary")
-    };
-    // SAFETY: no device or IOMMU has ever been attached to this fixture allocator,
-    // so the captured retirement boundary has no outstanding cached translations.
-    unsafe { flush.complete_after_global_invalidation() };
-
-    // Now it should be available again
-    let iova_again = match ctrl.allocate_iova(4096) {
-        Ok(v) => v,
-        Err(IommuError::OutOfMemory) | Err(IommuError::OutOfIova) => {
-            log::warn!(
-                "[IOMMU][TEST] test_iova_quarantine_and_epoch_drain: allocator remained exhausted after epoch completion"
-            );
-            return;
-        }
-        Err(e) => panic!("should be available after epoch completion: {:?}", e),
-    };
-    assert_eq!(iova, iova_again);
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

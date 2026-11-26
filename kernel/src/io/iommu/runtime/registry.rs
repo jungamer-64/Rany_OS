@@ -118,7 +118,7 @@ pub fn get_device_dma_mask(device: &DeviceId) -> Option<u64> {
 /// # TOCTOU-Safety
 ///
 /// This validation is performed **before** any IOVA allocation or page table
-/// modification. Combined with `allocate_iova_masked()`, this ensures that
+/// modification. The backend enforces the registered mask during IOVA allocation, ensuring that
 /// an invalid mapping is never created, eliminating the time-of-check
 /// time-of-use vulnerability window.
 ///

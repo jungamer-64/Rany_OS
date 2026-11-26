@@ -59,7 +59,7 @@ impl IntelIommuDriver {
         // Previously this checked !is_iommu_enabled(), but that function
         // already returns true via the Intel registry fallback path,
         // causing IOMMU_DRIVER to never be initialized. This broke
-        // handle_fault(), map_for_device(), and other driver-dependent paths.
+        // handle_fault(), device mappings, and other driver-dependent paths.
         init_driver(Arc::new(IommuBackend::Intel(IntelIommuDriver::new())));
     }
 

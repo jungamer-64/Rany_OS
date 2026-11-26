@@ -93,20 +93,6 @@ impl IommuBackend {
 
     /// # Safety
     /// Caller must uphold DMA safety invariants for the backing memory.
-    pub unsafe fn map_for_device(
-        &self,
-        device: &DeviceId,
-        phys_addr: PhysAddr,
-        size: u64,
-    ) -> Result<DeviceMappedRange, DeviceMapFailure> {
-        match self {
-            Self::Intel(driver) => unsafe { driver.map_for_device(device, phys_addr, size) },
-            Self::Amd(driver) => unsafe { driver.map_for_device(device, phys_addr, size) },
-        }
-    }
-
-    /// # Safety
-    /// Caller must uphold DMA safety invariants for the backing memory.
     pub unsafe fn map_for_device_with_perms(
         &self,
         device: &DeviceId,

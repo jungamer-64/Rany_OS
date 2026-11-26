@@ -45,7 +45,7 @@ fn rejected_mapping(cause: MapErrorKind) -> KapiError {
             IommuError::InvalidAddress => KapiError::InvalidAddress,
             IommuError::InvalidAlignment => KapiError::InvalidAlignment,
             IommuError::OutOfMemory | IommuError::MetadataAllocation => KapiError::OutOfMemory,
-            IommuError::OutOfIova | IommuError::GenerationExhausted => KapiError::ResourceExhausted,
+            IommuError::OutOfIova => KapiError::ResourceExhausted,
             IommuError::DomainNotFound | IommuError::DeviceNotFound => KapiError::NotFound,
             IommuError::Timeout => KapiError::Timeout,
             IommuError::PhysicalAllocation(cause) => match cause {

@@ -19,7 +19,6 @@ use super::IommuController;
 use super::dma::DomainManager;
 use super::fault::FaultHandler;
 use super::init::CapabilityManager;
-use super::iova::IovaManager;
 use super::ir::InterruptRemapMode;
 use super::qi_init::QIManager;
 use super::qi_ops::InvalidationOps;

@@ -27,10 +27,6 @@ pub mod qi_desc_type {
     pub const IEC_INV: u64 = 0x4;
     /// Invalidation Wait Descriptor
     pub const WAIT: u64 = 0x5;
-    /// PASID-based IOTLB Invalidate
-    pub const PASID_IOTLB_INV: u64 = 0x7;
-    /// PASID-cache Invalidate
-    pub const PASID_CACHE_INV: u64 = 0x8;
 }
 
 impl InvalidationQueueEntry {
@@ -155,28 +151,6 @@ impl InvalidationQueueEntry {
             let addr = encoded_page_addr << 12;
             Self::device_tlb_invalidate(source_id, addr, true)
         }
-    }
-
-    /// Create a PASID Cache Invalidation descriptor (VT-d Spec §6.5.2.7)
-    /// Granularity: 1=global, 2=domain, 3=device-selective
-    pub fn pasid_cache_invalidate(granularity: u8, domain_id: u16, pasid: u32) -> Self {
-        let lo = qi_desc_type::PASID_CACHE_INV
-            | ((granularity as u64 & 0x7) << 4)
-            | ((domain_id as u64) << 16);
-        let hi = (pasid as u64) & 0xFFFFF; // PASID is 20 bits
-        Self { lo, hi }
-    }
-
-    /// Create a Domain PASID Cache Invalidation descriptor
-    pub fn pasid_cache_invalidate_domain(domain_id: u16) -> Self {
-        Self::pasid_cache_invalidate(2, domain_id, 0)
-    }
-
-    /// Create a PASID-based IOTLB Invalidation descriptor (VT-d Spec §6.5.2.6)
-    pub fn pasid_iotlb_invalidate(domain_id: u16, pasid: u32) -> Self {
-        let lo = qi_desc_type::PASID_IOTLB_INV | ((domain_id as u64) << 16);
-        let hi = (pasid as u64) & 0xFFFFF; // PASID is 20 bits
-        Self { lo, hi }
     }
 
     /// Create an Invalidation Wait descriptor
