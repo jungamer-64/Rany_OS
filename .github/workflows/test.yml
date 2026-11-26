@@ -49,6 +49,11 @@ jobs:
       - name: Verify pure tier map
         run: python3 scripts/verify_pure_tier_map.py
 
+      - name: Install guard dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
+
       - name: Run ExoRust reduction guard
         run: bash scripts/check-exorust-reduction-guard.sh
 

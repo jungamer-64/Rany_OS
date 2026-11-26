@@ -1,0 +1,3 @@
+# Extend the repository's target flags for strict CI builds.
+[target.'cfg(all())']
+rustflags = ["-D", "warnings"]

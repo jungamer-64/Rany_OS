@@ -8,7 +8,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
 
 jobs:
   # ============================================================================
@@ -63,26 +62,27 @@ jobs:
     - name: Generate signing keys
       run: |
         if [ ! -f keys/kernel.key ] || [ ! -f keys/kernel_pub.key ]; then
-          cargo run --quiet --manifest-path tools/signer/Cargo.toml -- keygen --output-dir keys
+          cargo --config .cargo/config.ci.toml run --quiet --manifest-path tools/signer/Cargo.toml -- keygen --output-dir keys
         fi
     
     - name: Build kernel
-      run: cargo build -p rany_kernel --target x86_64-exorust.json -Z json-target-spec -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
+      run: cargo --config .cargo/config.ci.toml build -p rany_kernel --target x86_64-exorust.json -Z json-target-spec -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
 
     - name: Install pyelftools
       run: pip install pyelftools
 
     - name: Check linker layout
-      run: python scripts/check_linker_layout.py || (echo 'Linker layout check failed.' && exit 1)
+      run: python3 scripts/check_linker_layout.py target/x86_64-exorust/debug/exorust_kernel
     
     - name: Build release
-      run: cargo build -p rany_kernel --target x86_64-exorust.json --release -Z json-target-spec -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
+      run: cargo --config .cargo/config.ci.toml build -p rany_kernel --target x86_64-exorust.json --release -Z json-target-spec -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
     
     - name: Upload artifacts
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: kernel-binary
         path: target/x86_64-exorust/debug/exorust_kernel
+        if-no-files-found: error
         retention-days: 7
 
   # ============================================================================
@@ -113,11 +113,11 @@ jobs:
     - name: Generate signing keys
       run: |
         if [ ! -f keys/kernel.key ] || [ ! -f keys/kernel_pub.key ]; then
-          cargo run --quiet --manifest-path tools/signer/Cargo.toml -- keygen --output-dir keys
+          cargo --config .cargo/config.ci.toml run --quiet --manifest-path tools/signer/Cargo.toml -- keygen --output-dir keys
         fi
 
     - name: Build kernel without default features
-      run: cargo build -p rany_kernel --no-default-features --target x86_64-exorust.json -Z json-target-spec -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
+      run: cargo --config .cargo/config.ci.toml build -p rany_kernel --no-default-features --target x86_64-exorust.json -Z json-target-spec -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
 
   # ============================================================================
   # Reproducible Build Check
@@ -147,18 +147,18 @@ jobs:
     - name: Generate signing keys
       run: |
         if [ ! -f keys/kernel.key ] || [ ! -f keys/kernel_pub.key ]; then
-          cargo run --quiet --manifest-path tools/signer/Cargo.toml -- keygen --output-dir keys
+          cargo --config .cargo/config.ci.toml run --quiet --manifest-path tools/signer/Cargo.toml -- keygen --output-dir keys
         fi
 
     - name: Build release (run A)
       env:
         CARGO_TARGET_DIR: target/repro-a
-      run: cargo build -p rany_kernel --target x86_64-exorust.json --release -Z json-target-spec -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
+      run: cargo --config .cargo/config.ci.toml build -p rany_kernel --target x86_64-exorust.json --release -Z json-target-spec -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
 
     - name: Build release (run B)
       env:
         CARGO_TARGET_DIR: target/repro-b
-      run: cargo build -p rany_kernel --target x86_64-exorust.json --release -Z json-target-spec -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
+      run: cargo --config .cargo/config.ci.toml build -p rany_kernel --target x86_64-exorust.json --release -Z json-target-spec -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
 
     - name: Compare SHA-256
       run: |
@@ -194,19 +194,19 @@ jobs:
     - name: Install build dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y nasm
+        sudo apt-get install -y nasm ripgrep
 
     - name: Generate signing keys
       run: |
         if [ ! -f keys/kernel.key ] || [ ! -f keys/kernel_pub.key ]; then
-          cargo run --quiet --manifest-path tools/signer/Cargo.toml -- keygen --output-dir keys
+          cargo --config .cargo/config.ci.toml run --quiet --manifest-path tools/signer/Cargo.toml -- keygen --output-dir keys
         fi
     
     - name: Check formatting
       run: cargo fmt --all -- --check
     
     - name: Clippy lints
-      run: cargo clippy -p rany_kernel --target x86_64-exorust.json -Z json-target-spec -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem -- -D warnings
+      run: cargo --config .cargo/config.ci.toml clippy -p rany_kernel --target x86_64-exorust.json -Z json-target-spec -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
       continue-on-error: true  # no_std環境では一部警告が出る可能性
 
     - name: No POSIX compatibility surface
@@ -261,11 +261,11 @@ jobs:
     - name: Generate signing keys
       run: |
         if [ ! -f keys/kernel.key ] || [ ! -f keys/kernel_pub.key ]; then
-          cargo run --quiet --manifest-path tools/signer/Cargo.toml -- keygen --output-dir keys
+          cargo --config .cargo/config.ci.toml run --quiet --manifest-path tools/signer/Cargo.toml -- keygen --output-dir keys
         fi
 
     - name: Build docs
-      run: cargo doc -p rany_kernel --target x86_64-exorust.json --no-deps -Z json-target-spec -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
+      run: cargo --config .cargo/config.ci.toml doc -p rany_kernel --target x86_64-exorust.json --no-deps -Z json-target-spec -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
       continue-on-error: true  # no_std環境のdoc生成
     
     - name: Upload documentation
@@ -372,7 +372,7 @@ jobs:
         toolchain: ${{ steps.rust-config.outputs.toolchain }}
     
     - name: Install cargo-audit
-      run: cargo install cargo-audit
+      run: cargo --config .cargo/config.ci.toml install cargo-audit
     
     - name: Run security audit
       run: cargo audit
@@ -405,8 +405,11 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y nasm
 
+    - name: Generate signing keys
+      run: cargo --config .cargo/config.ci.toml run --quiet --manifest-path tools/signer/Cargo.toml -- keygen --output-dir keys
+
     - name: Build release
-      run: cargo build -p rany_kernel --target x86_64-exorust.json --release -Z json-target-spec -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
+      run: cargo --config .cargo/config.ci.toml build -p rany_kernel --target x86_64-exorust.json --release -Z json-target-spec -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
     
     - name: Get version
       id: version
@@ -415,8 +418,7 @@ jobs:
     - name: Create release archive
       run: |
         mkdir -p release
-        cp target/x86_64-exorust/release/exorust_kernel release/ 2>/dev/null || true
-        cp target/x86_64-exorust/debug/exorust_kernel release/exorust_kernel-debug 2>/dev/null || true
+        cp target/x86_64-exorust/release/exorust_kernel release/
         cp README.md release/
         cp docs/reference/api-reference.md release/
         cp docs/architecture.md release/
