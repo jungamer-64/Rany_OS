@@ -360,7 +360,7 @@ mod tests {
     #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
     #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
     fn reports_the_peer_alert_number() {
-        let error = HttpClientError::TlsProtocol(TlsError::Alert(40));
+        let error = super::HttpClientError::TlsProtocol(super::TlsError::Alert(40));
         assert_eq!(alloc::format!("{error}"), "TLS failed: peer alert 40");
     }
 }

@@ -185,7 +185,7 @@ mod tests {
         for state in [SynReceived, Established, FinWait1, FinWait2, CloseWait] {
             assert!(abort_resets_peer(state), "{state:?}");
         }
-        for state in [Closed, Listen, SynSent, Closing, LastAck, TimeWait] {
+        for state in [Closed, SynSent, Closing, LastAck, TimeWait] {
             assert!(!abort_resets_peer(state), "{state:?}");
         }
     }

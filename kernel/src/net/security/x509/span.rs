@@ -1,4 +1,5 @@
 use crate::net::payload::PayloadSpanRef;
+#[cfg(feature = "qemu-test-export")]
 use kernel_api::resource::net::PacketPayload;
 
 /// Immutable certificate input retains the borrow of its byte or packet owner.
@@ -18,6 +19,7 @@ impl<'a> CertificateSpan<'a> {
         Self(CertificateSource::Bytes(bytes))
     }
 
+    #[cfg(feature = "qemu-test-export")]
     pub fn from_payload(payload: &'a PacketPayload) -> Self {
         Self::from(PayloadSpanRef::from_payload(payload))
     }
