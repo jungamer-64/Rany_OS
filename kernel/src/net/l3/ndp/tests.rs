@@ -41,7 +41,8 @@ fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> alloc::v
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub fn test_neighbor_cache_basic() {
+#[cfg(test)]
+fn test_neighbor_cache_basic() {
     let mut cache = NeighborCache::new();
     let ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     let mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
@@ -61,7 +62,8 @@ pub fn test_neighbor_cache_basic() {
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub fn test_neighbor_cache_update() {
+#[cfg(test)]
+fn test_neighbor_cache_update() {
     let mut cache = NeighborCache::new();
     let ip = Ipv6Address::LOOPBACK;
 
@@ -80,7 +82,8 @@ pub fn test_neighbor_cache_update() {
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub fn test_neighbor_cache_expiry() {
+#[cfg(test)]
+fn test_neighbor_cache_expiry() {
     let mut cache = NeighborCache::new();
     let ip = Ipv6Address::LOOPBACK;
     let mac = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
@@ -230,7 +233,8 @@ pub fn test_build_na() {
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub fn test_multicast_mac() {
+#[cfg(test)]
+fn test_multicast_mac() {
     let addr = Ipv6Address::ALL_NODES_LINK_LOCAL;
     let mac = addr.multicast_mac();
     assert_eq!(mac, [0x33, 0x33, 0x00, 0x00, 0x00, 0x01]);
@@ -238,7 +242,8 @@ pub fn test_multicast_mac() {
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub fn test_resolve_multicast() {
+#[cfg(test)]
+fn test_resolve_multicast() {
     let mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
     let mut processor = NdpProcessor::new(mac, local_addresses(Ipv6Address::LOOPBACK));
 

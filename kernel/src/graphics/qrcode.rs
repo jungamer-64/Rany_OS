@@ -35,6 +35,7 @@ const DATA_PAYLOAD_BITS: usize = DATA_CODEWORDS * 8;
 
 /// Total modules available for data+EC (26 * 8 = 208 bits)
 /// This is used for verification of module placement.
+#[cfg(debug_assertions)]
 const DATA_MODULES: usize = TOTAL_CODEWORDS * 8;
 
 /// Module State
