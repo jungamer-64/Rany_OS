@@ -337,7 +337,7 @@ pub(crate) fn read_u64_checked(addr: usize) -> Option<u64> {
 static __KSYM_DUMMY: u8 = 0;
 
 // .eh_frameセクション境界（リンカスクリプトで定義）
-#[allow(improper_ctypes)]
+#[cfg(target_os = "none")]
 unsafe extern "C" {
     #[link_name = "__eh_frame_start"]
     static EH_FRAME_START: u8;
@@ -394,6 +394,7 @@ pub fn capture_from_context(rip: usize, rsp: usize, rbp: usize) -> Backtrace {
 
 /// グローバルな .eh_frame データを取得
 pub fn get_eh_frame_data() -> Option<&'static [u8]> {
+    #[cfg(target_os = "none")]
     unsafe {
         let start = &EH_FRAME_START as *const u8 as usize;
         let end = &EH_FRAME_END as *const u8 as usize;
@@ -404,6 +405,8 @@ pub fn get_eh_frame_data() -> Option<&'static [u8]> {
             None
         }
     }
+    #[cfg(not(target_os = "none"))]
+    None
 }
 
 /// CFA（Canonical Frame Address）を計算する

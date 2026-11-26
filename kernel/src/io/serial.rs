@@ -208,14 +208,14 @@ pub(super) fn enter_panic_mode() {
 
 /// Returns the prefix accepted by the queue or handed to the polled UART.
 pub(super) fn write(channel: Channel, bytes: &[u8]) -> usize {
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(all(test, any(feature = "std", target_os = "linux")))]
     {
         if channel.allowed() {
             return std::io::Write::write(&mut std::io::stderr(), bytes).unwrap_or(0);
         }
         return 0;
     }
-    #[cfg(not(all(test, target_os = "linux")))]
+    #[cfg(not(all(test, any(feature = "std", target_os = "linux"))))]
     {
         if !channel.allowed() {
             return 0;

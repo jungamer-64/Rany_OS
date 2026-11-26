@@ -276,7 +276,7 @@ fn reserve_kernel_image(mut regions: Vec<(PhysAddr, u64)>) -> Vec<(PhysAddr, u64
     regions
 }
 
-#[cfg(not(test))]
+#[cfg(all(target_os = "none", not(test)))]
 fn kernel_phys_range() -> Option<(u64, u64)> {
     unsafe extern "C" {
         static __kernel_start: u8;
@@ -311,7 +311,7 @@ fn kernel_phys_range() -> Option<(u64, u64)> {
     Some((kernel_start_phys, kernel_end_phys))
 }
 
-#[cfg(test)]
+#[cfg(any(not(target_os = "none"), test))]
 fn kernel_phys_range() -> Option<(u64, u64)> {
     None
 }
