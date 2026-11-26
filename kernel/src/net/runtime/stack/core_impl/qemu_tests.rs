@@ -416,19 +416,20 @@ fn ipv6_udp_waits_for_the_gateway_and_preserves_the_ip_destination() {
     config.ipv6 = Some(Ipv6Config::default());
     let if_id =
         register_operational_interface(runtime, "ipv6-egress", PrimaryPreference::Auto, config);
+    let started = crate::task::current_tick();
     manager::set_default_route_v6_in(runtime, if_id, ROUTER, 10).expect("default route");
     manager::stage_dhcp_ipv6_in(
         runtime,
         if_id,
         SOURCE,
-        AddressLifetimes::new(0, 60, 60).unwrap(),
-        0,
+        AddressLifetimes::new(started, 60, 60).unwrap(),
+        started,
     )
     .expect("stage address");
     let mut stack = NetworkStack::new_in(runtime);
     stack.transmit_fn = complete_probe;
     stack
-        .maintain_ipv6_addresses(0)
+        .maintain_ipv6_addresses(started)
         .expect("admit the DAD probe");
     let assigned = |stack: &NetworkStack| {
         stack
@@ -519,7 +520,7 @@ fn reassembled_ipv6_uses_extension_header_transport_window() {
     let mut stack = NetworkStack::new_in(runtime);
     stack.transmit_fn = complete_probe;
     stack
-        .maintain_ipv6_addresses(0)
+        .maintain_ipv6_addresses(crate::task::current_tick())
         .expect("probe link-local address");
     stack
         .maintain_ipv6_addresses(crate::task::current_tick() + 1000)

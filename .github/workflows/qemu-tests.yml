@@ -183,7 +183,6 @@ jobs:
           QEMU_TEST_MEMORY_MB: 512
           QEMU_TEST_PROFILE_ONLY: network
           QEMU_TEST_SMP: 4
-          QEMU_TEST_TIMEOUT_SECS: 240
         run: cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture
 
       - name: Upload network SMP=4 logs
