@@ -41,13 +41,33 @@ static IDT: exorust_sync::InitOnce<InterruptDescriptorTable> = exorust_sync::Ini
 
 #[inline]
 fn record_interrupt_frame(vector: u8, stack_frame: &InterruptStackFrame) {
-    if let Some(current_cpu) = crate::cpu::CurrentCpu::acquire() {
-        current_cpu.record_interrupt(crate::cpu::InterruptContext {
-            vector,
-            instruction_pointer: stack_frame.instruction_pointer.as_u64(),
-            stack_pointer: stack_frame.stack_pointer.as_u64(),
-        });
+    if let Some(current) = crate::cpu::CurrentCpu::acquire() {
+        record_interrupt_context(
+            &current,
+            crate::cpu::InterruptContext {
+                vector,
+                instruction_pointer: stack_frame.instruction_pointer.as_u64(),
+                stack_pointer: stack_frame.stack_pointer.as_u64(),
+            },
+        );
     }
+}
+
+#[inline]
+fn record_interrupt_context(
+    current: &crate::cpu::CurrentCpu,
+    context: crate::cpu::InterruptContext,
+) {
+    use crate::diag::trace::{self, TracePoint};
+
+    let vector = context.vector;
+    let point = if vector == InterruptVector::Timer as u8 || vector == APIC_TIMER_VECTOR {
+        TracePoint::Timer
+    } else {
+        TracePoint::Interrupt
+    };
+    trace::record_interrupt(point, current.id(), vector);
+    current.record_interrupt(context);
 }
 
 pub fn last_interrupt_vector(cpu_id: crate::cpu::CpuId) -> Option<u8> {
@@ -753,11 +773,14 @@ extern "C" fn apic_timer_dispatch(frame: *const HardwareInterruptFrame) -> usize
     };
     {
         let frame = unsafe { &*frame };
-        current.record_interrupt(crate::cpu::InterruptContext {
-            vector: APIC_TIMER_VECTOR,
-            instruction_pointer: frame.rip,
-            stack_pointer: frame.rsp,
-        });
+        record_interrupt_context(
+            &current,
+            crate::cpu::InterruptContext {
+                vector: APIC_TIMER_VECTOR,
+                instruction_pointer: frame.rip,
+                stack_pointer: frame.rsp,
+            },
+        );
         let _interrupt = current.enter_interrupt();
         handle_timer_interrupt_common();
         crate::io::interrupt_manager::send_eoi();

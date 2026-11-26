@@ -82,6 +82,11 @@ static BOOT_RUNTIME_CASES: &[(&str, BootCase)] = &[
     ),
     ("uptime_ms_progresses", case_uptime_ms_progresses),
     ("tick_progresses", case_tick_progresses),
+    ("timer_irq_trace", case_timer_irq_trace),
+    (
+        "log_history_without_serial",
+        case_log_history_without_serial,
+    ),
     ("sleep_ms_resumes", case_sleep_ms_resumes),
     ("timer_waker_deferred_path", case_timer_waker_deferred_path),
     (
@@ -362,6 +367,55 @@ fn case_tick_progresses() -> Result<(), BootCaseError> {
         ));
     }
 
+    Ok(())
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn case_timer_irq_trace() -> Result<(), BootCaseError> {
+    use crate::diag::trace::{self, TracePoint};
+
+    trace::set_enabled(TracePoint::Timer, true);
+    let before = crate::interrupts::get_timer_ticks();
+    let advanced = wait_for_raw_tick_advance(before, 250);
+    trace::set_enabled(TracePoint::Timer, false);
+
+    if !advanced {
+        return Err(BootCaseError::blocked("no timer IRQ during trace capture"));
+    }
+    let snapshot = trace::snapshot()
+        .map_err(|error| BootCaseError::failed(format!("trace allocation failed: {error}")))?;
+    if snapshot.enabled(TracePoint::Timer)
+        || !snapshot.events.iter().any(|event| {
+            matches!(event.point, TracePoint::Timer)
+                && event.vector == crate::interrupts::APIC_TIMER_VECTOR
+        })
+    {
+        return Err(BootCaseError::failed(
+            "trace snapshot is missing a real APIC timer IRQ",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn case_log_history_without_serial() -> Result<(), BootCaseError> {
+    use crate::io::log as kernel_log;
+
+    let mut bytes = alloc::vec![0; kernel_log::HISTORY_BYTES];
+    let serial_was_enabled = kernel_log::serial_output_enabled();
+    kernel_log::set_serial_output_enabled(false);
+    log::info!(target: "boot-test", "History records survive while serial output is disabled");
+    kernel_log::set_serial_output_enabled(serial_was_enabled);
+
+    let snapshot = kernel_log::snapshot(&mut bytes);
+    if !snapshot
+        .text
+        .contains("[boot-test] History records survive while serial output is disabled\r\n")
+    {
+        return Err(BootCaseError::failed(
+            "structured log was missing from retained history",
+        ));
+    }
     Ok(())
 }
 

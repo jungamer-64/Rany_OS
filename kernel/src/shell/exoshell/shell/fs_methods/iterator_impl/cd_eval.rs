@@ -182,6 +182,8 @@ impl ExoShell {
     sys.memory()          - Memory usage
     sys.time()            - Time information
     sys.monitor()         - System monitoring (CPU/Memory/Network)
+    sys.trace()           - Snapshot timer and interrupt events (CAP_SYS_ADMIN)
+    sys.trace(name, bool) - Enable or disable timer or interrupt tracing (CAP_SYS_ADMIN)
     sys.thermal()         - Temperature/throttling status
     sys.watchdog()        - Watchdog status
     sys.power()           - Power state/CPU idle stats
@@ -507,6 +509,7 @@ impl ExoShell {
                 "memory",
                 "time",
                 "monitor",
+                "trace",
                 "thermal",
                 "watchdog",
                 "power",

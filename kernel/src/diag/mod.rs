@@ -19,13 +19,15 @@
 //!
 //! CPUプロファイリング機能は `profiler::CpuProfiler` に統合されており、
 //! 本モジュールには含まれません。
+pub(crate) mod trace;
+
 use crate::sync::PoisonLock;
 use crate::time::rdtsc;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 // ============================================================================
 // Time Measurement

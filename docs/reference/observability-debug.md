@@ -82,12 +82,13 @@
 
 - ブート統合:
   [../../kernel/src/kernel_main.rs](../../kernel/src/kernel_main.rs)
-- `kgdb` 系 cmdline を通じて GDB stub transport を opt-in で有効化する。
+- `kgdb=1` は COM1 を GDB stub 専用にする。transport を指定する場合は `kgdb_transport=serial` を使う。
 - component detail ではあるが、transport と boot policy の整合は baseline requirement とする。
 
 ## 公開観測面
 
 - `sys.monitor()`
+- `sys.trace()` はカーネルのトレースを取得する。`sys.trace("timer", true)` と `sys.trace("interrupt", true)` で採取点ごとに有効化し、`false` で停止する。両操作に `CAP_SYS_ADMIN` が必要。取得は記録を消費せず、容量による上書きと記録時の競合を欠落数に含める。
 - `sys.watchdog()`
 - `sys.power()`
 - `task.stats()`

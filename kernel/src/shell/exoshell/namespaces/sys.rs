@@ -588,6 +588,68 @@ impl SysNamespace {
         ExoValue::Map(m)
     }
 
+    fn trace(args: &[ExoValue<'static>], caps: &CapabilitySet) -> ExoValue<'static> {
+        use crate::diag::trace::{self, TracePoint};
+
+        if let Err(error) = Self::require_sys_admin(caps, "sys.trace") {
+            return error;
+        }
+
+        match args {
+            [] => {
+                let snapshot = match trace::snapshot() {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        return ExoValue::Error(format!("Trace snapshot failed: {error}"));
+                    }
+                };
+                let enabled = TracePoint::ALL
+                    .into_iter()
+                    .map(|point| (s(point.name()), ExoValue::Bool(snapshot.enabled(point))))
+                    .collect();
+                let events = snapshot
+                    .events
+                    .iter()
+                    .map(|event| {
+                        ExoValue::Map(BTreeMap::from([
+                            (
+                                s("point"),
+                                ExoValue::String(Cow::Borrowed(event.point.name())),
+                            ),
+                            (
+                                s("tsc"),
+                                ExoValue::Int(i64::try_from(event.tsc).unwrap_or(i64::MAX)),
+                            ),
+                            (s("cpu"), ExoValue::Int(i64::from(event.cpu.as_u16()))),
+                            (s("vector"), ExoValue::Int(i64::from(event.vector))),
+                        ]))
+                    })
+                    .collect();
+                ExoValue::Map(BTreeMap::from([
+                    (s("enabled"), ExoValue::Map(enabled)),
+                    (s("events"), ExoValue::Array(events)),
+                    (
+                        s("dropped"),
+                        ExoValue::Int(i64::try_from(snapshot.dropped).unwrap_or(i64::MAX)),
+                    ),
+                ]))
+            }
+            [ExoValue::String(name), ExoValue::Bool(enabled)] => {
+                let Some(point) = TracePoint::ALL
+                    .into_iter()
+                    .find(|point| name.as_ref() == point.name())
+                else {
+                    return ExoValue::Error(format!(
+                        "Unknown trace point '{name}'. Use timer or interrupt."
+                    ));
+                };
+                trace::set_enabled(point, *enabled);
+                ExoValue::Bool(*enabled)
+            }
+            _ => ExoValue::Error(s("Usage: sys.trace() or sys.trace(\"timer\", true)")),
+        }
+    }
+
     /// システムモニター情報
     pub fn monitor(caps: &CapabilitySet) -> ExoValue<'static> {
         if let Err(e) = Self::require_sys_admin(caps, "sys.monitor") {
@@ -869,6 +931,7 @@ impl ShellNamespace for SysNamespace {
                 "net" | "network" => Self::net(),
                 "load" | "loadavg" => Self::load(),
                 "monitor" => Self::monitor(caps),
+                "trace" => Self::trace(args, caps),
                 "thermal" | "temp" => Self::thermal(caps),
                 "watchdog" | "wd" => Self::watchdog(caps),
                 "power" => Self::power(caps),
@@ -876,7 +939,7 @@ impl ShellNamespace for SysNamespace {
                 "shutdown" => Self::shutdown_with_caps(caps),
                 "reboot" => Self::reboot_with_caps(caps),
                 _ => ExoValue::Error(format!(
-                    "Unknown method 'sys.{}'\nValid methods: info, memory, time, cpu, cpu_online, cpu_offline, stat, kernel, cells, cell, net, load, monitor, thermal, watchdog, power, panic_record, shutdown, reboot",
+                    "Unknown method 'sys.{}'\nValid methods: info, memory, time, cpu, cpu_online, cpu_offline, stat, kernel, cells, cell, net, load, monitor, trace, thermal, watchdog, power, panic_record, shutdown, reboot",
                     method
                 )),
             }
