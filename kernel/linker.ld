@@ -20,7 +20,9 @@ SECTIONS
 
     /* Code section */
     .text : AT(0x1000) {
+        __kernel_text_start = .;
         *(.text .text.*)
+        __kernel_text_end = .;
     } :text
 
     /* Read-only data */

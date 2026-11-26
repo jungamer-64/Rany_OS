@@ -173,7 +173,7 @@ impl Backtrace {
             let Some((next_rbp, return_address, next_rsp)) = stack.frame_at(rbp) else {
                 break;
             };
-            if !is_valid_code_address(return_address) {
+            if !is_kernel_text_address(return_address) {
                 break;
             }
 
@@ -309,16 +309,24 @@ impl ActiveStack {
     }
 }
 
-/// 有効なコードアドレスかチェック
-fn is_valid_code_address(addr: usize) -> bool {
-    // カーネルコードセグメントの範囲をチェック
-    // 実際の実装ではカーネルのロードアドレス範囲を確認
-    if addr == 0 {
-        return false;
+/// A canonical address can still be an exception's saved data or stack
+/// pointer. Only addresses from the linked executable section are frames.
+fn is_kernel_text_address(address: usize) -> bool {
+    #[cfg(target_os = "none")]
+    {
+        unsafe extern "C" {
+            static __kernel_text_start: u8;
+            static __kernel_text_end: u8;
+        }
+        let start = (&raw const __kernel_text_start) as usize;
+        let end = (&raw const __kernel_text_end) as usize;
+        (start..end).contains(&address)
     }
-
-    // 高位カノニカルアドレスはカーネル空間
-    addr >= 0xFFFF_8000_0000_0000 || addr < 0x0000_8000_0000_0000
+    #[cfg(not(target_os = "none"))]
+    {
+        let _ = address;
+        false
+    }
 }
 
 /// Returns a word only when it lies within the current mapped stack.

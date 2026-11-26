@@ -6,6 +6,9 @@ fn main() {
     // Only add MSVC host-specific link libraries when building for Windows/MSVC
     // This avoids polluting cross-compiles (e.g., x86_64-unknown-none kernel target).
     let target = std::env::var("TARGET").unwrap_or_default();
+    if target.starts_with("x86_64-exorust") {
+        println!("cargo:rerun-if-changed=linker.ld");
+    }
     if target.contains("windows-msvc") {
         println!("cargo:rerun-if-env-changed=TARGET");
 
