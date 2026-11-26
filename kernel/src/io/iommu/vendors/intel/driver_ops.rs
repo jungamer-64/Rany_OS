@@ -8,23 +8,6 @@ use crate::io::iommu::common::dma::mapping_outcome::{DeviceMapFailure, DeviceMap
 mod domain_query;
 mod invalidation;
 
-#[inline]
-fn controller_cq_submit_error(controller: &controller::IommuController) -> IommuError {
-    match controller.command_queue_ref() {
-        Some(cq) if cq.is_poisoned() => IommuError::Poisoned,
-        _ => IommuError::HardwareError,
-    }
-}
-
-#[inline]
-fn controller_cq_completion_error(rc: i32) -> IommuError {
-    if rc == crate::io::iommu::runtime::command::queue::RESULT_POISONED {
-        IommuError::Poisoned
-    } else {
-        IommuError::HardwareError
-    }
-}
-
 impl IntelIommuDriver {
     pub(crate) fn is_enabled(&self) -> bool {
         if self.controller.is_some() {

@@ -296,24 +296,6 @@ impl AmdIommuDriver {
         })
     }
 
-    pub(super) fn invalidate_iommu_pages(
-        &self,
-        device: DeviceId,
-        domain_id: u16,
-        iova: u64,
-        size: u64,
-    ) -> Result<(), IommuError> {
-        let unit_idx = self
-            .find_unit_index_for_device(device)
-            .ok_or(IommuError::DeviceNotFound)?;
-
-        self.with_cmd_state(unit_idx, |state| {
-            state.submit_and_wait(cmd::AmdCommand::invalidate_iommu_pages(
-                domain_id, iova, size, None,
-            ))
-        })
-    }
-
     pub(super) async fn invalidate_iotlb_pages_async(
         &self,
         device: DeviceId,
@@ -327,23 +309,6 @@ impl AmdIommuDriver {
         self.submit_cmd_async(
             unit_idx,
             cmd::AmdCommand::invalidate_iotlb_pages(devid, 0, iova, size, None),
-        )
-        .await
-    }
-
-    pub(super) async fn invalidate_iommu_pages_async(
-        &self,
-        device: DeviceId,
-        domain_id: u16,
-        iova: u64,
-        size: u64,
-    ) -> Result<(), IommuError> {
-        let unit_idx = self
-            .find_unit_index_for_device(device)
-            .ok_or(IommuError::DeviceNotFound)?;
-        self.submit_cmd_async(
-            unit_idx,
-            cmd::AmdCommand::invalidate_iommu_pages(domain_id, iova, size, None),
         )
         .await
     }

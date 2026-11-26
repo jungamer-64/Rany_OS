@@ -36,7 +36,9 @@ use crate::io::iommu::runtime::fault_log::FaultLog;
 use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};
 use crate::io::iommu::types::{DeviceId, IommuDeviceScope, IommuError};
 use crate::io::iommu::vendors::intel::qi::{InvalidationQueue, QiStats};
-use crate::io::iommu::vendors::intel::registers::{fsts_bits, gcmd_bits, gsts_bits, rtaddr_bits};
+use crate::io::iommu::vendors::intel::registers::{
+    cap_bits, fsts_bits, gcmd_bits, gsts_bits, rtaddr_bits,
+};
 use crate::io::iommu::vendors::intel::tables::{
     ContextEntry, PasidTable, RootEntry, ScalableContextEntry,
 };
@@ -166,8 +168,10 @@ impl IommuController {
         }
         let cap = registers.capabilities().read();
         let ecap = registers.extended_capabilities().read();
-        let (selected_agaw_code, selected_addr_bits, selected_levels) =
-            Self::select_agaw(((cap >> 8) & 0x1f) as u8, ((cap >> 16) & 0x3f) as u8 + 1)?;
+        let (selected_agaw_code, selected_addr_bits, selected_levels) = Self::select_agaw(
+            ((cap & cap_bits::CAP_SAGAW_MASK) >> 8) as u8,
+            ((cap & cap_bits::CAP_MGAW_MASK) >> 16) as u8 + 1,
+        )?;
         Ok(Self {
             registers,
             direct_commands: PoisonLock::new(()),
@@ -233,14 +237,6 @@ impl IommuController {
 
     pub(crate) fn set_scalable_mode_enabled(&self, enabled: bool) {
         self.scalable_mode_enabled.store(enabled, Ordering::Release);
-    }
-
-    fn sagaw_mask(&self) -> u8 {
-        if self.cap == 0 {
-            return 0;
-        }
-        ((self.cap & crate::io::iommu::vendors::intel::registers::cap_bits::CAP_SAGAW_MASK) >> 8)
-            as u8
     }
 
     /// Get the maximum Address Mask (AM) supported by the hardware (bits 53:48 of CAP).

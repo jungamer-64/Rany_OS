@@ -9,9 +9,7 @@
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 
-use crate::io::iommu::common::domain::{
-    InvalidateFlags, InvalidateRequest, IommuDomain, IommuInvalidator,
-};
+use crate::io::iommu::common::domain::IommuDomain;
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 use crate::io::iommu::vendors::intel::registry::get_iommu_registry;
 use crate::io::iommu::vendors::intel::tables::{ContextEntry, PasidTable, ScalableContextEntry};
@@ -186,51 +184,6 @@ impl IommuController {
     fn should_invalidate_device_tlb(&self, device: &DeviceId) -> Result<bool, IommuError> {
         let devices = self.ats_devices.lock().map_err(|_| IommuError::Poisoned)?;
         Ok(devices.contains_key(device))
-    }
-
-    /// Issue QI IOTLB and (optional) Device-TLB invalidations for an unmap.
-    /// Unified implementation using IommuInvalidator logic.
-    pub(crate) fn qi_invalidate_unmap(
-        &self,
-        domain_id: u16,
-        device: &DeviceId,
-        iova: u64,
-        size: u64,
-    ) -> Result<(), IommuError> {
-        let mut flags = InvalidateFlags::empty();
-        if self.should_invalidate_device_tlb(device)? {
-            flags |= InvalidateFlags::ATS_AWARE;
-        }
-        let req = InvalidateRequest {
-            domain_id,
-            kind: crate::io::iommu::common::domain::InvalidateKind::Pages {
-                start_iova: iova,
-                bytes: size,
-            },
-            flags,
-        };
-        self.process_invalidations(&[req])
-    }
-
-    pub(crate) fn resolve_device_domain(
-        &self,
-        device: &DeviceId,
-    ) -> Result<(u16, Arc<IommuDomain>), IommuError> {
-        let domain_id = self
-            .device_domains
-            .lock()
-            .map_err(|_| IommuError::HardwareError)?
-            .get(device)
-            .copied()
-            .ok_or(IommuError::DeviceNotFound)?;
-        let domain_arc = self
-            .domains
-            .lock()
-            .map_err(|_| IommuError::HardwareError)?
-            .get(&domain_id)
-            .cloned()
-            .ok_or(IommuError::DomainNotFound)?;
-        Ok((domain_id, domain_arc))
     }
 
     pub(crate) fn clear_hw_context_entry(

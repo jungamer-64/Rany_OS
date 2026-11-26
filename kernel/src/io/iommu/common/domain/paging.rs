@@ -12,28 +12,18 @@ impl IommuDomain {
 
     /// Walk or create intermediate tables down to `target_level`.
     ///
-    /// Returns `(table_ptr, table_phys, newly_allocated_scopes, count, target_allocated)`.
+    /// Returns `(table_ptr, table_phys, newly_allocated_scopes, count)`.
     pub(super) unsafe fn ensure_table_path_to_level(
         &self,
         iova: u64,
         target_level: u8,
-    ) -> Result<
-        (
-            *mut SlPte,
-            u64,
-            [Option<PageTableScope<'_>>; 4],
-            usize,
-            bool,
-        ),
-        IommuError,
-    > {
+    ) -> Result<(*mut SlPte, u64, [Option<PageTableScope<'_>>; 4], usize), IommuError> {
         if target_level == 0 || target_level > self.page_table_levels() {
             return Err(IommuError::InvalidAddress);
         }
 
         let mut scopes: [Option<PageTableScope>; 4] = core::array::from_fn(|_| None);
         let mut scope_count = 0usize;
-        let mut target_allocated = false;
 
         let mut table_ptr = self.page_table;
         let mut table_phys = self.root_table_phys();
@@ -59,9 +49,6 @@ impl IommuDomain {
                 if scope_count >= scopes.len() {
                     return Err(IommuError::HardwareError);
                 }
-                if next_level == target_level {
-                    target_allocated = true;
-                }
                 scopes[scope_count] = Some(scope);
                 scope_count += 1;
             }
@@ -71,7 +58,7 @@ impl IommuDomain {
             level = next_level;
         }
 
-        Ok((table_ptr, table_phys, scopes, scope_count, target_allocated))
+        Ok((table_ptr, table_phys, scopes, scope_count))
     }
 
     /// Walk existing tables down to `target_level` without allocating.
@@ -222,32 +209,6 @@ impl IommuDomain {
             }
         }
         Ok(())
-    }
-
-    /// Write 4KB page table entries for the given range.
-    pub(super) unsafe fn write_pt_entries_4k(
-        pt_table: *mut SlPte,
-        pt_idx: usize,
-        phys: u64,
-        count: usize,
-        read: bool,
-        write: bool,
-        pte_format: PteFormat,
-    ) {
-        const SIZE_4KB: u64 = 4096;
-        for idx in 0..count {
-            let pt_entry = unsafe { pt_table.add(pt_idx + idx) };
-            let entry_phys = phys + (idx as u64 * SIZE_4KB);
-            match pte_format {
-                PteFormat::Intel => {
-                    unsafe { *pt_entry = SlPte::mapping(entry_phys, read, write) };
-                }
-                PteFormat::Amd => {
-                    let amd_pte = AmdPte::mapping(entry_phys, read, write, 0);
-                    unsafe { *pt_entry = SlPte(amd_pte.0) };
-                }
-            }
-        }
     }
 
     /// Allocate a zeroed page table from the pool (Phase 6)

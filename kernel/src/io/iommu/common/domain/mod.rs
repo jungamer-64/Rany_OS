@@ -3,13 +3,12 @@
 // ============================================================================
 
 use crate::io::iommu::common::dma::mapping_slab::MappingSlab;
-use crate::io::iommu::common::dma::page_table_pool::{dec_ref, get_ref_count, inc_ref};
+use crate::io::iommu::common::dma::page_table_pool::{dec_ref, get_ref_count};
 use crate::io::iommu::common::tables::{
     PT_ENTRIES, PageTableScope, SlPte, phys_to_virt_usize, virt_ptr_to_phys,
 };
 use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};
 use crate::io::iommu::types::{DmaMapping, IommuDomainType, IommuError, PteFormat};
-use crate::io::iommu::vendors::amd::tables::AmdPte;
 use crate::sync::InitOnce;
 use crate::sync::RwLock;
 use crate::sync::{IrqMutex, PoisonLock, PoisonLockGuard};

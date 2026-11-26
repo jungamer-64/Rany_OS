@@ -138,7 +138,7 @@ pub mod fsts_bits {
 /// IOTLB Invalidation register offsets (relative to IRO)
 pub mod iotlb_regs {
     /// IOTLB Invalidation Command register (64-bit)
-    pub const IOTLB: u64 = 0x08;
+    pub const IOTLB: usize = 0x08;
 }
 
 /// IOTLB Invalidation Command bits
@@ -171,7 +171,7 @@ impl RegisterLayout {
         use hal::mmio::MmioAccessError::OutOfBounds;
         let fault_offset = ((cap >> 24) & 0x3ff) as usize * 16;
         let fault_count = ((cap >> 40) & 0xff) as usize + 1;
-        let iotlb_offset = ((ecap >> 8) & 0x3ff) as usize * 16;
+        let iotlb_offset = ((ecap & ecap_bits::ECAP_IRO_MASK) >> 8) as usize * 16;
         let fault_end = fault_offset + fault_count * 16;
         let iotlb_end = iotlb_offset + 16;
         // The fixed register prefix ends after IRTA. Neither variable register
@@ -281,7 +281,7 @@ impl RegisterBlock {
     pub(super) fn iotlb_command(&self) -> hal::mmio::MmioRegister<'_, u64, hal::mmio::ReadWrite> {
         self.mapping
             .region()
-            .read_write::<u64>(self.layout.iotlb_offset + 8)
+            .read_write::<u64>(self.layout.iotlb_offset + iotlb_regs::IOTLB)
             .expect("validated IOTLB bank contains the command word")
     }
 }

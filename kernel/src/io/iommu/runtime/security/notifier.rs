@@ -164,13 +164,6 @@ pub fn qemu_test_clear_security_notifier() {
     *SECURITY_NOTIFIER.write() = None;
 }
 
-/// Notify the registered security listener (if any).
-pub(crate) fn notify_security_listener(event: SecurityEvent) {
-    if let Some(notifier) = SECURITY_NOTIFIER.read().as_ref() {
-        notifier.notify(event);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
