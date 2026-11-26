@@ -85,7 +85,16 @@ impl IommuDomain {
     unsafe fn ensure_page_tables_4k(
         &self,
         iova: u64,
-    ) -> Result<(*mut SlPte, u64, [Option<PageTableScope>; 4], usize, bool), IommuError> {
+    ) -> Result<
+        (
+            *mut SlPte,
+            u64,
+            [Option<PageTableScope<'_>>; 4],
+            usize,
+            bool,
+        ),
+        IommuError,
+    > {
         unsafe { self.ensure_table_path_to_level(iova, 1) }
     }
 

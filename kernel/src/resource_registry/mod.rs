@@ -20,11 +20,11 @@ use crate::sync::{PoisonLock, PoisonRwLock};
 #[cfg(test)]
 use kernel_api::abi::driver::AbiNetPortOps;
 use kernel_api::abi::driver::{
-    AbiBlockCommandKind, AbiBlockCompletion, AbiBlockDeviceInfo, AbiBlockDeviceRegistration,
-    AbiBlockTransport, AbiError as AbiErrorCode, AbiNetDriverEvent, AbiNetDriverEventKind,
-    AbiNetPortInfo, AbiNetPortRegistration, AbiNetPortRuntime, AbiNetPortStats, AbiNetRxMeta,
-    AbiNetTxMeta, AbiNetTxSegment, AbiNetTxSubmission, AbiNvmeNamespaceInfo,
-    AbiNvmeNamespaceRegistration, AbiRxLease, AbiRxWritableRegion, AbiTxDeviceOutcome,
+    AbiBlockDeviceInfo, AbiBlockDeviceRegistration, AbiBlockTransport, AbiError as AbiErrorCode,
+    AbiNetDriverEvent, AbiNetDriverEventKind, AbiNetPortInfo, AbiNetPortRegistration,
+    AbiNetPortRuntime, AbiNetPortStats, AbiNetRxMeta, AbiNetTxMeta, AbiNetTxSegment,
+    AbiNetTxSubmission, AbiNvmeNamespaceInfo, AbiNvmeNamespaceRegistration, AbiRxLease,
+    AbiRxWritableRegion, AbiTxDeviceOutcome,
 };
 use kernel_api::resource::net::PacketByteCount;
 use kernel_api::service::netdev::{

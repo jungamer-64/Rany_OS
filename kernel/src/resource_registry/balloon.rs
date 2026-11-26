@@ -10,8 +10,7 @@ use crate::mm::phys::frame_allocator::{FrameAllocError, PhysicalAllocation};
 use crate::sync::PoisonLock;
 use kernel_api::abi::driver::PackedPciLocation;
 use kernel_api::balloon::{
-    AbiBalloonPage, BALLOON_PAGE_BYTES, BalloonLeaseId, BalloonPageError, BalloonPageNumber,
-    ReservedBalloonPage,
+    BALLOON_PAGE_BYTES, BalloonLeaseId, BalloonPageError, BalloonPageNumber, ReservedBalloonPage,
 };
 use kernel_api::resource::memory::PhysicalAddress;
 

@@ -16,7 +16,6 @@ pub(crate) mod timer_wheel;
 pub(crate) mod window_scale;
 
 pub use crate::net::l4::types::EndpointAddr;
-pub use crate::net::types::Ipv4Addr;
 pub use connection::*;
 
 /// TCP state machine values shared with the endpoint TCB table.

@@ -26,10 +26,9 @@ mod tests;
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests;
 
-pub use config::{TlsClientConfig, TlsClientConfigError, TlsServerName, TlsTrustAnchors};
-pub use connection::{
-    KeyUpdateAction, TlsEstablishedSession, TlsHandshake, TlsHandshakeStep, TlsInboundPlaintext,
-};
+pub use config::{TlsClientConfig, TlsTrustAnchors};
+pub use connection::{KeyUpdateAction, TlsEstablishedSession, TlsHandshake, TlsHandshakeStep};
+#[cfg(any(test, feature = "qemu-test-export"))]
 pub use credentials::{Certificate, CertificateDataError};
 pub use error::{TlsError, TlsResult};
 pub use protocol::{CipherSuite, TlsVersion};

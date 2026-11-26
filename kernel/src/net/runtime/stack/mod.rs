@@ -330,7 +330,6 @@ impl InterfaceStackState {
         self.arp.set_local(config.mac, config.ipv4.address);
         self.igmp.set_local_ip(config.ipv4.address);
         if let Some(ref ipv6_config) = config.ipv6 {
-            let previous = self.config.ipv6;
             if let Some(ipv6) = &mut self.ipv6 {
                 ipv6.set_config(*ipv6_config);
             } else {

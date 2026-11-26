@@ -17,7 +17,16 @@ impl IommuDomain {
         &self,
         iova: u64,
         target_level: u8,
-    ) -> Result<(*mut SlPte, u64, [Option<PageTableScope>; 4], usize, bool), IommuError> {
+    ) -> Result<
+        (
+            *mut SlPte,
+            u64,
+            [Option<PageTableScope<'_>>; 4],
+            usize,
+            bool,
+        ),
+        IommuError,
+    > {
         if target_level == 0 || target_level > self.page_table_levels() {
             return Err(IommuError::InvalidAddress);
         }
@@ -181,7 +190,7 @@ impl IommuDomain {
         idx: usize,
         level: u8,
         check_super_page: bool,
-    ) -> Result<(*mut SlPte, u64, Option<PageTableScope>), IommuError> {
+    ) -> Result<(*mut SlPte, u64, Option<PageTableScope<'_>>), IommuError> {
         let entry = unsafe { parent_table.add(idx) };
         if unsafe { (*entry).is_present() } {
             if check_super_page && unsafe { (*entry).is_super_page(self.pte_format) } {
@@ -245,7 +254,7 @@ impl IommuDomain {
     ///
     /// Uses the domain's page table pool for NUMA-aware recycling.
     /// Falls back to direct allocation if pool is not available.
-    pub(super) fn allocate_page_table(&self) -> Result<PageTableScope, IommuError> {
+    pub(super) fn allocate_page_table(&self) -> Result<PageTableScope<'_>, IommuError> {
         PageTableScope::new_with_pool(
             self.page_table_pool.clone(),
             self.numa_node(),

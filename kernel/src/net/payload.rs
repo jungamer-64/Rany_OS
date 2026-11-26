@@ -4,9 +4,7 @@
 
 use crate::net::l3::ipv4::IpProtocol;
 use alloc::vec::Vec;
-use kernel_api::resource::net::{
-    PacketByteCount, PacketPayload, PacketPayloadFront, PacketRef, PacketWindowError,
-};
+use kernel_api::resource::net::{PacketByteCount, PacketPayload, PacketPayloadFront, PacketRef};
 
 #[derive(Debug, Clone, Copy)]
 pub struct PayloadSpanRef<'a> {
