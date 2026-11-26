@@ -59,6 +59,26 @@ fn base_config(profile: &str) -> RunConfig {
 fn run_required_profile(profile: &str) {
     let guard = qemu_lock().lock().expect("qemu lock poisoned");
     let mut cfg = base_config(profile);
+    if profile == "fatal" {
+        // A destructive case owns its guest for the entire run. Exercise the
+        // NMI acknowledgements even when the general PR tier uses one CPU.
+        cfg.smp = 4;
+        cfg.max_cpus = 4;
+        let cases = match cfg.case_filter.take() {
+            Some(case) => vec![case],
+            None => vec![String::from("fatal.page_fault"), String::from("fatal.oom")],
+        };
+        for case in cases {
+            cfg.case_filter = Some(case);
+            let report = run_fullboot(&cfg).expect("terminal kernel diagnostics must complete");
+            eprintln!(
+                "fatal test passed in {:?} (log: {})",
+                report.duration,
+                report.log_path.display()
+            );
+        }
+        return;
+    }
     let cpu_counts: &[u16] = if profile == "scheduler" {
         &[1, 4]
     } else {
@@ -109,6 +129,7 @@ fn fullboot_pr_required() {
     // Each profile owns its interrupt and topology requirements.
     for profile in [
         "boot-smoke",
+        "fatal",
         "scheduler",
         "storage",
         "driver_domain",

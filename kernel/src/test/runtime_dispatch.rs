@@ -48,6 +48,7 @@ pub enum RuntimeTier {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeGroup {
     Boot,
+    Fatal,
     Storage,
     DriverDomain,
     Iommu,
@@ -154,6 +155,7 @@ fn is_known_profile(profile: &str) -> bool {
         || str_eq(profile, "nightly-required")
         || str_eq(profile, "step9-heavy")
         || str_eq(profile, "boot-smoke")
+        || str_eq(profile, "fatal")
         || str_eq(profile, "scheduler")
         || str_eq(profile, "storage")
         || str_eq(profile, "driver_domain")
@@ -480,6 +482,18 @@ static CASES: &[RuntimeTestCase] = &[
         group: RuntimeGroup::CpuHotplug,
     },
     RuntimeTestCase {
+        id: "fatal.page_fault",
+        body: RuntimeTestBody::Sync(fatal_page_fault),
+        tier: RuntimeTier::PrRequired,
+        group: RuntimeGroup::Fatal,
+    },
+    RuntimeTestCase {
+        id: "fatal.oom",
+        body: RuntimeTestBody::Sync(fatal_oom),
+        tier: RuntimeTier::PrRequired,
+        group: RuntimeGroup::Fatal,
+    },
+    RuntimeTestCase {
         id: "cpu.hotplug_sparse_runtime_suite",
         body: RuntimeTestBody::CpuHotplugSparse,
         tier: RuntimeTier::NightlyRequired,
@@ -487,14 +501,59 @@ static CASES: &[RuntimeTestCase] = &[
     },
 ];
 
+fn fatal_page_fault(_case_filter: Option<&str>) -> RuntimeTestResult {
+    #[cfg(all(feature = "qemu-test-export", target_os = "none"))]
+    {
+        let Some(cpu) = crate::cpu::CurrentCpu::acquire() else {
+            return RuntimeTestResult::fail("CPU binding missing");
+        };
+        let Some(stack) = crate::task::context::task_stack_bounds(&cpu) else {
+            return RuntimeTestResult::fail("test is not running on a guarded task stack");
+        };
+        let guard_address = stack.start - crate::mm::types::PAGE_SIZE_4K as u64;
+        // SAFETY: this isolated guest intentionally checks that hardware
+        // routes a read of its unmapped task guard through the fatal #PF path.
+        unsafe {
+            core::arch::asm!("test byte ptr [{guard}], 1", guard = in(reg) guard_address, options(nostack));
+        }
+        RuntimeTestResult::fail("task guard page read did not fault")
+    }
+    #[cfg(not(all(feature = "qemu-test-export", target_os = "none")))]
+    RuntimeTestResult::blocked("fatal page fault requires an isolated booted guest")
+}
+
+fn fatal_oom(_case_filter: Option<&str>) -> RuntimeTestResult {
+    #[cfg(all(feature = "qemu-test-export", target_os = "none"))]
+    {
+        crate::domain::registry::with_domain(crate::domain::DomainId::KERNEL, |_| {
+            let Ok(layout) = core::alloc::Layout::from_size_align(1usize << 40, 8) else {
+                return RuntimeTestResult::fail("fixture allocation layout is invalid");
+            };
+            // SAFETY: the layout is valid and nonzero. Any unexpected
+            // allocation is returned with that exact layout.
+            let pointer = unsafe { alloc::alloc::alloc(layout) };
+            if !pointer.is_null() {
+                unsafe { alloc::alloc::dealloc(pointer, layout) };
+                return RuntimeTestResult::fail("fixture unexpectedly allocated one TiB");
+            }
+            alloc::alloc::handle_alloc_error(layout)
+        })
+        .unwrap_or_else(|| RuntimeTestResult::fail("kernel domain is missing"))
+    }
+    #[cfg(not(all(feature = "qemu-test-export", target_os = "none")))]
+    RuntimeTestResult::blocked("terminal allocation failure requires an isolated booted guest")
+}
+
 fn profile_selects_case(profile: &str, case: &RuntimeTestCase) -> bool {
     if str_eq(profile, "pr-required") {
-        matches!(case.tier, RuntimeTier::PrRequired)
+        matches!(case.tier, RuntimeTier::PrRequired) && !matches!(case.group, RuntimeGroup::Fatal)
     } else if str_eq(profile, "nightly-required") {
         matches!(case.tier, RuntimeTier::NightlyRequired)
             && !matches!(case.group, RuntimeGroup::CpuHotplug)
     } else if str_eq(profile, "boot-smoke") {
         matches!(case.group, RuntimeGroup::Boot)
+    } else if str_eq(profile, "fatal") {
+        matches!(case.group, RuntimeGroup::Fatal)
     } else if str_eq(profile, "scheduler") {
         matches!(case.group, RuntimeGroup::Scheduler)
     } else if str_eq(profile, "storage") {

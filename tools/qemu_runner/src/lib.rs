@@ -1218,6 +1218,55 @@ fn make_report(
     }
 }
 
+fn observed_fatal_report(config: &RunConfig, log_path: &Path) -> bool {
+    if config.profile != "fatal" {
+        return false;
+    }
+    let case_id = config.case_filter.as_deref().unwrap_or("fatal.page_fault");
+    let case = match case_id {
+        "fatal.page_fault" => ["Unresolved page fault (#PF)", "[PANIC] CR2="],
+        "fatal.oom" => [
+            "Kernel allocation failed",
+            "[PANIC] Allocation size=1099511627776 align=8",
+        ],
+        _ => return false,
+    };
+    let Ok(bytes) = std::fs::read(log_path) else {
+        return false;
+    };
+    let output = String::from_utf8_lossy(&bytes);
+    let peers = config.smp - 1;
+    let stop = format!("[PANIC] CPU stop acknowledged={peers}/{peers} delivery_errors=0");
+    let complete = case
+        .into_iter()
+        .chain([
+            stop.as_str(),
+            "[PANIC] record saved at",
+            "[PANIC] Stack Trace:",
+            "  #0 IP=",
+            "[PANIC] Halting reporting CPU",
+        ])
+        .all(|expected| output.contains(expected));
+    if !complete || case_id != "fatal.page_fault" {
+        return complete;
+    }
+
+    // The fault's unmapped data address belongs in CR2, never in the
+    // executable return-address field of a frame.
+    let fault_address = output.lines().find_map(|line| {
+        line.strip_prefix("[PANIC] CR2=")
+            .and_then(|detail| detail.split_whitespace().next())
+    });
+    fault_address.is_some_and(|address| {
+        !output.lines().any(|line| {
+            line.trim_start().starts_with('#')
+                && line
+                    .split_whitespace()
+                    .any(|field| field.strip_prefix("IP=") == Some(address))
+        })
+    })
+}
+
 fn poll_qemu(
     config: &RunConfig,
     artifact_path: PathBuf,
@@ -1261,6 +1310,7 @@ fn poll_qemu(
             });
         }
 
+        let fatal_complete = observed_fatal_report(config, &log_path);
         match child.try_wait() {
             Ok(Some(status)) => {
                 let host_exit_code = status.code().unwrap_or(-1);
@@ -1272,7 +1322,7 @@ fn poll_qemu(
                     host_exit_code,
                     start.elapsed(),
                 );
-                if report.isa_debug_value != Some(0x10) {
+                if config.profile == "fatal" || report.isa_debug_value != Some(0x10) {
                     return Err(RunError::ProfileFailed(Box::new(report)));
                 }
                 if hotplug.as_ref().is_some_and(|run| !run.is_complete()) {
@@ -1289,6 +1339,20 @@ fn poll_qemu(
                     });
                 }
                 return Ok(report);
+            }
+            Ok(None) if fatal_complete => {
+                // A terminal guest cannot complete through isa-debug-exit.
+                // The host owns teardown after observing its finished report.
+                child.kill().map_err(RunError::QemuLaunch)?;
+                let status = child.wait().map_err(RunError::QemuLaunch)?;
+                return Ok(make_report(
+                    config.profile.clone(),
+                    artifact_path,
+                    log_path,
+                    qemu_stderr_path,
+                    status.code().unwrap_or(-1),
+                    start.elapsed(),
+                ));
             }
             Ok(None) => thread::sleep(Duration::from_millis(100)),
             Err(err) => {
