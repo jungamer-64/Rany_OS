@@ -115,7 +115,7 @@ build_wrapper_cell() {
     fi
 
     echo "[standalone_driver_packs] building ${driver_feature} (${PROFILE})"
-    (cd "$ROOT_DIR" && cargo "${cargo_args[@]}")
+    (cd "$ROOT_DIR" && CARGO_PROFILE_DEV_PANIC=unwind CARGO_PROFILE_RELEASE_PANIC=unwind cargo "${cargo_args[@]}")
 
     local artifact
     artifact="$(find_cdylib "$BUILD_PROFILE_DIR")"

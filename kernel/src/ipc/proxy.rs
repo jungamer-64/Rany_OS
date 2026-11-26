@@ -3,7 +3,6 @@
 // 設計書 8.2: RedLeafの知見：交換可能な型とプロキシ
 // ============================================================================
 use super::rref::DomainId;
-use alloc::string::String;
 
 /// プロキシ呼び出しの結果
 pub type ProxyResult<T> = Result<T, ProxyError>;
@@ -13,7 +12,7 @@ pub type ProxyResult<T> = Result<T, ProxyError>;
 pub enum ProxyError {
     Execution(crate::task::ExecutionContextUnavailable),
     PermissionDenied,
-    DomainPanicked(String),
+    DomainPanicked,
 }
 
 impl core::fmt::Display for ProxyError {
@@ -21,7 +20,7 @@ impl core::fmt::Display for ProxyError {
         match self {
             ProxyError::Execution(error) => write!(f, "Execution context unavailable: {error:?}"),
             ProxyError::PermissionDenied => write!(f, "Permission denied"),
-            ProxyError::DomainPanicked(message) => write!(f, "Domain panicked: {message}"),
+            ProxyError::DomainPanicked => f.write_str("Domain panicked"),
         }
     }
 }
@@ -86,25 +85,17 @@ impl DomainProxy for BasicProxy {
         if current.domain != self.caller_domain {
             return Err(ProxyError::PermissionDenied);
         }
-        let _domain_guard =
+        let domain =
             crate::task::enter_domain(self.target_domain).map_err(ProxyError::Execution)?;
-        execute_with_panic_capture(func)
-    }
-}
-
-// ============================================================================
-// Panic Capture Mechanism - 設計書 8.2: ドメイン境界でのパニック捕捉
-// 設計書 8.4: PoisonLockによるパニック時の毒入れ対応
-// ============================================================================
-
-/// The enclosing execution guard retains target admission during panic capture.
-fn execute_with_panic_capture<F, T>(func: F) -> ProxyResult<T>
-where
-    F: FnOnce() -> T,
-{
-    match crate::unwind::catch_panic(func) {
-        Ok(result) => Ok(result),
-        Err(payload) => Err(ProxyError::DomainPanicked(payload.message)),
+        let result = func();
+        if domain.caught_cell_panic() {
+            // The failed invocation still owns target code and execution
+            // until disposal of the result has completed.
+            drop(result);
+            Err(ProxyError::DomainPanicked)
+        } else {
+            Ok(result)
+        }
     }
 }
 
@@ -115,9 +106,9 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_proxy_error_display() {
-        let error = ProxyError::DomainPanicked("test panic".into());
+        let error = ProxyError::DomainPanicked;
         let error_str = alloc::format!("{}", error);
-        assert!(error_str.contains("test panic"));
+        assert!(error_str.contains("Domain panicked"));
     }
 
     #[cfg(not(target_os = "none"))]

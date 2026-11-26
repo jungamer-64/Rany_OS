@@ -82,9 +82,9 @@ pub const DRIVER_ENTRY_SYMBOL: &str = "_exorust_driver_entry";
 /// The symbol name for the driver exports table.
 pub const DRIVER_EXPORTS_SYMBOL: &str = "DRIVER_EXPORTS";
 /// The symbol name for the kernel API function table.
-pub const KERNEL_API_SYMBOL: &str = "__exorust_kernel_api_v4";
+pub const KERNEL_API_SYMBOL: &str = "__exorust_kernel_api_v5";
 /// ABI version for the KernelApiV4 table.
-pub const KERNEL_API_ABI_VERSION: u32 = 13;
+pub const KERNEL_API_ABI_VERSION: u32 = 14;
 /// ABI version for the DriverExportsV1 header.
 pub const DRIVER_EXPORTS_ABI_VERSION: u32 = 3;
 
@@ -1617,7 +1617,7 @@ pub struct KernelApiV4 {
     /// Optional heap deallocator paired with `heap_alloc`.
     pub heap_dealloc: Option<extern "C" fn(ptr: *mut u8, size: usize)>,
     /// Optional panic abort hook for standalone cell runtime.
-    pub panic_abort: Option<extern "C" fn(msg_ptr: *const u8, msg_len: usize) -> !>,
+    pub report_cell_panic: Option<extern "C" fn(msg_ptr: *const u8, msg_len: usize)>,
     pub current_domain_id: extern "C" fn() -> u64,
     pub exchange_alloc_raw:
         extern "C" fn(size: usize, align: usize, out_ptr: *mut *mut u8, out_owner: *mut u64) -> i32,
@@ -1779,28 +1779,41 @@ macro_rules! export_driver {
         pub fn standalone_driver_vtable() -> *const $crate::abi::driver::DriverVTable {
             // --- Mandatory Adapters ---
             extern "C" fn probe_adapter(ctx: *mut $crate::abi::driver::DriverContext) -> i32 {
+                $crate::abi::driver::invoke_cell($crate::abi::driver::AbiError::IoError as i32, || {
                 // SAFETY: The kernel guarantees ctx is valid when calling probe
                 let ctx_safe = unsafe { &mut *ctx };
                 ($probe)(ctx_safe)
+                })
             }
             extern "C" fn remove_adapter(ctx: *mut $crate::abi::driver::DriverContext) -> i32 {
+                $crate::abi::driver::invoke_cell($crate::abi::driver::AbiError::IoError as i32, || {
                 // SAFETY: The kernel guarantees ctx is valid
                 let ctx_safe = unsafe { &mut *ctx };
                 ($remove)(ctx_safe)
+                })
             }
             extern "C" fn name_adapter() -> *const u8 {
+                $crate::abi::driver::invoke_cell(core::ptr::null(), || {
                 ($name)().as_ptr()
+                })
             }
             extern "C" fn name_len_adapter() -> usize {
+                $crate::abi::driver::invoke_cell(0, || {
                 ($name)().len()
+                })
             }
             extern "C" fn type_adapter() -> u32 {
+                $crate::abi::driver::invoke_cell(0, || {
                 ($driver_type) as u32
+                })
             }
             extern "C" fn version_adapter() -> u64 {
+                $crate::abi::driver::invoke_cell(0, || {
                 $version as u64
+                })
             }
             extern "C" fn providers_adapter(count_out: *mut usize) -> *const () {
+                $crate::abi::driver::invoke_cell(core::ptr::null(), || {
                 let providers: &'static [$crate::provider::ProviderDescriptorV1] = $providers;
                 if !count_out.is_null() {
                     unsafe {
@@ -1808,29 +1821,36 @@ macro_rules! export_driver {
                     }
                 }
                 providers.as_ptr() as *const ()
+                })
             }
 
             // --- Optional Adapters (start/stop) ---
             extern "C" fn start_adapter(ctx: *mut $crate::abi::driver::DriverContext) -> i32 {
+                $crate::abi::driver::invoke_cell($crate::abi::driver::AbiError::IoError as i32, || {
                 let mut rv: i32 = 0;
                 // SAFETY: The kernel guarantees ctx is valid
                 let ctx_safe = unsafe { &mut *ctx };
                 $( rv = ($start)(ctx_safe); )?
                 rv
+                })
             }
             extern "C" fn stop_adapter(ctx: *mut $crate::abi::driver::DriverContext) -> i32 {
+                $crate::abi::driver::invoke_cell($crate::abi::driver::AbiError::IoError as i32, || {
                 let mut rv: i32 = 0;
                 // SAFETY: The kernel guarantees ctx is valid
                 let ctx_safe = unsafe { &mut *ctx };
                 $( rv = ($stop)(ctx_safe); )?
                 rv
+                })
             }
 
             // IRQ adapter that wraps the user's IRQ handler
             extern "C" fn irq_adapter(ctx: *mut $crate::abi::driver::DriverContext) -> bool {
+                $crate::abi::driver::invoke_cell(false, || {
                 // SAFETY: The kernel guarantees ctx is valid
                 let ctx_safe = unsafe { &mut *ctx };
                 ($irq)(ctx_safe)
+                })
             }
 
             static VTABLE: $crate::abi::driver::DriverVTable = $crate::abi::driver::DriverVTable::new(
@@ -1881,28 +1901,41 @@ macro_rules! export_driver {
             // --- Mandatory Adapters ---
 
             extern "C" fn probe_adapter(ctx: *mut $crate::abi::driver::DriverContext) -> i32 {
+                $crate::abi::driver::invoke_cell($crate::abi::driver::AbiError::IoError as i32, || {
                 // SAFETY: The kernel guarantees ctx is valid
                 let ctx_safe = unsafe { &mut *ctx };
                 ($probe)(ctx_safe)
+                })
             }
             extern "C" fn remove_adapter(ctx: *mut $crate::abi::driver::DriverContext) -> i32 {
+                $crate::abi::driver::invoke_cell($crate::abi::driver::AbiError::IoError as i32, || {
                 // SAFETY: The kernel guarantees ctx is valid
                 let ctx_safe = unsafe { &mut *ctx };
                 ($remove)(ctx_safe)
+                })
             }
             extern "C" fn name_adapter() -> *const u8 {
+                $crate::abi::driver::invoke_cell(core::ptr::null(), || {
                 ($name)().as_ptr()
+                })
             }
             extern "C" fn name_len_adapter() -> usize {
+                $crate::abi::driver::invoke_cell(0, || {
                 ($name)().len()
+                })
             }
             extern "C" fn type_adapter() -> u32 {
+                $crate::abi::driver::invoke_cell(0, || {
                 ($driver_type) as u32
+                })
             }
             extern "C" fn version_adapter() -> u64 {
+                $crate::abi::driver::invoke_cell(0, || {
                 $version as u64
+                })
             }
             extern "C" fn providers_adapter(count_out: *mut usize) -> *const () {
+                $crate::abi::driver::invoke_cell(core::ptr::null(), || {
                 let providers: &'static [$crate::provider::ProviderDescriptorV1] = $providers;
                 if !count_out.is_null() {
                     unsafe {
@@ -1910,22 +1943,27 @@ macro_rules! export_driver {
                     }
                 }
                 providers.as_ptr() as *const ()
+                })
             }
 
             // --- Optional Adapters (start/stop) ---
             extern "C" fn start_adapter(ctx: *mut $crate::abi::driver::DriverContext) -> i32 {
+                $crate::abi::driver::invoke_cell($crate::abi::driver::AbiError::IoError as i32, || {
                 let mut rv: i32 = 0;
                 // SAFETY: The kernel guarantees ctx is valid
                 let ctx_safe = unsafe { &mut *ctx };
                 $( rv = ($start)(ctx_safe); )?
                 rv
+                })
             }
             extern "C" fn stop_adapter(ctx: *mut $crate::abi::driver::DriverContext) -> i32 {
+                $crate::abi::driver::invoke_cell($crate::abi::driver::AbiError::IoError as i32, || {
                 let mut rv: i32 = 0;
                 // SAFETY: The kernel guarantees ctx is valid
                 let ctx_safe = unsafe { &mut *ctx };
                 $( rv = ($stop)(ctx_safe); )?
                 rv
+                })
             }
 
             static VTABLE: $crate::abi::driver::DriverVTable = $crate::abi::driver::DriverVTable::new(
@@ -1999,4 +2037,18 @@ macro_rules! export_driver {
     (@providers) => {
         &[] as &[$crate::provider::ProviderDescriptorV1]
     };
+}
+
+/// Keeps cell Rust unwinding inside the cell image and returns the callback's
+/// ABI failure value after reporting a caught panic.
+#[inline]
+pub fn invoke_cell<R>(on_panic: R, call: impl FnOnce() -> R) -> R {
+    #[cfg(all(target_os = "none", feature = "cell_runtime"))]
+    return crate::runtime_impl::invoke(on_panic, call);
+
+    #[cfg(not(all(target_os = "none", feature = "cell_runtime")))]
+    {
+        let _ = on_panic;
+        call()
+    }
 }

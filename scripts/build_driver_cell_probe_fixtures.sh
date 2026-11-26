@@ -121,7 +121,7 @@ build_variant() {
     fi
 
     echo "[driver_cell_probe_fixtures] building ${variant} (${PROFILE})"
-    (cd "$ROOT_DIR" && cargo "${cargo_args[@]}")
+    (cd "$ROOT_DIR" && CARGO_PROFILE_DEV_PANIC=unwind CARGO_PROFILE_RELEASE_PANIC=unwind cargo "${cargo_args[@]}")
 
     mkdir -p "$DEPLOY_DIR"
     local artifact

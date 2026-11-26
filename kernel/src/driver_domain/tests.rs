@@ -1001,20 +1001,51 @@ async fn case_idle_restart_panic(ctx: &mut RuntimeContext) -> Result<(), Runtime
         .with_cell(ctx.driver_domain_id, |cell| cell.stats.restart_count)
         .map_err(|e| RuntimeCaseError::failed(format!("failed to read restart_count: {}", e)))?;
 
-    let outcome = super::fault::inject_test_fault(
-        ctx.driver_domain_id,
-        super::fault::TestFaultKind::Panic,
-    )
-    .map_err(|e| RuntimeCaseError::failed(format!("inject_test_fault panic failed: {}", e)))?;
-    if !matches!(
-        outcome.action,
-        super::fault::FaultAction::RestartScheduled { .. }
-    ) {
-        return Err(RuntimeCaseError::failed(format!(
-            "expected admitted restart, got {}",
-            outcome.action
-        )));
+    let (cell, handle, domain) = driver_domain_manager()
+        .with_cell(ctx.driver_domain_id, |owner| {
+            Some((
+                owner.cell_id?,
+                *owner.driver_handles.first()?,
+                owner.domain_id?,
+            ))
+        })
+        .map_err(|error| RuntimeCaseError::failed(format!("read panic fixture: {error}")))?
+        .ok_or_else(|| RuntimeCaseError::failed("panic fixture has no driver"))?;
+    let (code, address) = crate::loader::with_registry(|registry| {
+        let entry = registry.get(cell)?;
+        let (_, address) = entry
+            .exports
+            .iter()
+            .find(|(name, _)| name == "__exorust_driver_cell_probe_panic_state")?;
+        Some((entry.code.acquire(cell)?, *address))
+    })
+    .ok_or_else(|| RuntimeCaseError::failed("panic fixture state not exported"))?;
+    {
+        // SAFETY: the fixture exports an initialized AtomicU32 and this
+        // lease keeps its storage mapped until after our last atomic access.
+        let state = unsafe { &*(address as *const core::sync::atomic::AtomicU32) };
+        state.store(1, core::sync::atomic::Ordering::Release);
+        use crate::ipc::DomainProxy;
+        let caller = crate::task::current_subject().domain;
+        let proxy = crate::ipc::BasicProxy::new(caller, domain);
+        let mut callback_failed = false;
+        let result = proxy.call(|| {
+            callback_failed = crate::driver_registry::driver_registry()
+                .stop(handle)
+                .is_err();
+        });
+        if !callback_failed || !matches!(result, Err(crate::ipc::ProxyError::DomainPanicked)) {
+            return Err(RuntimeCaseError::failed(
+                "panicking stop was not reported to its caller",
+            ));
+        }
+        if state.load(core::sync::atomic::Ordering::Acquire) != 2 {
+            return Err(RuntimeCaseError::failed(
+                "panicking stop did not run Rust cleanup",
+            ));
+        }
     }
+    drop(code);
     observe_runtime(
         async {
             // LOOP_PROOF: mode=event; reason=Restart observation awaits a timer until the service host publishes Running or the enclosing deadline ends the wait.;

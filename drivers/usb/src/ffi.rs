@@ -28,59 +28,69 @@ fn with_usb_driver<R>(f: impl FnOnce(&mut UsbDriverWrapper) -> R) -> Option<R> {
 
 /// Probe function for USB xHCI controller.
 extern "C" fn usb_probe(ctx: *mut DriverContext) -> i32 {
-    if ctx.is_null() {
-        return -1;
-    }
+    kernel_api::abi::driver::invoke_cell(kernel_api::abi::driver::AbiError::IoError as i32, || {
+        if ctx.is_null() {
+            return -1;
+        }
 
-    let ctx = unsafe { &mut *ctx };
-    let mut slot = USB_DRIVER.lock();
-    if slot.is_some() {
-        return -1;
-    }
-    *slot = Some(UsbDriverWrapper::new(ctx.pci_location()));
-    match slot.as_mut().map(Driver::probe) {
-        Some(Ok(())) => 0,
-        _ => -1,
-    }
+        let ctx = unsafe { &mut *ctx };
+        let mut slot = USB_DRIVER.lock();
+        if slot.is_some() {
+            return -1;
+        }
+        *slot = Some(UsbDriverWrapper::new(ctx.pci_location()));
+        match slot.as_mut().map(Driver::probe) {
+            Some(Ok(())) => 0,
+            _ => -1,
+        }
+    })
 }
 
 /// Start function for USB driver.
 extern "C" fn usb_start(_ctx: *mut DriverContext) -> i32 {
-    match with_usb_driver(|driver| driver.start()) {
-        Some(Ok(())) => 0,
-        _ => -1,
-    }
+    kernel_api::abi::driver::invoke_cell(kernel_api::abi::driver::AbiError::IoError as i32, || {
+        match with_usb_driver(|driver| driver.start()) {
+            Some(Ok(())) => 0,
+            _ => -1,
+        }
+    })
 }
 
 /// Stop function for USB driver.
 extern "C" fn usb_stop(_ctx: *mut DriverContext) -> i32 {
-    match with_usb_driver(|driver| driver.stop()) {
-        Some(Ok(())) => 0,
-        _ => -1,
-    }
+    kernel_api::abi::driver::invoke_cell(kernel_api::abi::driver::AbiError::IoError as i32, || {
+        match with_usb_driver(|driver| driver.stop()) {
+            Some(Ok(())) => 0,
+            _ => -1,
+        }
+    })
 }
 
 /// Remove/cleanup function for USB driver.
 extern "C" fn usb_remove(_ctx: *mut DriverContext) -> i32 {
-    let mut slot = USB_DRIVER.lock();
-    match slot.as_mut().map(Driver::remove) {
-        Some(Ok(())) => {
-            drop(slot.take());
-            0
+    kernel_api::abi::driver::invoke_cell(kernel_api::abi::driver::AbiError::IoError as i32, || {
+        let mut slot = USB_DRIVER.lock();
+        match slot.as_mut().map(Driver::remove) {
+            Some(Ok(())) => {
+                drop(slot.take());
+                0
+            }
+            None => 0,
+            Some(Err(_)) => -1,
         }
-        None => 0,
-        Some(Err(_)) => -1,
-    }
+    })
 }
 
 extern "C" fn usb_handle_irq(ctx: *mut DriverContext) -> bool {
-    if ctx.is_null() {
-        return false;
-    }
-    // SAFETY: the relay framework retains the initialized DriverContext for
-    // this synchronous callback. Only the observed vector is copied here.
-    let irq = unsafe { (*ctx).irq };
-    with_usb_driver(|driver| driver.handle_irq(irq)).unwrap_or(false)
+    kernel_api::abi::driver::invoke_cell(false, || {
+        if ctx.is_null() {
+            return false;
+        }
+        // SAFETY: the relay framework retains the initialized DriverContext for
+        // this synchronous callback. Only the observed vector is copied here.
+        let irq = unsafe { (*ctx).irq };
+        with_usb_driver(|driver| driver.handle_irq(irq)).unwrap_or(false)
+    })
 }
 
 // ============================================================================
@@ -104,14 +114,16 @@ extern "C" fn usb_version() -> u64 {
 }
 
 extern "C" fn usb_request_capabilities(caps: *mut DriverCapabilities) {
-    if !caps.is_null() {
-        // SAFETY: We checked that caps is not null. Caller guarantees it points to valid memory.
-        unsafe {
-            (*caps).needs_dma = true;
-            (*caps).needs_irq = true;
-            (*caps).needs_mmio = true;
+    kernel_api::abi::driver::invoke_cell((), || {
+        if !caps.is_null() {
+            // SAFETY: We checked that caps is not null. Caller guarantees it points to valid memory.
+            unsafe {
+                (*caps).needs_dma = true;
+                (*caps).needs_irq = true;
+                (*caps).needs_mmio = true;
+            }
         }
-    }
+    })
 }
 
 // ============================================================================
@@ -143,5 +155,5 @@ pub fn standalone_driver_vtable() -> *const DriverVTable {
 #[cfg(feature = "export_driver_entry")]
 #[unsafe(export_name = "_exorust_driver_entry")]
 pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
-    standalone_driver_vtable()
+    kernel_api::abi::driver::invoke_cell(core::ptr::null(), || standalone_driver_vtable())
 }

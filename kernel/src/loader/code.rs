@@ -12,6 +12,7 @@ const COUNT: usize = CLOSED - 1;
 pub(crate) struct CodeGeneration {
     ownership: AtomicUsize,
     retired_at: AtomicU64,
+    pending_panic_domain: AtomicU64,
 }
 
 impl CodeGeneration {
@@ -19,7 +20,26 @@ impl CodeGeneration {
         Self {
             ownership: AtomicUsize::new(0),
             retired_at: AtomicU64::new(0),
+            pending_panic_domain: AtomicU64::new(0),
         }
+    }
+
+    pub(super) fn record_panic(&self, domain: crate::domain::DomainId) {
+        let _ = self.pending_panic_domain.compare_exchange(
+            0,
+            domain.as_u64(),
+            Ordering::Release,
+            Ordering::Relaxed,
+        );
+    }
+
+    pub(super) fn has_pending_panic(&self) -> bool {
+        self.pending_panic_domain.load(Ordering::Acquire) != 0
+    }
+
+    pub(super) fn take_panic(&self) -> Option<crate::domain::DomainId> {
+        core::num::NonZeroU64::new(self.pending_panic_domain.swap(0, Ordering::AcqRel))
+            .map(|domain| crate::domain::DomainId::new(domain.get()))
     }
 
     pub(crate) fn acquire(self: &Arc<Self>, cell: super::CellId) -> Option<CodeLease> {

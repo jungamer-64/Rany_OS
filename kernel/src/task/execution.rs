@@ -65,6 +65,7 @@ pub struct ExecutionContext {
     subject: Subject,
     memory: MemoryBinding,
     pub(crate) cell: Option<crate::loader::CellId>,
+    pub(crate) caught_cell_panic: bool,
     pub(crate) finalization: Option<FinalizationAuthority>,
 }
 
@@ -85,6 +86,7 @@ impl ExecutionContext {
             memory: MemoryBinding::kernel(),
             cell: None,
             finalization: None,
+            caught_cell_panic: false,
         }
     }
 
@@ -105,6 +107,7 @@ impl ExecutionContext {
             memory,
             cell: None,
             finalization: None,
+            caught_cell_panic: false,
         })
     }
 

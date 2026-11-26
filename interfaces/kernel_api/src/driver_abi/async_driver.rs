@@ -35,10 +35,15 @@ enum State<T> {
         operation: Operation,
         driver: T,
         context: DriverContext,
-        result: KapiResult<()>,
+        completion: Completion,
         irq: Option<Arc<dyn DriverIrqSource>>,
     },
     Closed,
+}
+
+enum Completion {
+    Returned(KapiResult<()>),
+    Interrupted,
 }
 
 /// Retains a driver until its lifecycle task and explicit remove have completed.
@@ -59,24 +64,36 @@ struct OperationOwner<T: AsyncDriver> {
 
 impl<T: AsyncDriver> OperationOwner<T> {
     fn finish(mut self, result: KapiResult<()>) {
-        self.publish(result);
+        self.publish(Completion::Returned(result));
     }
 
-    fn publish(&mut self, result: KapiResult<()>) {
-        if let Some(driver) = self.driver.take() {
-            let irq = T::IRQ_SOURCE.and_then(|acquire| acquire(&driver));
-            let mut state = self.host.state.lock();
-            assert!(
-                matches!(*state, State::Running { operation, .. } if operation == self.operation)
-            );
-            *state = State::Completed {
-                operation: self.operation,
-                driver,
-                context: self.context,
-                result,
-                irq,
-            };
-        }
+    fn publish(&mut self, completion: Completion) {
+        let Some(driver) = self.driver.as_ref() else {
+            return;
+        };
+        let published_irq = match &completion {
+            Completion::Returned(_) => T::IRQ_SOURCE.and_then(|acquire| acquire(driver)),
+            Completion::Interrupted => None,
+        };
+        let mut state = self.host.state.lock();
+        let State::Running { operation, irq } = &*state else {
+            unreachable!("the operation owns the running driver");
+        };
+        assert!(*operation == self.operation);
+        let irq = match &completion {
+            Completion::Returned(_) => published_irq,
+            Completion::Interrupted => irq.clone(),
+        };
+        *state = State::Completed {
+            operation: self.operation,
+            driver: self
+                .driver
+                .take()
+                .expect("operation owns the running driver"),
+            context: self.context,
+            completion,
+            irq,
+        };
     }
 
     async fn execute(mut self) {
@@ -98,7 +115,7 @@ impl<T: AsyncDriver> Drop for OperationOwner<T> {
     fn drop(&mut self) {
         // Cancellation is an uncertain device outcome. Keep the driver, copied
         // context and resource owners; the lifecycle owner must request cleanup.
-        self.publish(Err(KapiError::IoError));
+        self.publish(Completion::Interrupted);
     }
 }
 
@@ -122,6 +139,33 @@ impl<T: AsyncDriver> AsyncDriverHost<T> {
     ) -> AbiError {
         let owner = {
             let mut state = self.state.lock();
+            // Stop may recover an interrupted probe or start. The dropped
+            // future already returned its driver but could have modified its
+            // copied context and device, so keep both for the stop request.
+            if operation == Operation::Stop
+                && matches!(
+                    &*state,
+                    State::Completed {
+                        operation: Operation::Probe | Operation::Start,
+                        completion: Completion::Interrupted,
+                        ..
+                    },
+                )
+            {
+                let State::Completed {
+                    driver,
+                    context: saved,
+                    irq,
+                    ..
+                } = core::mem::replace(&mut *state, State::Closed)
+                else {
+                    unreachable!("the lock retains the interrupted operation")
+                };
+                let identity = context.driver_data;
+                *context = saved;
+                context.driver_data = identity;
+                *state = State::Idle { driver, irq };
+            }
             match &*state {
                 State::Running { .. } => return AbiError::DeviceBusy,
                 State::Completed {
@@ -137,13 +181,17 @@ impl<T: AsyncDriver> AsyncDriverHost<T> {
                 State::Completed {
                     driver,
                     context: completed,
-                    result,
+                    completion,
                     irq,
                     ..
                 } => {
                     let identity = context.driver_data;
                     *context = completed;
                     context.driver_data = identity;
+                    let result = match completion {
+                        Completion::Returned(result) => result,
+                        Completion::Interrupted => Err(KapiError::IoError),
+                    };
                     if result.is_ok() && operation == Operation::Remove {
                         *state = State::Closed;
                         drop(state);
@@ -345,38 +393,60 @@ macro_rules! export_async_driver {
                 AsyncDriverHost, DRIVER_ABI_VERSION, DriverContext, DriverVTable, DriverVTableFns,
             };
             extern "C" fn probe(context: *mut DriverContext) -> i32 {
-                // SAFETY: the service host exclusively retains context and code
-                // until acknowledged remove, as required by the driver ABI.
-                unsafe { AsyncDriverHost::<$driver>::probe(context, || $constructor) }
+                $crate::abi::driver::invoke_cell(
+                    $crate::abi::driver::AbiError::IoError as i32,
+                    || {
+                        // SAFETY: the service host exclusively retains context and code
+                        // until acknowledged remove, as required by the driver ABI.
+                        unsafe { AsyncDriverHost::<$driver>::probe(context, || $constructor) }
+                    },
+                )
             }
             extern "C" fn start(context: *mut DriverContext) -> i32 {
-                // SAFETY: the driver ABI retains the context's host reference.
-                unsafe { AsyncDriverHost::<$driver>::start(context) }
+                $crate::abi::driver::invoke_cell(
+                    $crate::abi::driver::AbiError::IoError as i32,
+                    || {
+                        // SAFETY: the driver ABI retains the context's host reference.
+                        unsafe { AsyncDriverHost::<$driver>::start(context) }
+                    },
+                )
             }
             extern "C" fn stop(context: *mut DriverContext) -> i32 {
-                // SAFETY: the driver ABI retains the context's host reference.
-                unsafe { AsyncDriverHost::<$driver>::stop(context) }
+                $crate::abi::driver::invoke_cell(
+                    $crate::abi::driver::AbiError::IoError as i32,
+                    || {
+                        // SAFETY: the driver ABI retains the context's host reference.
+                        unsafe { AsyncDriverHost::<$driver>::stop(context) }
+                    },
+                )
             }
             extern "C" fn remove(context: *mut DriverContext) -> i32 {
-                // SAFETY: the driver ABI retains the context's host reference.
-                unsafe { AsyncDriverHost::<$driver>::remove(context) }
+                $crate::abi::driver::invoke_cell(
+                    $crate::abi::driver::AbiError::IoError as i32,
+                    || {
+                        // SAFETY: the driver ABI retains the context's host reference.
+                        unsafe { AsyncDriverHost::<$driver>::remove(context) }
+                    },
+                )
             }
             unsafe extern "C" fn irq(context: *mut DriverContext) -> bool {
-                // SAFETY: the relay owns the live context/instance/code through
-                // this call; the host lends only its retained IRQ resource.
-                unsafe { AsyncDriverHost::<$driver>::handle_irq(context) }
+                $crate::abi::driver::invoke_cell(false, || {
+                    // SAFETY: the relay owns the live context/instance/code through
+                    // this call; the host lends only its retained IRQ resource.
+                    unsafe { AsyncDriverHost::<$driver>::handle_irq(context) }
+                })
             }
             extern "C" fn name() -> *const u8 {
-                ($name)().as_ptr()
+                $crate::abi::driver::invoke_cell(core::ptr::null(), || ($name)().as_ptr())
             }
             extern "C" fn name_len() -> usize {
-                ($name)().len()
+                $crate::abi::driver::invoke_cell(0, || ($name)().len())
             }
             extern "C" fn kind() -> u32 {
-                ($kind) as u32
+                $crate::abi::driver::invoke_cell(0, || ($kind) as u32)
             }
             extern "C" fn version() -> u64 {
-                $version as u64
+                $crate::abi::driver::invoke_cell(0, || $version as u64)
             }
             static VTABLE: DriverVTable = DriverVTable::new(
                 DRIVER_ABI_VERSION,
@@ -492,6 +562,35 @@ mod tests {
         Arc::new(AsyncDriverHost {
             state: Mutex::new(State::Idle { driver, irq }),
         })
+    }
+
+    #[test]
+    fn interrupted_probe_releases_its_driver_for_stop() {
+        let observations = Arc::new(Observations::default());
+        let host = host(&observations);
+        let mut context = DriverContext::new();
+        let mut admitted = None;
+        assert_eq!(
+            host.request(&mut context, Operation::Probe, |future| {
+                admitted = Some(future);
+                Ok(TaskId::from_raw(11))
+            }),
+            AbiError::DeviceBusy
+        );
+        let mut future = admitted.take().unwrap();
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(future.as_mut().poll(&mut cx).is_pending());
+        drop(future);
+
+        assert_eq!(
+            host.request(&mut context, Operation::Stop, |future| {
+                admitted = Some(future);
+                Ok(TaskId::from_raw(12))
+            }),
+            AbiError::DeviceBusy
+        );
+        assert!(admitted.unwrap().as_mut().poll(&mut cx).is_ready());
+        assert_eq!(observations.stop_calls.load(Ordering::Relaxed), 1);
     }
 
     #[test]

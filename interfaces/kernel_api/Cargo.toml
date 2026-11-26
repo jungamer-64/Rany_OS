@@ -23,6 +23,9 @@ hal = { path = "../../hal" }
 exorust_sync = { path = "../../libs/sync" }
 log = "0.4"
 
+[target.'cfg(target_os = "none")'.dependencies]
+unwinding = { version = "0.2", optional = true, default-features = false, features = ["unwinder", "panic", "personality", "fde-gnu-eh-frame-hdr"] }
+
 [dev-dependencies]
 # DMA authority tests use the raw host lock independently of kernel execution.
 spin = "0.12"
@@ -31,4 +34,4 @@ spin = "0.12"
 # When set, generated driver macros will emit exported driver entry symbols
 export_driver_entry = []
 # Enable Cell runtime stubs (allocator, panic handler) for standalone cdylib builds
-cell_runtime = []
+cell_runtime = ["dep:unwinding"]

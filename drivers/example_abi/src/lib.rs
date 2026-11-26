@@ -11,21 +11,25 @@ use kernel_api::abi::driver::{
 };
 
 pub extern "C" fn probe_fn(_ctx: *mut DriverContext) -> i32 {
-    0
+    kernel_api::abi::driver::invoke_cell(kernel_api::abi::driver::AbiError::IoError as i32, || 0)
 }
 
 pub extern "C" fn remove_fn(_ctx: *mut DriverContext) -> i32 {
-    0
+    kernel_api::abi::driver::invoke_cell(kernel_api::abi::driver::AbiError::IoError as i32, || 0)
 }
 
 pub extern "C" fn start_fn(_ctx: *mut DriverContext) -> i32 {
-    // Example start implementation: enable device, allocate resources, etc.
-    0
+    kernel_api::abi::driver::invoke_cell(kernel_api::abi::driver::AbiError::IoError as i32, || {
+        // Example start implementation: enable device, allocate resources, etc.
+        0
+    })
 }
 
 pub extern "C" fn irq_handler(_ctx: *mut DriverContext) -> bool {
-    // Example IRQ handler: return true to indicate IRQ handled
-    true
+    kernel_api::abi::driver::invoke_cell(false, || {
+        // Example IRQ handler: return true to indicate IRQ handled
+        true
+    })
 }
 
 pub const fn driver_name() -> &'static str {
@@ -44,23 +48,27 @@ kernel_api::export_driver!(
 
 #[cfg(feature = "export_driver_entry")]
 extern "C" fn driver_init(api: *const KernelApiV4) -> i32 {
-    if api.is_null() {
-        return AbiError::InvalidParam as i32;
-    }
+    kernel_api::abi::driver::invoke_cell(kernel_api::abi::driver::AbiError::IoError as i32, || {
+        if api.is_null() {
+            return AbiError::InvalidParam as i32;
+        }
 
-    let api_ref = unsafe { &*api };
-    if api_ref.abi_version != KERNEL_API_ABI_VERSION {
-        return AbiError::NotSupported as i32;
-    }
+        let api_ref = unsafe { &*api };
+        if api_ref.abi_version != KERNEL_API_ABI_VERSION {
+            return AbiError::NotSupported as i32;
+        }
 
-    let msg = b"example_abi init";
-    (api_ref.log)(0, msg.as_ptr(), msg.len());
-    AbiError::Success as i32
+        let msg = b"example_abi init";
+        (api_ref.log)(0, msg.as_ptr(), msg.len());
+        AbiError::Success as i32
+    })
 }
 
 #[cfg(feature = "export_driver_entry")]
 extern "C" fn driver_fini() -> i32 {
-    AbiError::Success as i32
+    kernel_api::abi::driver::invoke_cell(kernel_api::abi::driver::AbiError::IoError as i32, || {
+        AbiError::Success as i32
+    })
 }
 
 /// New ABI entrypoint: `DRIVER_EXPORTS` (preferred by loader).

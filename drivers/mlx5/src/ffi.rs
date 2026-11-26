@@ -208,7 +208,7 @@ extern "C" fn test_kernel_ipc_recv_raw(
 
 #[cfg(test)]
 #[unsafe(no_mangle)]
-pub static __exorust_kernel_api_v4: KernelApiV4 = KernelApiV4 {
+pub static __exorust_kernel_api_v5: KernelApiV4 = KernelApiV4 {
     abi_version: kernel_api::abi::driver::KERNEL_API_ABI_VERSION,
     abi_size: core::mem::size_of::<KernelApiV4>() as u64,
     task_waker_abi: kernel_api::abi::driver::TASK_WAKER_ABI,
@@ -230,7 +230,7 @@ pub static __exorust_kernel_api_v4: KernelApiV4 = KernelApiV4 {
     irq_unbind: test_kernel_irq_unbind,
     heap_alloc: None,
     heap_dealloc: None,
-    panic_abort: None,
+    report_cell_panic: None,
     current_domain_id: test_kernel_current_domain_id,
     exchange_alloc_raw: test_kernel_exchange_alloc_raw,
     exchange_dealloc_raw: test_kernel_exchange_dealloc_raw,
@@ -833,71 +833,76 @@ async fn mlx5_poll_kicker(generation: u64) {
 }
 
 extern "C" fn mlx5_netdev_start(_opaque: u64, runtime: *const AbiNetPortRuntime) -> i32 {
-    if runtime.is_null() {
-        return AbiError::InvalidParam as i32;
-    }
-    let mut guard = MLX5_STANDALONE_STATE.lock();
-    let Mlx5Slot::Live(state) = &mut *guard else {
-        return AbiError::NotInitialized as i32;
-    };
-    if !matches!(state.lifecycle, Mlx5Lifecycle::Running) || state.runtime.is_some() {
-        return AbiError::DeviceBusy as i32;
-    }
-    let Some(generation) = state.poll_generation.checked_add(1) else {
-        return AbiError::DeviceBusy as i32;
-    };
-    let worker = match Box::try_new(mlx5_poll_kicker(generation)) {
-        Ok(worker) => Box::into_pin(worker),
-        Err(_) => return AbiError::OutOfMemory as i32,
-    };
-    // SAFETY: the ABI caller retains a live callback table through successful
-    // stop, including incomplete startup. The state keeps its copied binding.
-    state.runtime = Some(unsafe { *runtime });
-    state.poll_generation = generation;
-    // The guard prevents the admitted worker from observing partial startup.
-    // No receive descriptor has been published if task admission fails.
-    match kernel_api::service::kernel::instance()
-        .spawn(worker, kernel_api::resource::task::TaskOptions::any())
-    {
-        Ok(task) => state.poll_task = Some(task),
-        Err(cause) => {
-            state.runtime = None;
-            log::error!(target: "mlx5", "Poll worker admission failed before RX publication: {cause}");
-            return match cause {
-                kernel_api::resource::task::SpawnError::PhysicalMemoryExhausted => {
-                    AbiError::OutOfMemory
-                }
-                kernel_api::resource::task::SpawnError::TaskSlotsExhausted
-                | kernel_api::resource::task::SpawnError::TaskIdentityExhausted => {
-                    AbiError::DeviceBusy
-                }
-                kernel_api::resource::task::SpawnError::MappingFailed(_) => AbiError::IoError,
-                _ => AbiError::NotInitialized,
-            } as i32;
+    kernel_api::abi::driver::invoke_cell(kernel_api::abi::driver::AbiError::IoError as i32, || {
+        if runtime.is_null() {
+            return AbiError::InvalidParam as i32;
         }
-    }
-    if let Err(cause) = refill_rx_ring(state) {
-        // The worker and any posted prefix remain owned. Shutdown must retain
-        // the runtime binding until those packet/command leases can retire.
-        state.lifecycle = Mlx5Lifecycle::StopRequested;
-        log::error!(target: "mlx5", "RX startup incomplete; retained for shutdown: {cause:?}");
-        return AbiError::IoError as i32;
-    }
-    if let Some(runtime) = state.runtime {
-        // SAFETY: the host retains this runtime through incomplete startup
-        // and its subsequent stop, including all previously posted RX leases.
-        let result = unsafe { (runtime.update_link)(runtime.runtime_cookie, state.last_link_up) };
-        let status = AbiError::from_raw(result);
-        if !status.is_success() {
+        let mut guard = MLX5_STANDALONE_STATE.lock();
+        let Mlx5Slot::Live(state) = &mut *guard else {
+            return AbiError::NotInitialized as i32;
+        };
+        if !matches!(state.lifecycle, Mlx5Lifecycle::Running) || state.runtime.is_some() {
+            return AbiError::DeviceBusy as i32;
+        }
+        let Some(generation) = state.poll_generation.checked_add(1) else {
+            return AbiError::DeviceBusy as i32;
+        };
+        let worker = match Box::try_new(mlx5_poll_kicker(generation)) {
+            Ok(worker) => Box::into_pin(worker),
+            Err(_) => return AbiError::OutOfMemory as i32,
+        };
+        // SAFETY: the ABI caller retains a live callback table through successful
+        // stop, including incomplete startup. The state keeps its copied binding.
+        state.runtime = Some(unsafe { *runtime });
+        state.poll_generation = generation;
+        // The guard prevents the admitted worker from observing partial startup.
+        // No receive descriptor has been published if task admission fails.
+        match kernel_api::service::kernel::instance()
+            .spawn(worker, kernel_api::resource::task::TaskOptions::any())
+        {
+            Ok(task) => state.poll_task = Some(task),
+            Err(cause) => {
+                state.runtime = None;
+                log::error!(target: "mlx5", "Poll worker admission failed before RX publication: {cause}");
+                return match cause {
+                    kernel_api::resource::task::SpawnError::PhysicalMemoryExhausted => {
+                        AbiError::OutOfMemory
+                    }
+                    kernel_api::resource::task::SpawnError::TaskSlotsExhausted
+                    | kernel_api::resource::task::SpawnError::TaskIdentityExhausted => {
+                        AbiError::DeviceBusy
+                    }
+                    kernel_api::resource::task::SpawnError::MappingFailed(_) => AbiError::IoError,
+                    _ => AbiError::NotInitialized,
+                } as i32;
+            }
+        }
+        if let Err(cause) = refill_rx_ring(state) {
+            // The worker and any posted prefix remain owned. Shutdown must retain
+            // the runtime binding until those packet/command leases can retire.
             state.lifecycle = Mlx5Lifecycle::StopRequested;
-            return status as i32;
+            log::error!(target: "mlx5", "RX startup incomplete; retained for shutdown: {cause:?}");
+            return AbiError::IoError as i32;
         }
-    }
-    AbiError::Success as i32
+        if let Some(runtime) = state.runtime {
+            // SAFETY: the host retains this runtime through incomplete startup
+            // and its subsequent stop, including all previously posted RX leases.
+            let result =
+                unsafe { (runtime.update_link)(runtime.runtime_cookie, state.last_link_up) };
+            let status = AbiError::from_raw(result);
+            if !status.is_success() {
+                state.lifecycle = Mlx5Lifecycle::StopRequested;
+                return status as i32;
+            }
+        }
+        AbiError::Success as i32
+    })
 }
 
 extern "C" fn mlx5_netdev_bind(_opaque: u64, _if_id: u16) -> i32 {
-    AbiError::Success as i32
+    kernel_api::abi::driver::invoke_cell(kernel_api::abi::driver::AbiError::IoError as i32, || {
+        AbiError::Success as i32
+    })
 }
 
 extern "C" fn mlx5_netdev_submit_tx_chain(
@@ -905,139 +910,143 @@ extern "C" fn mlx5_netdev_submit_tx_chain(
     submission: *const AbiNetTxSubmission,
     meta: AbiNetTxMeta,
 ) -> i32 {
-    if submission.is_null() {
-        return AbiError::InvalidParam as i32;
-    }
-    let submission = unsafe { &*submission };
-    // SAFETY: the registered host retains the initialized immutable descriptor
-    // slice for this synchronous submission callback. No borrow is stored.
-    let Some(segments) = (unsafe { submission.segments() }) else {
-        return AbiError::InvalidParam as i32;
-    };
-    let mut guard = MLX5_STANDALONE_STATE.lock();
-    let Mlx5Slot::Live(state) = &mut *guard else {
-        return AbiError::NotInitialized as i32;
-    };
-    if !matches!(state.lifecycle, Mlx5Lifecycle::Running) {
-        return AbiError::IoError as i32;
-    }
-    if !state.device.is_active() {
-        return AbiError::NotInitialized as i32;
-    }
-
-    let data_len: usize = segments.iter().map(|segment| segment.len().get()).sum();
-    if data_len == 0 {
-        return AbiError::InvalidParam as i32;
-    }
-
-    if state
-        .device
-        .port(0)
-        .map(|port| port.min_wqe_inline_mode())
-        .unwrap_or(0)
-        != 0
-    {
-        return AbiError::NotSupported as i32;
-    }
-    let Ok(total_len) = u32::try_from(data_len) else {
-        return AbiError::InvalidParam as i32;
-    };
-    let sq_count = state.tx_slots.len().max(1) as u32;
-    let sq_index = if meta.has_queue_index {
-        (meta.queue_index as u32 % sq_count) as usize
-    } else {
-        (state.next_sq.fetch_add(1, Ordering::Relaxed) % sq_count) as usize
-    };
-
-    let mut options = TxOptions::default();
-    if meta.has_vlan_tag {
-        options.vlan_tag = meta.vlan_tag;
-    }
-
-    let mut dma_segments = [crate::wq::DmaSegment {
-        device_addr: 0,
-        virt_addr: 0,
-        len: 0,
-    }; 2];
-    let mut dma_segment_count = 0usize;
-    for segment in segments.iter() {
-        if dma_segment_count == dma_segments.len() {
+    kernel_api::abi::driver::invoke_cell(kernel_api::abi::driver::AbiError::IoError as i32, || {
+        if submission.is_null() {
             return AbiError::InvalidParam as i32;
         }
-        let segment_len = segment.len().get();
-        let Ok(len) = u32::try_from(segment_len) else {
+        let submission = unsafe { &*submission };
+        // SAFETY: the registered host retains the initialized immutable descriptor
+        // slice for this synchronous submission callback. No borrow is stored.
+        let Some(segments) = (unsafe { submission.segments() }) else {
             return AbiError::InvalidParam as i32;
         };
-        dma_segments[dma_segment_count] = crate::wq::DmaSegment {
-            device_addr: segment.device_addr(),
-            virt_addr: segment.cpu_ptr() as u64,
-            len,
+        let mut guard = MLX5_STANDALONE_STATE.lock();
+        let Mlx5Slot::Live(state) = &mut *guard else {
+            return AbiError::NotInitialized as i32;
         };
-        dma_segment_count += 1;
-    }
-    if dma_segment_count == 0 {
-        return AbiError::InvalidParam as i32;
-    }
-
-    let Some(lease_id) = submission.lease_id() else {
-        return AbiError::InvalidParam as i32;
-    };
-    if state.tx_slots[sq_index].iter().any(|slot| {
-        slot.as_ref()
-            .is_some_and(|record| record.completion.is_some())
-    }) {
-        return AbiError::IoError as i32;
-    }
-    // SAFETY: the submission's lease retains each DMA segment through matching
-    // CQ completion or acknowledged queue destruction, including unknown post.
-    let result = unsafe {
-        state.device.transmit_segments(
-            sq_index,
-            &dma_segments[..dma_segment_count],
-            total_len,
-            options,
-        )
-    };
-    let counter = match result {
-        Ok(counter) => counter,
-        Err(crate::error::WorkSubmissionError::NotPublished(cause)) => {
-            state.tx_errors = state.tx_errors.saturating_add(1);
-            log::warn!(target: "mlx5", "TX was not published: {cause:?}");
+        if !matches!(state.lifecycle, Mlx5Lifecycle::Running) {
             return AbiError::IoError as i32;
         }
-        Err(crate::error::WorkSubmissionError::OutcomeUnknown { counter, cause, .. }) => {
-            // ABI success transfers the submission owner even when transport
-            // outcome is uncertain; returning rejection would release live DMA.
-            state.device.state = crate::device::DeviceState::Error;
-            log::error!(target: "mlx5", "TX publication uncertain; retaining counter {counter}: {cause:?}");
-            counter
+        if !state.device.is_active() {
+            return AbiError::NotInitialized as i32;
         }
-    };
-    let slot = counter as usize % state.tx_slots[sq_index].len();
-    assert!(
-        state.tx_slots[sq_index][slot].is_none(),
-        "active counter owns its unique submission slot"
-    );
-    state.tx_slots[sq_index][slot] = Some(TxLeaseRecord {
-        lease: lease_id,
-        counter,
-        completion: None,
-    });
-    state.tx_packets = state.tx_packets.saturating_add(1);
-    schedule_runtime_poll_locked(state);
-    AbiError::Success as i32
+
+        let data_len: usize = segments.iter().map(|segment| segment.len().get()).sum();
+        if data_len == 0 {
+            return AbiError::InvalidParam as i32;
+        }
+
+        if state
+            .device
+            .port(0)
+            .map(|port| port.min_wqe_inline_mode())
+            .unwrap_or(0)
+            != 0
+        {
+            return AbiError::NotSupported as i32;
+        }
+        let Ok(total_len) = u32::try_from(data_len) else {
+            return AbiError::InvalidParam as i32;
+        };
+        let sq_count = state.tx_slots.len().max(1) as u32;
+        let sq_index = if meta.has_queue_index {
+            (meta.queue_index as u32 % sq_count) as usize
+        } else {
+            (state.next_sq.fetch_add(1, Ordering::Relaxed) % sq_count) as usize
+        };
+
+        let mut options = TxOptions::default();
+        if meta.has_vlan_tag {
+            options.vlan_tag = meta.vlan_tag;
+        }
+
+        let mut dma_segments = [crate::wq::DmaSegment {
+            device_addr: 0,
+            virt_addr: 0,
+            len: 0,
+        }; 2];
+        let mut dma_segment_count = 0usize;
+        for segment in segments.iter() {
+            if dma_segment_count == dma_segments.len() {
+                return AbiError::InvalidParam as i32;
+            }
+            let segment_len = segment.len().get();
+            let Ok(len) = u32::try_from(segment_len) else {
+                return AbiError::InvalidParam as i32;
+            };
+            dma_segments[dma_segment_count] = crate::wq::DmaSegment {
+                device_addr: segment.device_addr(),
+                virt_addr: segment.cpu_ptr() as u64,
+                len,
+            };
+            dma_segment_count += 1;
+        }
+        if dma_segment_count == 0 {
+            return AbiError::InvalidParam as i32;
+        }
+
+        let Some(lease_id) = submission.lease_id() else {
+            return AbiError::InvalidParam as i32;
+        };
+        if state.tx_slots[sq_index].iter().any(|slot| {
+            slot.as_ref()
+                .is_some_and(|record| record.completion.is_some())
+        }) {
+            return AbiError::IoError as i32;
+        }
+        // SAFETY: the submission's lease retains each DMA segment through matching
+        // CQ completion or acknowledged queue destruction, including unknown post.
+        let result = unsafe {
+            state.device.transmit_segments(
+                sq_index,
+                &dma_segments[..dma_segment_count],
+                total_len,
+                options,
+            )
+        };
+        let counter = match result {
+            Ok(counter) => counter,
+            Err(crate::error::WorkSubmissionError::NotPublished(cause)) => {
+                state.tx_errors = state.tx_errors.saturating_add(1);
+                log::warn!(target: "mlx5", "TX was not published: {cause:?}");
+                return AbiError::IoError as i32;
+            }
+            Err(crate::error::WorkSubmissionError::OutcomeUnknown { counter, cause, .. }) => {
+                // ABI success transfers the submission owner even when transport
+                // outcome is uncertain; returning rejection would release live DMA.
+                state.device.state = crate::device::DeviceState::Error;
+                log::error!(target: "mlx5", "TX publication uncertain; retaining counter {counter}: {cause:?}");
+                counter
+            }
+        };
+        let slot = counter as usize % state.tx_slots[sq_index].len();
+        assert!(
+            state.tx_slots[sq_index][slot].is_none(),
+            "active counter owns its unique submission slot"
+        );
+        state.tx_slots[sq_index][slot] = Some(TxLeaseRecord {
+            lease: lease_id,
+            counter,
+            completion: None,
+        });
+        state.tx_packets = state.tx_packets.saturating_add(1);
+        schedule_runtime_poll_locked(state);
+        AbiError::Success as i32
+    })
 }
 
 extern "C" fn mlx5_netdev_poll(_opaque: u64, _if_id: u16) -> i32 {
-    let mut guard = MLX5_STANDALONE_STATE.lock();
-    let Mlx5Slot::Live(state) = &mut *guard else {
-        return AbiError::NotInitialized as i32;
-    };
-    if !matches!(state.lifecycle, Mlx5Lifecycle::Running) {
-        return AbiError::IoError as i32;
-    }
-    poll_device_locked(state);
-    AbiError::Success as i32
+    kernel_api::abi::driver::invoke_cell(kernel_api::abi::driver::AbiError::IoError as i32, || {
+        let mut guard = MLX5_STANDALONE_STATE.lock();
+        let Mlx5Slot::Live(state) = &mut *guard else {
+            return AbiError::NotInitialized as i32;
+        };
+        if !matches!(state.lifecycle, Mlx5Lifecycle::Running) {
+            return AbiError::IoError as i32;
+        }
+        poll_device_locked(state);
+        AbiError::Success as i32
+    })
 }
 
 extern "C" fn mlx5_netdev_handle_event(
@@ -1045,87 +1054,95 @@ extern "C" fn mlx5_netdev_handle_event(
     _if_id: u16,
     _event: AbiNetDriverEvent,
 ) -> i32 {
-    mlx5_netdev_poll(0, 0)
+    kernel_api::abi::driver::invoke_cell(kernel_api::abi::driver::AbiError::IoError as i32, || {
+        mlx5_netdev_poll(0, 0)
+    })
 }
 
 extern "C" fn mlx5_netdev_stats(_opaque: u64, out: *mut AbiNetPortStats) -> i32 {
-    if out.is_null() {
-        return AbiError::InvalidParam as i32;
-    }
+    kernel_api::abi::driver::invoke_cell(kernel_api::abi::driver::AbiError::IoError as i32, || {
+        if out.is_null() {
+            return AbiError::InvalidParam as i32;
+        }
 
-    let guard = MLX5_STANDALONE_STATE.lock();
-    let Mlx5Slot::Live(state) = &*guard else {
-        return AbiError::NotInitialized as i32;
-    };
-
-    unsafe {
-        *out = AbiNetPortStats {
-            tx_packets: state.tx_packets,
-            rx_packets: state.rx_packets,
-            tx_errors: state.tx_errors,
-            rx_errors: state.rx_errors,
-            initialized: state.device.is_active(),
-            reserved: [0; 7],
+        let guard = MLX5_STANDALONE_STATE.lock();
+        let Mlx5Slot::Live(state) = &*guard else {
+            return AbiError::NotInitialized as i32;
         };
-    }
-    AbiError::Success as i32
+
+        unsafe {
+            *out = AbiNetPortStats {
+                tx_packets: state.tx_packets,
+                rx_packets: state.rx_packets,
+                tx_errors: state.tx_errors,
+                rx_errors: state.rx_errors,
+                initialized: state.device.is_active(),
+                reserved: [0; 7],
+            };
+        }
+        AbiError::Success as i32
+    })
 }
 
 /// A failed finalization retains the complete owner, including callbacks and
 /// packet leases. No runtime is destroyed merely because poll admission stops.
 extern "C" fn mlx5_netdev_stop(_opaque: u64) -> i32 {
-    let mut state = {
-        let mut guard = MLX5_STANDALONE_STATE.lock();
-        match core::mem::replace(&mut *guard, Mlx5Slot::Finalizing) {
-            Mlx5Slot::Live(mut state) => {
-                if !matches!(state.lifecycle, Mlx5Lifecycle::DeviceStopped) {
-                    state.lifecycle = Mlx5Lifecycle::StopRequested;
+    kernel_api::abi::driver::invoke_cell(kernel_api::abi::driver::AbiError::IoError as i32, || {
+        let mut state = {
+            let mut guard = MLX5_STANDALONE_STATE.lock();
+            match core::mem::replace(&mut *guard, Mlx5Slot::Finalizing) {
+                Mlx5Slot::Live(mut state) => {
+                    if !matches!(state.lifecycle, Mlx5Lifecycle::DeviceStopped) {
+                        state.lifecycle = Mlx5Lifecycle::StopRequested;
+                    }
+                    state
                 }
-                state
-            }
-            slot @ Mlx5Slot::Finalizing => {
-                *guard = slot;
-                return AbiError::DeviceBusy as i32;
-            }
-            slot @ (Mlx5Slot::Vacant | Mlx5Slot::AcquisitionFailed(_)) => {
-                *guard = slot;
-                return AbiError::Success as i32;
-            }
-        }
-    };
-    let result = if matches!(state.lifecycle, Mlx5Lifecycle::DeviceStopped) {
-        Ok(())
-    } else {
-        // SAFETY: Finalizing excludes new TX/RX/poll callbacks. This local
-        // owner retains queue, command, packet and MMIO on every outcome.
-        unsafe { state.device.teardown_full() }
-    };
-    let status = match result {
-        Err(Mlx5Error::CommandTransportBusy) => AbiError::DeviceBusy,
-        Err(cause) => {
-            log::warn!(target: "mlx5", "Shutdown incomplete; owner retained: {cause}");
-            AbiError::IoError
-        }
-        Ok(()) => {
-            state.lifecycle = Mlx5Lifecycle::DeviceStopped;
-            match return_stopped_packets(&mut state) {
-                Ok(()) => {
-                    state.runtime = None;
-                    AbiError::Success
+                slot @ Mlx5Slot::Finalizing => {
+                    *guard = slot;
+                    return AbiError::DeviceBusy as i32;
                 }
-                Err(cause) => {
-                    log::warn!(target: "mlx5", "Stopped packet owner retained: {cause:?}");
-                    AbiError::DeviceBusy
+                slot @ (Mlx5Slot::Vacant | Mlx5Slot::AcquisitionFailed(_)) => {
+                    *guard = slot;
+                    return AbiError::Success as i32;
                 }
             }
-        }
-    };
-    *MLX5_STANDALONE_STATE.lock() = Mlx5Slot::Live(state);
-    status as i32
+        };
+        let result = if matches!(state.lifecycle, Mlx5Lifecycle::DeviceStopped) {
+            Ok(())
+        } else {
+            // SAFETY: Finalizing excludes new TX/RX/poll callbacks. This local
+            // owner retains queue, command, packet and MMIO on every outcome.
+            unsafe { state.device.teardown_full() }
+        };
+        let status = match result {
+            Err(Mlx5Error::CommandTransportBusy) => AbiError::DeviceBusy,
+            Err(cause) => {
+                log::warn!(target: "mlx5", "Shutdown incomplete; owner retained: {cause}");
+                AbiError::IoError
+            }
+            Ok(()) => {
+                state.lifecycle = Mlx5Lifecycle::DeviceStopped;
+                match return_stopped_packets(&mut state) {
+                    Ok(()) => {
+                        state.runtime = None;
+                        AbiError::Success
+                    }
+                    Err(cause) => {
+                        log::warn!(target: "mlx5", "Stopped packet owner retained: {cause:?}");
+                        AbiError::DeviceBusy
+                    }
+                }
+            }
+        };
+        *MLX5_STANDALONE_STATE.lock() = Mlx5Slot::Live(state);
+        status as i32
+    })
 }
 
 extern "C" fn mlx5_netdev_set_interrupts_enabled(_opaque: u64, _enabled: bool) -> i32 {
-    AbiError::Success as i32
+    kernel_api::abi::driver::invoke_cell(kernel_api::abi::driver::AbiError::IoError as i32, || {
+        AbiError::Success as i32
+    })
 }
 
 fn netdev_registration(state: &Mlx5StandaloneState) -> AbiNetPortRegistration {

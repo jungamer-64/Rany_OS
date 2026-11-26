@@ -196,42 +196,62 @@ pub fn handle_fault(
     id: DriverDomainId,
     fault_kind: FaultKind,
 ) -> Result<FaultAction, DriverDomainError> {
-    crate::io::log::early_print("[DCF] handle_fault: enter\n");
     let manager = driver_domain_manager();
+    let recovery = manager.with_cell_mut(id, |cell| publish_fault(cell, &fault_kind))?;
+    recover_fault(id, fault_kind, recovery)
+}
 
-    // 障害情報を記録
-    let (restart_policy, consecutive, domain_id, rollback_cell) =
-        manager.with_cell_mut(id, |cell| {
-            cell.consecutive_faults += 1;
-            let consecutive = cell.consecutive_faults;
+struct FaultRecovery {
+    restart_policy: RestartPolicy,
+    consecutive: u32,
+    domain_id: Option<DomainId>,
+    rollback: bool,
+}
 
-            let record = FaultRecord::new(fault_kind.clone(), consecutive);
-            cell.fault_history.push(record);
+fn publish_fault(cell: &mut super::DriverDomain, fault_kind: &FaultKind) -> FaultRecovery {
+    cell.consecutive_faults += 1;
+    let consecutive = cell.consecutive_faults;
 
-            // Publish recovery direction before Faulted is observable. The
-            // update owns replacement and teardown even if this call is preempted.
-            let rollback_cell = cell.cell_id.filter(|cell_id| {
-                matches!(
-                    cell.hot_swap_state,
-                    HotSwapState::Switching | HotSwapState::Validating | HotSwapState::Error
-                ) && crate::loader::live_update::live_update_manager().mark_health_failure(
-                    cell_id.as_u64(),
-                    format!("Fault during live update: {fault_kind}"),
-                )
-            });
-            cell.transition_to(DriverDomainState::Faulted);
-            cell.stats.record_fault();
+    let record = FaultRecord::new(fault_kind.clone(), consecutive);
+    cell.fault_history.push(record);
 
-            (
-                cell.restart_policy,
-                consecutive,
-                cell.domain_id,
-                rollback_cell,
-            )
-        })?;
+    // Publish recovery direction before Faulted is observable. The
+    // update owns replacement and teardown even if this call is preempted.
+    let rollback_cell = cell.cell_id.filter(|cell_id| {
+        matches!(
+            cell.hot_swap_state,
+            HotSwapState::Switching | HotSwapState::Validating | HotSwapState::Error
+        ) && crate::loader::live_update::live_update_manager().mark_health_failure(
+            cell_id.as_u64(),
+            format!("Fault during live update: {fault_kind}"),
+        )
+    });
+    cell.transition_to(DriverDomainState::Faulted);
+    cell.stats.record_fault();
+
+    FaultRecovery {
+        restart_policy: cell.restart_policy,
+        consecutive,
+        domain_id: cell.domain_id,
+        rollback: rollback_cell.is_some(),
+    }
+}
+
+fn recover_fault(
+    id: DriverDomainId,
+    fault_kind: FaultKind,
+    recovery: FaultRecovery,
+) -> Result<FaultAction, DriverDomainError> {
+    let manager = driver_domain_manager();
+    let FaultRecovery {
+        restart_policy,
+        consecutive,
+        domain_id,
+        rollback,
+    } = recovery;
     super::stats::global_stats().on_fault();
 
-    if let Some(_cell_id) = rollback_cell {
+    if rollback {
         // The service may have completed the accepted request while this call
         // was suspended. Its Idle publication is the completion boundary.
         if manager.with_cell(id, |cell| {
@@ -530,6 +550,29 @@ fn restart_waiting(cause: &DriverDomainError) -> bool {
             DriverError::Busy { .. },
         )) => true,
         _ => false,
+    }
+}
+
+pub(crate) fn progress_cell_panics() {
+    let manager = driver_domain_manager();
+    for (cell, domain) in crate::loader::take_cell_panics() {
+        let Some(id) = manager.find_by_domain(domain) else {
+            crate::domain::handle_domain_panic(domain, String::from("Cell callback panicked"));
+            continue;
+        };
+        let fault = FaultKind::Panic(String::from("Cell callback panicked"));
+        let recovery = manager.with_cell_mut(id, |owner| {
+            (owner.cell_id == Some(cell)).then(|| publish_fault(owner, &fault))
+        });
+        match recovery {
+            Ok(Some(recovery)) => {
+                if let Err(error) = recover_fault(id, fault, recovery) {
+                    log::error!("Could not process cell {} panic: {error}", cell.as_u64());
+                }
+            }
+            Ok(None) => {}
+            Err(error) => log::warn!("Could not admit cell {} panic: {error}", cell.as_u64()),
+        }
     }
 }
 

@@ -80,36 +80,38 @@ fn healthy(runtime: &Runtime) -> bool {
     reason = "startup copies the host's initialized runtime table and retains its cookie through acknowledged stop"
 )]
 unsafe extern "C" fn start(opaque: u64, table: *const AbiNetPortRuntime) -> i32 {
-    // SAFETY: the host owns this registration and retains its instance and code.
-    let Some(runtime) = (unsafe { runtime(opaque) }) else {
-        return AbiError::InvalidParam as i32;
-    };
-    if table.is_null()
-        || !table
-            .addr()
-            .is_multiple_of(core::mem::align_of::<AbiNetPortRuntime>())
-    {
-        return AbiError::InvalidParam as i32;
-    }
-    // SAFETY: the start ABI lends an initialized, aligned table synchronously;
-    // its cookie and callbacks remain live until this port acknowledges stop.
-    let binding = unsafe { *table };
-    if binding.abi_size < core::mem::size_of::<AbiNetPortRuntime>() as u64 {
-        return AbiError::InvalidParam as i32;
-    }
-    {
-        let mut phase = runtime.phase.write();
-        if !matches!(*phase, Phase::Configured(_)) {
-            return AbiError::DeviceBusy as i32;
+    kernel_api::abi::driver::invoke_cell(kernel_api::abi::driver::AbiError::IoError as i32, || {
+        // SAFETY: the host owns this registration and retains its instance and code.
+        let Some(runtime) = (unsafe { runtime(opaque) }) else {
+            return AbiError::InvalidParam as i32;
+        };
+        if table.is_null()
+            || !table
+                .addr()
+                .is_multiple_of(core::mem::align_of::<AbiNetPortRuntime>())
+        {
+            return AbiError::InvalidParam as i32;
         }
-        let current = core::mem::replace(&mut *phase, Phase::Transitioning);
-        if let Phase::Configured(network) = current {
-            *phase = Phase::Live { network, binding };
+        // SAFETY: the start ABI lends an initialized, aligned table synchronously;
+        // its cookie and callbacks remain live until this port acknowledges stop.
+        let binding = unsafe { *table };
+        if binding.abi_size < core::mem::size_of::<AbiNetPortRuntime>() as u64 {
+            return AbiError::InvalidParam as i32;
         }
-    }
-    // Publication precedes RX acquisition. Failed startup therefore preserves
-    // the binding and every posted packet for the host's unregister retry.
-    poll_runtime(runtime) as i32
+        {
+            let mut phase = runtime.phase.write();
+            if !matches!(*phase, Phase::Configured(_)) {
+                return AbiError::DeviceBusy as i32;
+            }
+            let current = core::mem::replace(&mut *phase, Phase::Transitioning);
+            if let Phase::Configured(network) = current {
+                *phase = Phase::Live { network, binding };
+            }
+        }
+        // Publication precedes RX acquisition. Failed startup therefore preserves
+        // the binding and every posted packet for the host's unregister retry.
+        poll_runtime(runtime) as i32
+    })
 }
 
 #[expect(
@@ -117,18 +119,20 @@ unsafe extern "C" fn start(opaque: u64, table: *const AbiNetPortRuntime) -> i32 
     reason = "the host retains the registered instance throughout interface binding"
 )]
 unsafe extern "C" fn bind(opaque: u64, _if_id: u16) -> i32 {
-    // SAFETY: this is a host-guarded call on the retained registration.
-    let Some(runtime) = (unsafe { runtime(opaque) }) else {
-        return AbiError::InvalidParam as i32;
-    };
-    if matches!(
-        *runtime.phase.read(),
-        Phase::Configured(_) | Phase::Live { .. }
-    ) {
-        AbiError::Success as i32
-    } else {
-        AbiError::DeviceBusy as i32
-    }
+    kernel_api::abi::driver::invoke_cell(kernel_api::abi::driver::AbiError::IoError as i32, || {
+        // SAFETY: this is a host-guarded call on the retained registration.
+        let Some(runtime) = (unsafe { runtime(opaque) }) else {
+            return AbiError::InvalidParam as i32;
+        };
+        if matches!(
+            *runtime.phase.read(),
+            Phase::Configured(_) | Phase::Live { .. }
+        ) {
+            AbiError::Success as i32
+        } else {
+            AbiError::DeviceBusy as i32
+        }
+    })
 }
 
 #[expect(
@@ -140,58 +144,60 @@ unsafe extern "C" fn submit_tx_chain(
     input: *const AbiNetTxSubmission,
     meta: AbiNetTxMeta,
 ) -> i32 {
-    // SAFETY: callback admission retains the exact opaque instance and code.
-    let Some(runtime) = (unsafe { runtime(opaque) }) else {
-        return AbiError::InvalidParam as i32;
-    };
-    if input.is_null()
-        || !input
-            .addr()
-            .is_multiple_of(core::mem::align_of::<AbiNetTxSubmission>())
-    {
-        return AbiError::InvalidParam as i32;
-    }
-    let phase = runtime.phase.read();
-    let Phase::Live { network, binding } = &*phase else {
-        return AbiError::DeviceBusy as i32;
-    };
-    if !healthy(runtime) {
-        return AbiError::IoError as i32;
-    }
-    let pairs = match network.enabled_pairs() {
-        Ok(pairs) => pairs,
-        Err(cause) => return AbiError::from(cause) as i32,
-    };
-    let pair = if meta.has_queue_index {
-        meta.queue_index
-    } else {
-        (network.next_tx.fetch_add(1, Ordering::Relaxed) % u32::from(pairs)) as u16
-    };
-    let Some(slot) = network.tx.get(usize::from(pair)) else {
-        return AbiError::InvalidParam as i32;
-    };
-    let mut slot = slot.lock();
-    let CommandStage::Ready(queue) = &mut slot.stage else {
-        return AbiError::DeviceBusy as i32;
-    };
-    // SAFETY: the submission ABI lends initialized descriptors for this call;
-    // Live retains the issuing runtime and admitted immutable packet DMA until
-    // notification. Configured implies successful DRIVER_OK and MQ ACK.
-    let outcome = unsafe { queue.submit(&*input, meta) };
-    match outcome {
-        Ok(QueueSubmitOutcome::Published { .. }) => AbiError::Success as i32,
-        Ok(QueueSubmitOutcome::PublicationUncertain { .. }) => {
-            // Accepted publication keeps the host packet lease. Rejecting here
-            // would permit reuse while hardware might still read the payload.
-            runtime.transport.add_status(status::VIRTIO_STATUS_FAILED);
-            request_poll(runtime, *binding);
-            AbiError::Success as i32
+    kernel_api::abi::driver::invoke_cell(kernel_api::abi::driver::AbiError::IoError as i32, || {
+        // SAFETY: callback admission retains the exact opaque instance and code.
+        let Some(runtime) = (unsafe { runtime(opaque) }) else {
+            return AbiError::InvalidParam as i32;
+        };
+        if input.is_null()
+            || !input
+                .addr()
+                .is_multiple_of(core::mem::align_of::<AbiNetTxSubmission>())
+        {
+            return AbiError::InvalidParam as i32;
         }
-        Err(cause) => {
-            runtime.counters.tx_errors.fetch_add(1, Ordering::Relaxed);
-            cause as i32
+        let phase = runtime.phase.read();
+        let Phase::Live { network, binding } = &*phase else {
+            return AbiError::DeviceBusy as i32;
+        };
+        if !healthy(runtime) {
+            return AbiError::IoError as i32;
         }
-    }
+        let pairs = match network.enabled_pairs() {
+            Ok(pairs) => pairs,
+            Err(cause) => return AbiError::from(cause) as i32,
+        };
+        let pair = if meta.has_queue_index {
+            meta.queue_index
+        } else {
+            (network.next_tx.fetch_add(1, Ordering::Relaxed) % u32::from(pairs)) as u16
+        };
+        let Some(slot) = network.tx.get(usize::from(pair)) else {
+            return AbiError::InvalidParam as i32;
+        };
+        let mut slot = slot.lock();
+        let CommandStage::Ready(queue) = &mut slot.stage else {
+            return AbiError::DeviceBusy as i32;
+        };
+        // SAFETY: the submission ABI lends initialized descriptors for this call;
+        // Live retains the issuing runtime and admitted immutable packet DMA until
+        // notification. Configured implies successful DRIVER_OK and MQ ACK.
+        let outcome = unsafe { queue.submit(&*input, meta) };
+        match outcome {
+            Ok(QueueSubmitOutcome::Published { .. }) => AbiError::Success as i32,
+            Ok(QueueSubmitOutcome::PublicationUncertain { .. }) => {
+                // Accepted publication keeps the host packet lease. Rejecting here
+                // would permit reuse while hardware might still read the payload.
+                runtime.transport.add_status(status::VIRTIO_STATUS_FAILED);
+                request_poll(runtime, *binding);
+                AbiError::Success as i32
+            }
+            Err(cause) => {
+                runtime.counters.tx_errors.fetch_add(1, Ordering::Relaxed);
+                cause as i32
+            }
+        }
+    })
 }
 
 #[expect(
@@ -199,11 +205,13 @@ unsafe extern "C" fn submit_tx_chain(
     reason = "ordinary host polling retains the instance and foreign runtime across synchronous lease callbacks"
 )]
 unsafe extern "C" fn poll(opaque: u64, _if_id: u16) -> i32 {
-    // SAFETY: the host retains this instance and code through this callback.
-    let Some(runtime) = (unsafe { runtime(opaque) }) else {
-        return AbiError::InvalidParam as i32;
-    };
-    poll_runtime(runtime) as i32
+    kernel_api::abi::driver::invoke_cell(kernel_api::abi::driver::AbiError::IoError as i32, || {
+        // SAFETY: the host retains this instance and code through this callback.
+        let Some(runtime) = (unsafe { runtime(opaque) }) else {
+            return AbiError::InvalidParam as i32;
+        };
+        poll_runtime(runtime) as i32
+    })
 }
 
 #[expect(
@@ -211,14 +219,16 @@ unsafe extern "C" fn poll(opaque: u64, _if_id: u16) -> i32 {
     reason = "the normal event task retains the same callback admission and instance as poll"
 )]
 unsafe extern "C" fn handle_event(opaque: u64, _if_id: u16, event: AbiNetDriverEvent) -> i32 {
-    if !matches!(event.kind, 1..=3) {
-        return AbiError::InvalidParam as i32;
-    }
-    // SAFETY: event delivery is under the host's retained callback gate.
-    let Some(runtime) = (unsafe { runtime(opaque) }) else {
-        return AbiError::InvalidParam as i32;
-    };
-    poll_runtime(runtime) as i32
+    kernel_api::abi::driver::invoke_cell(kernel_api::abi::driver::AbiError::IoError as i32, || {
+        if !matches!(event.kind, 1..=3) {
+            return AbiError::InvalidParam as i32;
+        }
+        // SAFETY: event delivery is under the host's retained callback gate.
+        let Some(runtime) = (unsafe { runtime(opaque) }) else {
+            return AbiError::InvalidParam as i32;
+        };
+        poll_runtime(runtime) as i32
+    })
 }
 
 #[expect(
@@ -371,30 +381,32 @@ fn request_poll(runtime: &Runtime, binding: AbiNetPortRuntime) {
     reason = "the host lends an aligned mutable stats slot for one synchronous observation"
 )]
 unsafe extern "C" fn stats(opaque: u64, output: *mut AbiNetPortStats) -> i32 {
-    // SAFETY: the retained callback gate owns the opaque instance.
-    let Some(runtime) = (unsafe { runtime(opaque) }) else {
-        return AbiError::InvalidParam as i32;
-    };
-    if output.is_null()
-        || !output
-            .addr()
-            .is_multiple_of(core::mem::align_of::<AbiNetPortStats>())
-    {
-        return AbiError::InvalidParam as i32;
-    }
-    let value = AbiNetPortStats {
-        tx_packets: runtime.counters.tx_packets.load(Ordering::Relaxed),
-        rx_packets: runtime.counters.rx_packets.load(Ordering::Relaxed),
-        tx_errors: runtime.counters.tx_errors.load(Ordering::Relaxed),
-        rx_errors: runtime.counters.rx_errors.load(Ordering::Relaxed),
-        initialized: matches!(*runtime.phase.read(), Phase::Live { .. }) && healthy(runtime),
-        reserved: [0; 7],
-    };
-    // SAFETY: this callback lends exclusive initialized output storage.
-    unsafe {
-        output.write(value);
-    }
-    AbiError::Success as i32
+    kernel_api::abi::driver::invoke_cell(kernel_api::abi::driver::AbiError::IoError as i32, || {
+        // SAFETY: the retained callback gate owns the opaque instance.
+        let Some(runtime) = (unsafe { runtime(opaque) }) else {
+            return AbiError::InvalidParam as i32;
+        };
+        if output.is_null()
+            || !output
+                .addr()
+                .is_multiple_of(core::mem::align_of::<AbiNetPortStats>())
+        {
+            return AbiError::InvalidParam as i32;
+        }
+        let value = AbiNetPortStats {
+            tx_packets: runtime.counters.tx_packets.load(Ordering::Relaxed),
+            rx_packets: runtime.counters.rx_packets.load(Ordering::Relaxed),
+            tx_errors: runtime.counters.tx_errors.load(Ordering::Relaxed),
+            rx_errors: runtime.counters.rx_errors.load(Ordering::Relaxed),
+            initialized: matches!(*runtime.phase.read(), Phase::Live { .. }) && healthy(runtime),
+            reserved: [0; 7],
+        };
+        // SAFETY: this callback lends exclusive initialized output storage.
+        unsafe {
+            output.write(value);
+        }
+        AbiError::Success as i32
+    })
 }
 
 #[expect(
@@ -402,18 +414,20 @@ unsafe extern "C" fn stats(opaque: u64, output: *mut AbiNetPortStats) -> i32 {
     reason = "the host retains this instance until resource-preserving stop reports completion"
 )]
 unsafe extern "C" fn stop(opaque: u64) -> i32 {
-    // SAFETY: unregister keeps callback admission, opaque owner and code live.
-    let Some(runtime) = (unsafe { runtime(opaque) }) else {
-        return AbiError::InvalidParam as i32;
-    };
-    let timer = match timer() {
-        Ok(timer) => timer,
-        Err(cause) => return AbiError::from(cause) as i32,
-    };
-    match runtime.advance_stop(timer.current_tick_ms()) {
-        Ok(()) => AbiError::Success as i32,
-        Err(cause) => AbiError::from(cause) as i32,
-    }
+    kernel_api::abi::driver::invoke_cell(kernel_api::abi::driver::AbiError::IoError as i32, || {
+        // SAFETY: unregister keeps callback admission, opaque owner and code live.
+        let Some(runtime) = (unsafe { runtime(opaque) }) else {
+            return AbiError::InvalidParam as i32;
+        };
+        let timer = match timer() {
+            Ok(timer) => timer,
+            Err(cause) => return AbiError::from(cause) as i32,
+        };
+        match runtime.advance_stop(timer.current_tick_ms()) {
+            Ok(()) => AbiError::Success as i32,
+            Err(cause) => AbiError::from(cause) as i32,
+        }
+    })
 }
 
 #[expect(
@@ -421,39 +435,41 @@ unsafe extern "C" fn stop(opaque: u64) -> i32 {
     reason = "the host retains the instance through interrupt policy updates and completion recheck"
 )]
 unsafe extern "C" fn set_interrupts_enabled(opaque: u64, enabled: bool) -> i32 {
-    // SAFETY: adaptive polling holds the retained registration callback gate.
-    let Some(runtime) = (unsafe { runtime(opaque) }) else {
-        return AbiError::InvalidParam as i32;
-    };
-    {
-        let phase = runtime.phase.read();
-        let Phase::Live { network, .. } = &*phase else {
-            return AbiError::DeviceBusy as i32;
+    kernel_api::abi::driver::invoke_cell(kernel_api::abi::driver::AbiError::IoError as i32, || {
+        // SAFETY: adaptive polling holds the retained registration callback gate.
+        let Some(runtime) = (unsafe { runtime(opaque) }) else {
+            return AbiError::InvalidParam as i32;
         };
-        for slot in &network.rx {
-            let mut slot = slot.lock();
-            let RxStage::Ready(queue) = &mut slot.stage else {
+        {
+            let phase = runtime.phase.read();
+            let Phase::Live { network, .. } = &*phase else {
                 return AbiError::DeviceBusy as i32;
             };
-            if queue.set_interrupts_enabled(enabled).is_err() {
-                return AbiError::IoError as i32;
+            for slot in &network.rx {
+                let mut slot = slot.lock();
+                let RxStage::Ready(queue) = &mut slot.stage else {
+                    return AbiError::DeviceBusy as i32;
+                };
+                if queue.set_interrupts_enabled(enabled).is_err() {
+                    return AbiError::IoError as i32;
+                }
+            }
+            for slot in &network.tx {
+                let mut slot = slot.lock();
+                let CommandStage::Ready(queue) = &mut slot.stage else {
+                    return AbiError::DeviceBusy as i32;
+                };
+                if queue.set_interrupts_enabled(enabled).is_err() {
+                    return AbiError::IoError as i32;
+                }
             }
         }
-        for slot in &network.tx {
-            let mut slot = slot.lock();
-            let CommandStage::Ready(queue) = &mut slot.stage else {
-                return AbiError::DeviceBusy as i32;
-            };
-            if queue.set_interrupts_enabled(enabled).is_err() {
-                return AbiError::IoError as i32;
-            }
+        // A used entry could precede the flag update without raising an interrupt.
+        // Rechecking after enable consumes that work before the host goes idle.
+        if enabled {
+            poll_runtime(runtime) as i32
+        } else {
+            AbiError::Success as i32
         }
-    }
-    // A used entry could precede the flag update without raising an interrupt.
-    // Rechecking after enable consumes that work before the host goes idle.
-    if enabled {
-        poll_runtime(runtime) as i32
-    } else {
-        AbiError::Success as i32
-    }
+    })
 }

@@ -40,6 +40,9 @@ rustflags = [
     "link-arg=-Map=kernel-test.map",
 ]
 
+[target.x86_64-exorust-cell]
+rustflags = ["-C", "link-arg=--eh-frame-hdr", "-C", "link-arg=-Tcell-unwind.ld"]
+
 # Keep SHA-2 within the kernel target's declared instruction set.
 # Apply the same dependency configuration to host tests and kernel builds.
 [target.'cfg(all())']

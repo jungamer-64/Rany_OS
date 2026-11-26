@@ -85,7 +85,31 @@ fn start(_ctx: &mut DriverContext) -> i32 {
     0
 }
 
+/// Runtime fixture handshake: arm one stop, then acknowledge Rust cleanup.
+#[unsafe(no_mangle)]
+pub static __exorust_driver_cell_probe_panic_state: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
+struct PanicCleanup;
+impl Drop for PanicCleanup {
+    fn drop(&mut self) {
+        __exorust_driver_cell_probe_panic_state.store(2, core::sync::atomic::Ordering::Release);
+    }
+}
+
 fn stop(_ctx: &mut DriverContext) -> i32 {
+    if __exorust_driver_cell_probe_panic_state
+        .compare_exchange(
+            1,
+            0,
+            core::sync::atomic::Ordering::AcqRel,
+            core::sync::atomic::Ordering::Relaxed,
+        )
+        .is_ok()
+    {
+        let _cleanup = PanicCleanup;
+        panic!("driver_cell_probe stop panic");
+    }
     0
 }
 

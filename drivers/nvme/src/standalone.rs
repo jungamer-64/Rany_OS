@@ -646,63 +646,70 @@ unsafe extern "C" fn submit(
     opaque: u64,
     input: *const AbiBlockSubmission,
 ) -> AbiBlockSubmitOutcome {
-    if opaque == 0 || input.is_null() {
-        return AbiBlockSubmitOutcome::rejected(AbiError::InvalidParam);
-    }
-    // SAFETY: both borrows last only for this serialized synchronous callback.
-    let runtime = unsafe { runtime(opaque) };
-    // SAFETY: the host lends one initialized submission until this call returns.
-    let input = unsafe { &*input };
-    let state = runtime.state.lock();
-    let Phase::Ready(controller, namespace) = &state.phase else {
-        return AbiBlockSubmitOutcome::rejected(AbiError::DeviceBusy);
-    };
-    let Some(queue) = controller.queue(1) else {
-        return AbiBlockSubmitOutcome::rejected(AbiError::DeviceNotFound);
-    };
-    let command = match namespace.admit_submission(input) {
-        Ok(command) => command,
-        Err(cause) => return AbiBlockSubmitOutcome::rejected(cause),
-    };
-    let notification = CompletionNotification {
-        request_id: input.request_id,
-        lease_id: input.lease_id,
-        generation: input.generation,
-        bytes: input.bytes,
-    };
-    let mut activation_status = AbiError::Success as i32;
-    let outcome = queue.submit_notified(
-        &controller.registers,
-        |cid| match command {
-            crate::identify::BlockCommand::Transfer {
-                transfer,
-                address,
-                prp2,
-            } => Some(NvmeCommand::transfer(cid, transfer, address, prp2)),
-            crate::identify::BlockCommand::Flush => NvmeCommand::flush(cid, namespace.namespace()),
-        },
-        notification,
+    kernel_api::abi::driver::invoke_cell(
+        AbiBlockSubmitOutcome::outcome_unknown(AbiError::IoError),
         || {
-            // SAFETY: all descriptor/CID storage is reserved, no hardware has been
-            // notified, and this unique cookie is invoked once before return.
-            activation_status = unsafe { (input.activate)(input.activation) };
-            if activation_status == AbiError::Success as i32 {
-                Ok(())
-            } else {
-                Err(SubmitFailure::QueueFault)
+            if opaque == 0 || input.is_null() {
+                return AbiBlockSubmitOutcome::rejected(AbiError::InvalidParam);
+            }
+            // SAFETY: both borrows last only for this serialized synchronous callback.
+            let runtime = unsafe { runtime(opaque) };
+            // SAFETY: the host lends one initialized submission until this call returns.
+            let input = unsafe { &*input };
+            let state = runtime.state.lock();
+            let Phase::Ready(controller, namespace) = &state.phase else {
+                return AbiBlockSubmitOutcome::rejected(AbiError::DeviceBusy);
+            };
+            let Some(queue) = controller.queue(1) else {
+                return AbiBlockSubmitOutcome::rejected(AbiError::DeviceNotFound);
+            };
+            let command = match namespace.admit_submission(input) {
+                Ok(command) => command,
+                Err(cause) => return AbiBlockSubmitOutcome::rejected(cause),
+            };
+            let notification = CompletionNotification {
+                request_id: input.request_id,
+                lease_id: input.lease_id,
+                generation: input.generation,
+                bytes: input.bytes,
+            };
+            let mut activation_status = AbiError::Success as i32;
+            let outcome = queue.submit_notified(
+                &controller.registers,
+                |cid| match command {
+                    crate::identify::BlockCommand::Transfer {
+                        transfer,
+                        address,
+                        prp2,
+                    } => Some(NvmeCommand::transfer(cid, transfer, address, prp2)),
+                    crate::identify::BlockCommand::Flush => {
+                        NvmeCommand::flush(cid, namespace.namespace())
+                    }
+                },
+                notification,
+                || {
+                    // SAFETY: all descriptor/CID storage is reserved, no hardware has been
+                    // notified, and this unique cookie is invoked once before return.
+                    activation_status = unsafe { (input.activate)(input.activation) };
+                    if activation_status == AbiError::Success as i32 {
+                        Ok(())
+                    } else {
+                        Err(SubmitFailure::QueueFault)
+                    }
+                },
+            );
+            match outcome {
+                Ok(_) => AbiBlockSubmitOutcome::accepted(),
+                Err(cause) => AbiBlockSubmitOutcome::rejected(
+                    if activation_status != AbiError::Success as i32 {
+                        AbiError::from_raw(activation_status)
+                    } else {
+                        submission_error(cause)
+                    },
+                ),
             }
         },
-    );
-    match outcome {
-        Ok(_) => AbiBlockSubmitOutcome::accepted(),
-        Err(cause) => {
-            AbiBlockSubmitOutcome::rejected(if activation_status != AbiError::Success as i32 {
-                AbiError::from_raw(activation_status)
-            } else {
-                submission_error(cause)
-            })
-        }
-    }
+    )
 }
 
 fn submission_error(cause: SubmitFailure) -> AbiError {
@@ -725,72 +732,74 @@ unsafe extern "C" fn poll(
     capacity: usize,
     written: *mut usize,
 ) -> i32 {
-    if opaque == 0 || written.is_null() || (capacity != 0 && output.is_null()) {
-        return AbiError::InvalidParam as i32;
-    }
-    // SAFETY: the ABI lends one writable count for this call.
-    unsafe {
-        written.write(0);
-    }
-    // SAFETY: the registration retains the runtime through this callback.
-    let runtime = unsafe { runtime(opaque) };
-    let mut state = runtime.state.lock();
-    for index in 0..capacity.min(usize::from(state.depth - 1)) {
-        let Phase::Ready(controller, _) = &state.phase else {
-            return AbiError::DeviceBusy as i32;
-        };
-        let completed = match controller.poll_completion(1) {
-            Ok(Some(completed)) => completed,
-            Ok(None) => break,
-            Err(cause) => {
-                log::error!("NVMe completion retained after queue fault: {cause:?}");
+    kernel_api::abi::driver::invoke_cell(kernel_api::abi::driver::AbiError::IoError as i32, || {
+        if opaque == 0 || written.is_null() || (capacity != 0 && output.is_null()) {
+            return AbiError::InvalidParam as i32;
+        }
+        // SAFETY: the ABI lends one writable count for this call.
+        unsafe {
+            written.write(0);
+        }
+        // SAFETY: the registration retains the runtime through this callback.
+        let runtime = unsafe { runtime(opaque) };
+        let mut state = runtime.state.lock();
+        for index in 0..capacity.min(usize::from(state.depth - 1)) {
+            let Phase::Ready(controller, _) = &state.phase else {
+                return AbiError::DeviceBusy as i32;
+            };
+            let completed = match controller.poll_completion(1) {
+                Ok(Some(completed)) => completed,
+                Ok(None) => break,
+                Err(cause) => {
+                    log::error!("NVMe completion retained after queue fault: {cause:?}");
+                    return AbiError::IoError as i32;
+                }
+            };
+            let CompletedCommand::Notification {
+                completion,
+                notification,
+            } = completed
+            else {
+                // No native submissions enter this runtime. Retain an unexpected
+                // consumed owner instead of manufacturing a host notification.
+                let phase = core::mem::replace(&mut state.phase, Phase::Transitioning);
+                let Phase::Ready(controller, namespace) = phase else {
+                    unreachable!("the state lock retains the Ready phase through CQ consumption");
+                };
+                state.phase = Phase::CompletionFault {
+                    controller,
+                    namespace,
+                    command: completed,
+                };
                 return AbiError::IoError as i32;
+            };
+            let result = AbiBlockCompletion {
+                request_id: notification.request_id,
+                lease_id: notification.lease_id,
+                generation: notification.generation,
+                status: if completion.status().is_success() {
+                    AbiError::Success
+                } else {
+                    AbiError::IoError
+                } as i32,
+                bytes: if completion.status().is_success() {
+                    notification.bytes
+                } else {
+                    0
+                },
+            };
+            // SAFETY: index is within the borrowed capacity, and each initialized
+            // entry is reported before another completion can be consumed.
+            unsafe {
+                output.add(index).write(result);
             }
-        };
-        let CompletedCommand::Notification {
-            completion,
-            notification,
-        } = completed
-        else {
-            // No native submissions enter this runtime. Retain an unexpected
-            // consumed owner instead of manufacturing a host notification.
-            let phase = core::mem::replace(&mut state.phase, Phase::Transitioning);
-            let Phase::Ready(controller, namespace) = phase else {
-                unreachable!("the state lock retains the Ready phase through CQ consumption");
-            };
-            state.phase = Phase::CompletionFault {
-                controller,
-                namespace,
-                command: completed,
-            };
-            return AbiError::IoError as i32;
-        };
-        let result = AbiBlockCompletion {
-            request_id: notification.request_id,
-            lease_id: notification.lease_id,
-            generation: notification.generation,
-            status: if completion.status().is_success() {
-                AbiError::Success
-            } else {
-                AbiError::IoError
-            } as i32,
-            bytes: if completion.status().is_success() {
-                notification.bytes
-            } else {
-                0
-            },
-        };
-        // SAFETY: index is within the borrowed capacity, and each initialized
-        // entry is reported before another completion can be consumed.
-        unsafe {
-            output.add(index).write(result);
+            // SAFETY: the same unique output count remains valid through the call.
+            unsafe {
+                written.write(index + 1);
+            }
         }
-        // SAFETY: the same unique output count remains valid through the call.
-        unsafe {
-            written.write(index + 1);
-        }
-    }
-    AbiError::Success as i32
+        AbiError::Success as i32
+    })
 }
 
 #[expect(
@@ -798,13 +807,15 @@ unsafe extern "C" fn poll(
     reason = "observes readiness while the registration retains its runtime"
 )]
 extern "C" fn is_ready(opaque: u64) -> bool {
-    if opaque == 0 {
-        return false;
-    }
-    // SAFETY: the block host retains the registered opaque and driver code.
-    let runtime = unsafe { runtime(opaque) };
-    let state = runtime.state.lock();
-    matches!(&state.phase, Phase::Ready(controller, _) if controller.queue(1).is_some_and(|queue| queue.outstanding() != 0))
+    kernel_api::abi::driver::invoke_cell(false, || {
+        if opaque == 0 {
+            return false;
+        }
+        // SAFETY: the block host retains the registered opaque and driver code.
+        let runtime = unsafe { runtime(opaque) };
+        let state = runtime.state.lock();
+        matches!(&state.phase, Phase::Ready(controller, _) if controller.queue(1).is_some_and(|queue| queue.outstanding() != 0))
+    })
 }
 
 #[expect(
@@ -812,20 +823,22 @@ extern "C" fn is_ready(opaque: u64) -> bool {
     reason = "advances one retirement observation for the host-owned runtime"
 )]
 unsafe extern "C" fn stop(opaque: u64) -> i32 {
-    if opaque == 0 {
-        return AbiError::InvalidParam as i32;
-    }
-    // SAFETY: the host retains its registration until this stop succeeds.
-    let runtime = unsafe { runtime(opaque) };
-    let Some(timer) = kernel_api::service::time::try_instance() else {
-        return AbiError::IoError as i32;
-    };
-    match runtime.advance_stop(timer.current_tick_ms()) {
-        Ok(()) => AbiError::Success as i32,
-        Err(KapiError::Busy) => AbiError::DeviceBusy as i32,
-        Err(KapiError::Timeout) => AbiError::Timeout as i32,
-        Err(_) => AbiError::IoError as i32,
-    }
+    kernel_api::abi::driver::invoke_cell(kernel_api::abi::driver::AbiError::IoError as i32, || {
+        if opaque == 0 {
+            return AbiError::InvalidParam as i32;
+        }
+        // SAFETY: the host retains its registration until this stop succeeds.
+        let runtime = unsafe { runtime(opaque) };
+        let Some(timer) = kernel_api::service::time::try_instance() else {
+            return AbiError::IoError as i32;
+        };
+        match runtime.advance_stop(timer.current_tick_ms()) {
+            Ok(()) => AbiError::Success as i32,
+            Err(KapiError::Busy) => AbiError::DeviceBusy as i32,
+            Err(KapiError::Timeout) => AbiError::Timeout as i32,
+            Err(_) => AbiError::IoError as i32,
+        }
+    })
 }
 
 #[allow(

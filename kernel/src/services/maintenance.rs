@@ -161,6 +161,7 @@ impl KernelServiceHost {
         // LOOP_PROOF: mode=event; reason=The service host owns this worker, each iteration waits for an admitted timer and reports timer failure to that owner.;
         loop {
             crate::integration::progress_device_retirement();
+            crate::driver_domain::fault::progress_cell_panics();
             crate::driver_domain::lifecycle::progress_startups();
             crate::driver_domain::fault::progress_restarts();
             crate::loader::live_update::poll_pending_updates();

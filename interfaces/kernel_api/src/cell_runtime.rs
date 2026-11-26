@@ -8,7 +8,7 @@
 //! when compiled as standalone cdylib. Includes:
 //!
 //! - Global allocator delegating to kernel's `KernelApiV4` table
-//! - Panic handler calling kernel panic abort hook
+//! - Panic unwinding confined to cell callbacks
 //! - Logging via kernel API table
 //!
 //! ## Usage
@@ -22,7 +22,7 @@
 //!
 //! The runtime stubs will automatically be linked when building as cdylib.
 
-use crate::abi::driver::{KERNEL_API_SYMBOL, KernelApiV4};
+use crate::abi::driver::KernelApiV4;
 use core::alloc::{GlobalAlloc, Layout};
 use core::mem::{align_of, size_of};
 use core::ptr;
@@ -35,14 +35,14 @@ use core::ptr;
 // loader via the symbol table.
 
 unsafe extern "C" {
-    static __exorust_kernel_api_v4: KernelApiV4;
+    static __exorust_kernel_api_v5: KernelApiV4;
 }
 
 #[inline]
 fn kernel_api() -> &'static KernelApiV4 {
     // SAFETY: The kernel always exports this symbol before loading standalone
     // cells, and the table is immutable after publication.
-    unsafe { &__exorust_kernel_api_v4 }
+    unsafe { &__exorust_kernel_api_v5 }
 }
 
 #[inline]
@@ -77,17 +77,6 @@ fn call_log(msg: &[u8]) {
     }
     let api = kernel_api();
     (api.log)(0, msg.as_ptr(), msg.len());
-}
-
-#[inline]
-fn call_panic_abort(msg: &[u8]) -> ! {
-    let api = kernel_api();
-    if has_runtime_entries(api)
-        && let Some(panic_abort) = api.panic_abort
-    {
-        panic_abort(msg.as_ptr(), msg.len());
-    }
-    panic!("Kernel API panic entry missing ({KERNEL_API_SYMBOL})");
 }
 
 // ============================================================================
@@ -232,33 +221,24 @@ macro_rules! register_cell_runtime {
         #[cfg(target_os = "none")]
         #[panic_handler]
         fn _cell_panic_handler(info: &::core::panic::PanicInfo) -> ! {
-            // Format panic message (limited, no_std)
-            match info.location() {
-                Some(loc) => $crate::cell_runtime::log_panic(loc.file(), loc.line()),
-                None => $crate::cell_runtime::log_panic("unknown", 0),
-            }
-            $crate::cell_runtime::panic_abort()
+            $crate::cell_runtime::begin_cell_panic(info)
         }
     };
 }
 
-/// Log panic information to kernel
-pub fn log_panic(file: &str, line: u32) {
-    // Build a simple panic message
-    let _ = line;
-    let prefix = b"Cell panic at ";
-    let suffix = b"\n";
-
-    call_log(prefix);
-    call_log(file.as_bytes());
-    // For line number, we'd need to format - skip for simplicity
-    call_log(suffix);
+#[cfg(target_os = "none")]
+pub fn begin_cell_panic(info: &core::panic::PanicInfo<'_>) -> ! {
+    if !info.can_unwind() {
+        abort_uncontained_panic();
+    }
+    let message = info.message().as_str().unwrap_or("Cell panic");
+    resume_cell_panic(alloc::boxed::Box::new(message))
 }
 
-/// Abort after panic - never returns
-pub fn panic_abort() -> ! {
-    let msg = b"Cell panic - aborting";
-    call_panic_abort(msg)
+#[cfg(target_os = "none")]
+pub(crate) fn resume_cell_panic(payload: alloc::boxed::Box<dyn core::any::Any + Send>) -> ! {
+    let _ = unwinding::panic::begin_panic(payload);
+    abort_uncontained_panic()
 }
 
 // ============================================================================
@@ -273,4 +253,37 @@ pub fn panic_abort() -> ! {
 /// ```
 pub fn log(msg: &str) {
     call_log(msg.as_bytes());
+}
+
+/// Invokes a cell callback with an image-local unwind boundary. Linked-in
+/// drivers use the kernel's native panic policy.
+pub fn invoke<R>(on_panic: R, call: impl FnOnce() -> R) -> R {
+    #[cfg(target_os = "none")]
+    {
+        match unwinding::panic::catch_unwind(call) {
+            Ok(result) => result,
+            Err(payload) => {
+                let message = payload
+                    .downcast_ref::<&'static str>()
+                    .copied()
+                    .unwrap_or("Cell panic");
+                if let Some(report) = kernel_api().report_cell_panic {
+                    report(message.as_ptr(), message.floor_char_boundary(1024));
+                }
+                on_panic
+            }
+        }
+    }
+    #[cfg(not(target_os = "none"))]
+    {
+        let _ = on_panic;
+        call()
+    }
+}
+
+#[cfg(target_os = "none")]
+fn abort_uncontained_panic() -> ! {
+    // SAFETY: UD2 raises a synchronous processor fault without unwinding or
+    // touching memory. The kernel treats an uncontained fault as terminal.
+    unsafe { core::arch::asm!("ud2", options(noreturn, nomem, nostack)) }
 }

@@ -848,6 +848,20 @@ impl CurrentCpu {
         })
     }
 
+    pub(crate) fn record_caught_cell_panic(
+        &self,
+    ) -> Option<(crate::domain::DomainId, crate::loader::CellId)> {
+        with_owner_access(|| {
+            // SAFETY: only this CPU accesses the installed execution and the
+            // borrow ends before calling into the loader or recovery service.
+            let owned = unsafe { &mut *self.local.owned.get() };
+            let execution = owned.execution.as_mut()?;
+            let cell = execution.cell?;
+            execution.caught_cell_panic = true;
+            Some((execution.subject().domain, cell))
+        })
+    }
+
     pub(crate) fn finalization_authority(
         &self,
         domain: crate::domain::DomainId,
@@ -1054,10 +1068,37 @@ impl ExecutionContextGuard {
     /// Nested guards remain owned on an interrupted task's stack.
     pub(crate) fn leave(self) -> Option<crate::task::ExecutionContext> {
         let mut guard = core::mem::ManuallyDrop::new(self);
-        let previous = guard.previous.take();
-        let execution = guard.current.local.replace_execution(previous);
+        let execution = guard.restore();
         drop(guard.code_lease.take());
         execution
+    }
+
+    fn restore(&mut self) -> Option<crate::task::ExecutionContext> {
+        let parent = self
+            .previous
+            .as_ref()
+            .map(crate::task::ExecutionContext::subject);
+        let execution = self.current.local.replace_execution(self.previous.take());
+        // Nested callbacks can install another execution scope for the same
+        // domain. Keep the caller's observation even after that scope returns.
+        if let (Some(parent), Some(exited)) = (parent, execution.as_ref())
+            && exited.caught_cell_panic
+            && parent.domain == exited.subject().domain
+        {
+            let _ = self.current.record_caught_cell_panic();
+        }
+        execution
+    }
+
+    pub(crate) fn caught_cell_panic(&self) -> bool {
+        with_owner_access(|| {
+            // SAFETY: this guard owns the installed scope while its caller
+            // executes synchronously, and the borrow cannot outlive this call.
+            unsafe { &*self.current.local.owned.get() }
+                .execution
+                .as_ref()
+                .is_some_and(|context| context.caught_cell_panic)
+        })
     }
 
     pub(crate) fn retain_code(mut self, lease: crate::domain::DomainCodeLease) -> Self {
@@ -1068,8 +1109,7 @@ impl ExecutionContextGuard {
 
 impl Drop for ExecutionContextGuard {
     fn drop(&mut self) {
-        let previous = self.previous.take();
-        drop(self.current.local.replace_execution(previous));
+        drop(self.restore());
     }
 }
 

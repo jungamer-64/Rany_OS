@@ -60,22 +60,26 @@ pub struct AbiTaskFuture {
 unsafe impl Send for AbiTaskFuture {}
 
 unsafe extern "C" fn poll_boxed(data: *mut (), waker: *const AbiTaskWaker) -> u8 {
-    // SAFETY: the owning capsule supplies its pinned, uniquely borrowed Box
-    // and a kernel raw waker retained for the entire synchronous poll call.
-    let future = unsafe { &mut *data.cast::<BoxedFuture>() };
-    // SAFETY: the raw borrowed waker remains live until this callback returns.
-    let waker = unsafe { (&*waker).clone_owned() };
-    let mut context = Context::from_waker(&waker);
-    match future.as_mut().poll(&mut context) {
-        Poll::Ready(()) => 0,
-        Poll::Pending => 1,
-    }
+    super::invoke_cell(0, || {
+        // SAFETY: the owning capsule supplies its pinned, uniquely borrowed Box
+        // and a kernel raw waker retained for the entire synchronous poll call.
+        let future = unsafe { &mut *data.cast::<BoxedFuture>() };
+        // SAFETY: the raw borrowed waker remains live until this callback returns.
+        let waker = unsafe { (&*waker).clone_owned() };
+        let mut context = Context::from_waker(&waker);
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(()) => 0,
+            Poll::Pending => 1,
+        }
+    })
 }
 
 unsafe extern "C" fn destroy_boxed(data: *mut ()) {
-    // SAFETY: destruction consumes the sole capsule reference. Its code lease
-    // remains live and no active/suspended poll can reach this transition.
-    drop(unsafe { Box::from_raw(data.cast::<BoxedFuture>()) });
+    super::invoke_cell((), || {
+        // SAFETY: destruction consumes the sole capsule reference. Its code lease
+        // remains live and no active/suspended poll can reach this transition.
+        drop(unsafe { Box::from_raw(data.cast::<BoxedFuture>()) });
+    })
 }
 
 impl AbiTaskFuture {

@@ -346,6 +346,33 @@ where
     f(&mut CELL_REGISTRY.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
+pub(crate) fn record_cell_panic(cell: CellId, domain: crate::domain::DomainId) {
+    with_registry(|registry| {
+        if let Some(entry) = registry.get(cell) {
+            entry.code.record_panic(domain);
+        }
+    });
+}
+
+/// Collects reports outside the cell and drops the loader lock before recovery.
+pub(crate) fn take_cell_panics() -> Vec<(CellId, crate::domain::DomainId)> {
+    with_registry(|registry| {
+        let mut reports = Vec::new();
+        for (&cell, entry) in &registry.cells {
+            if !entry.code.has_pending_panic() {
+                continue;
+            }
+            if reports.try_reserve(1).is_err() {
+                break;
+            }
+            if let Some(domain) = entry.code.take_panic() {
+                reports.push((cell, domain));
+            }
+        }
+        reports
+    })
+}
+
 /// ロードエラー
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoadError {

@@ -22,7 +22,8 @@
 - fault / restart policy:
   [../../kernel/src/driver_domain/fault.rs](../../kernel/src/driver_domain/fault.rs)
 - `Canonical requirement`:
-  - proxy 経由で panic を `Err` 化する
+  - スタンドアロンセルの Rust パニックは、イメージ内のコールバック境界で捕捉する。境界はカーネルに失敗値を返し、サービスホストが障害を記録したセル世代の停止や再起動を進める。
+  - ドメイン proxy は呼び出し中に捕捉されたセルパニックを `Err` として返す。
   - `PoisonLock<T>` による共有状態の汚染検出
   - fault history と restart policy の保持
 - `RestartPolicy::Never` / `OnPanic` / `Always` は現行の driver-domain recovery contract である。

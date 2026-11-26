@@ -676,27 +676,32 @@ unsafe extern "C" fn submit(
     opaque: u64,
     input: *const AbiBlockSubmission,
 ) -> AbiBlockSubmitOutcome {
-    if input.is_null()
-        || !input
-            .addr()
-            .is_multiple_of(core::mem::align_of::<AbiBlockSubmission>())
-    {
-        return AbiBlockSubmitOutcome::rejected(AbiError::InvalidParam);
-    }
-    // SAFETY: the host owns the registration and serializes this runtime call.
-    let Some(runtime) = (unsafe { runtime(opaque) }) else {
-        return AbiBlockSubmitOutcome::rejected(AbiError::InvalidParam);
-    };
-    // SAFETY: the block ABI lends one initialized, aligned submission for this
-    // call. Neither the reference nor its activation cookie is retained.
-    let input = unsafe { &*input };
-    let mut phase = runtime.phase.lock();
-    let Phase::Ready(queue) = &mut *phase else {
-        return AbiBlockSubmitOutcome::rejected(AbiError::DeviceBusy);
-    };
-    // SAFETY: the host retains payload DMA for this generation; its activation
-    // callback excludes CPU access before our descriptors can be published.
-    unsafe { queue.submit(&runtime.transport, input) }
+    kernel_api::abi::driver::invoke_cell(
+        AbiBlockSubmitOutcome::outcome_unknown(AbiError::IoError),
+        || {
+            if input.is_null()
+                || !input
+                    .addr()
+                    .is_multiple_of(core::mem::align_of::<AbiBlockSubmission>())
+            {
+                return AbiBlockSubmitOutcome::rejected(AbiError::InvalidParam);
+            }
+            // SAFETY: the host owns the registration and serializes this runtime call.
+            let Some(runtime) = (unsafe { runtime(opaque) }) else {
+                return AbiBlockSubmitOutcome::rejected(AbiError::InvalidParam);
+            };
+            // SAFETY: the block ABI lends one initialized, aligned submission for this
+            // call. Neither the reference nor its activation cookie is retained.
+            let input = unsafe { &*input };
+            let mut phase = runtime.phase.lock();
+            let Phase::Ready(queue) = &mut *phase else {
+                return AbiBlockSubmitOutcome::rejected(AbiError::DeviceBusy);
+            };
+            // SAFETY: the host retains payload DMA for this generation; its activation
+            // callback excludes CPU access before our descriptors can be published.
+            unsafe { queue.submit(&runtime.transport, input) }
+        },
+    )
 }
 
 #[expect(
@@ -709,49 +714,51 @@ unsafe extern "C" fn poll(
     capacity: usize,
     written: *mut usize,
 ) -> i32 {
-    if written.is_null()
-        || !written
-            .addr()
-            .is_multiple_of(core::mem::align_of::<usize>())
-        || (capacity != 0
-            && (output.is_null()
-                || !output
-                    .addr()
-                    .is_multiple_of(core::mem::align_of::<AbiBlockCompletion>())))
-    {
-        return AbiError::InvalidParam as i32;
-    }
-    // SAFETY: the host provides one exclusive writable count for this call.
-    unsafe { written.write(0) };
-    // SAFETY: the callback owner retains runtime/code through acknowledged stop.
-    let Some(runtime) = (unsafe { runtime(opaque) }) else {
-        return AbiError::InvalidParam as i32;
-    };
-    let mut phase = runtime.phase.lock();
-    let queue = match &mut *phase {
-        Phase::Ready(queue) | Phase::Draining(queue) => queue,
-        Phase::Closed => return AbiError::Success as i32,
-        _ => return AbiError::DeviceBusy as i32,
-    };
-    for index in 0..capacity.min(queue.capacity()) {
-        let completion = match queue.poll_completion() {
-            Ok(Some(completion)) => completion,
-            Ok(None) => return AbiError::Success as i32,
-            Err(cause) => {
-                log::error!(
-                    "VirtIO block completion retained after {index} notifications: {cause:?}"
-                );
-                return AbiError::IoError as i32;
-            }
+    kernel_api::abi::driver::invoke_cell(kernel_api::abi::driver::AbiError::IoError as i32, || {
+        if written.is_null()
+            || !written
+                .addr()
+                .is_multiple_of(core::mem::align_of::<usize>())
+            || (capacity != 0
+                && (output.is_null()
+                    || !output
+                        .addr()
+                        .is_multiple_of(core::mem::align_of::<AbiBlockCompletion>())))
+        {
+            return AbiError::InvalidParam as i32;
+        }
+        // SAFETY: the host provides one exclusive writable count for this call.
+        unsafe { written.write(0) };
+        // SAFETY: the callback owner retains runtime/code through acknowledged stop.
+        let Some(runtime) = (unsafe { runtime(opaque) }) else {
+            return AbiError::InvalidParam as i32;
         };
-        // SAFETY: index < capacity; the host lends an exclusive valid output
-        // array. One consumed notification is immediately committed to it.
-        unsafe { output.add(index).write(completion) };
-        // SAFETY: this count records the exact committed prefix, including when
-        // the next iteration fails without consuming another notification.
-        unsafe { written.write(index + 1) };
-    }
-    AbiError::Success as i32
+        let mut phase = runtime.phase.lock();
+        let queue = match &mut *phase {
+            Phase::Ready(queue) | Phase::Draining(queue) => queue,
+            Phase::Closed => return AbiError::Success as i32,
+            _ => return AbiError::DeviceBusy as i32,
+        };
+        for index in 0..capacity.min(queue.capacity()) {
+            let completion = match queue.poll_completion() {
+                Ok(Some(completion)) => completion,
+                Ok(None) => return AbiError::Success as i32,
+                Err(cause) => {
+                    log::error!(
+                        "VirtIO block completion retained after {index} notifications: {cause:?}"
+                    );
+                    return AbiError::IoError as i32;
+                }
+            };
+            // SAFETY: index < capacity; the host lends an exclusive valid output
+            // array. One consumed notification is immediately committed to it.
+            unsafe { output.add(index).write(completion) };
+            // SAFETY: this count records the exact committed prefix, including when
+            // the next iteration fails without consuming another notification.
+            unsafe { written.write(index + 1) };
+        }
+        AbiError::Success as i32
+    })
 }
 
 #[expect(
@@ -759,15 +766,18 @@ unsafe extern "C" fn poll(
     reason = "the registration lends its retained Runtime for a readiness observation"
 )]
 unsafe extern "C" fn is_ready(opaque: u64) -> bool {
-    // SAFETY: the host retains and serializes the registered opaque runtime.
-    let Some(runtime) = (unsafe { runtime(opaque) }) else {
-        return false;
-    };
-    let phase = runtime.phase.lock();
-    let current = runtime.transport.status();
-    matches!(*phase, Phase::Ready(_))
-        && current & status::VIRTIO_STATUS_DRIVER_OK != 0
-        && current & (status::VIRTIO_STATUS_FAILED | status::VIRTIO_STATUS_DEVICE_NEEDS_RESET) == 0
+    kernel_api::abi::driver::invoke_cell(false, || {
+        // SAFETY: the host retains and serializes the registered opaque runtime.
+        let Some(runtime) = (unsafe { runtime(opaque) }) else {
+            return false;
+        };
+        let phase = runtime.phase.lock();
+        let current = runtime.transport.status();
+        matches!(*phase, Phase::Ready(_))
+            && current & status::VIRTIO_STATUS_DRIVER_OK != 0
+            && current & (status::VIRTIO_STATUS_FAILED | status::VIRTIO_STATUS_DEVICE_NEEDS_RESET)
+                == 0
+    })
 }
 
 #[expect(
@@ -775,21 +785,23 @@ unsafe extern "C" fn is_ready(opaque: u64) -> bool {
     reason = "the retained callback owner requests one bounded, resource-preserving shutdown observation"
 )]
 unsafe extern "C" fn stop(opaque: u64) -> i32 {
-    // SAFETY: the host owns this registration until stop acknowledges completion.
-    let Some(runtime) = (unsafe { runtime(opaque) }) else {
-        return AbiError::InvalidParam as i32;
-    };
-    if matches!(*runtime.phase.lock(), Phase::Closed) {
-        return AbiError::Success as i32;
-    }
-    let timer = match timer() {
-        Ok(timer) => timer,
-        Err(_) => return AbiError::IoError as i32,
-    };
-    match runtime.advance_stop(timer.current_tick_ms()) {
-        Ok(()) => AbiError::Success as i32,
-        Err(cause) => AbiError::from(cause) as i32,
-    }
+    kernel_api::abi::driver::invoke_cell(kernel_api::abi::driver::AbiError::IoError as i32, || {
+        // SAFETY: the host owns this registration until stop acknowledges completion.
+        let Some(runtime) = (unsafe { runtime(opaque) }) else {
+            return AbiError::InvalidParam as i32;
+        };
+        if matches!(*runtime.phase.lock(), Phase::Closed) {
+            return AbiError::Success as i32;
+        }
+        let timer = match timer() {
+            Ok(timer) => timer,
+            Err(_) => return AbiError::IoError as i32,
+        };
+        match runtime.advance_stop(timer.current_tick_ms()) {
+            Ok(()) => AbiError::Success as i32,
+            Err(cause) => AbiError::from(cause) as i32,
+        }
+    })
 }
 
 #[cfg(test)]

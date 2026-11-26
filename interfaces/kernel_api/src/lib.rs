@@ -4,6 +4,10 @@
 
 #![no_std]
 #![feature(allocator_ext)]
+#![cfg_attr(
+    all(target_os = "none", feature = "cell_runtime"),
+    feature(panic_can_unwind)
+)]
 #![allow(clippy::doc_markdown)]
 #![allow(clippy::missing_const_for_fn)]
 #![allow(clippy::use_self)]
@@ -43,6 +47,9 @@ mod driver_abi_impl;
 #[cfg(feature = "cell_runtime")]
 #[path = "cell_runtime.rs"]
 mod runtime_impl;
+
+#[cfg(all(target_os = "none", feature = "cell_runtime", not(panic = "unwind")))]
+compile_error!("standalone cell callbacks require panic=unwind");
 
 #[cfg(feature = "cell_runtime")]
 pub mod cell_runtime {

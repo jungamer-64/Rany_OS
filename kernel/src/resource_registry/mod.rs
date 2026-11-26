@@ -1096,7 +1096,7 @@ unsafe impl NetDevicePort for NetdevPortAdapter {
         submission: TxPacketSubmission<'_>,
         meta: NetTxMeta,
     ) -> Result<(), &'static str> {
-        let _execution = self
+        let execution = self
             .callbacks
             .enter(crate::domain::registry::ResourceInvocation::Operation)
             .map_err(|_| "network callback owner is not runnable")?;
@@ -1144,7 +1144,12 @@ unsafe impl NetDevicePort for NetdevPortAdapter {
         let status = unsafe {
             (self.registration.submit_tx_chain)(self.registration.opaque, &abi_submission, abi_meta)
         };
-        if AbiErrorCode::from_raw(status).is_success() {
+        let panicked = execution
+            .and_then(crate::cpu::ExecutionContextGuard::leave)
+            .is_some_and(|context| context.caught_cell_panic);
+        // The device may have accepted the submission before the callback
+        // panicked. Keep its packet lease until completion or device stop.
+        if panicked || AbiErrorCode::from_raw(status).is_success() {
             Ok(())
         } else {
             Err("standalone netdev tx failed")

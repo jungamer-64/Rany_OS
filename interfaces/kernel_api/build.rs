@@ -8,6 +8,11 @@ use std::process::Command;
 mod abi_hash;
 use abi_hash::calculate_abi_hash;
 fn main() {
+    if env::var_os("CARGO_FEATURE_CELL_RUNTIME").is_some()
+        && env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("none")
+    {
+        println!("cargo:rerun-if-changed=../../cell-unwind.ld");
+    }
     println!("cargo:rerun-if-changed=build/abi_hash.rs");
     println!("cargo:rerun-if-changed=src/driver_abi/async_driver.rs");
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();

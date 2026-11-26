@@ -47,5 +47,5 @@ fn selected_driver_vtable() -> *const DriverVTable {
 
 #[unsafe(export_name = "_exorust_driver_entry")]
 pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
-    selected_driver_vtable()
+    kernel_api::abi::driver::invoke_cell(core::ptr::null(), || selected_driver_vtable())
 }

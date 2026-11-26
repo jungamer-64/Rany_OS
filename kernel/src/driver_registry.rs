@@ -1526,6 +1526,27 @@ extern "C" fn kernel_abi_heap_dealloc(ptr: *mut u8, size: usize) {
     unsafe { alloc::alloc::dealloc(ptr, layout) }
 }
 
+extern "C" fn kernel_abi_report_cell_panic(msg_ptr: *const u8, msg_len: usize) {
+    let Some(current) = crate::cpu::CurrentCpu::acquire() else {
+        return;
+    };
+    let Some((domain, cell)) = current.record_caught_cell_panic() else {
+        return;
+    };
+    if domain == crate::domain::DomainId::KERNEL {
+        return;
+    }
+    crate::loader::record_cell_panic(cell, domain);
+    // SAFETY: the cell's catch boundary retains the image and the supplied
+    // UTF-8 message for this synchronous read.
+    if !msg_ptr.is_null() && msg_len <= 1024 {
+        let bytes = unsafe { core::slice::from_raw_parts(msg_ptr, msg_len) };
+        if let Ok(message) = core::str::from_utf8(bytes) {
+            log::error!(target: "cell", "Cell panic in {domain}: {message}");
+        }
+    }
+}
+
 extern "C" fn kernel_abi_current_domain_id() -> u64 {
     #[cfg(all(
         test,
@@ -1658,7 +1679,7 @@ extern "C" fn kernel_abi_ipc_recv_raw(handle: u64, out_raw: *mut AbiRRefRaw) -> 
 }
 
 #[unsafe(no_mangle)]
-pub static __exorust_kernel_api_v4: KernelApiV4 = KernelApiV4 {
+pub static __exorust_kernel_api_v5: KernelApiV4 = KernelApiV4 {
     abi_version: KERNEL_API_ABI_VERSION,
     abi_size: core::mem::size_of::<KernelApiV4>() as u64,
     task_waker_abi: kernel_api::abi::driver::TASK_WAKER_ABI,
@@ -1680,7 +1701,7 @@ pub static __exorust_kernel_api_v4: KernelApiV4 = KernelApiV4 {
     irq_unbind: kernel_abi_irq_unbind,
     heap_alloc: Some(kernel_abi_heap_alloc),
     heap_dealloc: Some(kernel_abi_heap_dealloc),
-    panic_abort: Some(kernel_abi_panic_abort),
+    report_cell_panic: Some(kernel_abi_report_cell_panic),
     current_domain_id: kernel_abi_current_domain_id,
     exchange_alloc_raw: kernel_abi_exchange_alloc_raw,
     exchange_dealloc_raw: kernel_abi_exchange_dealloc_raw,
@@ -1881,7 +1902,7 @@ unsafe extern "C" fn kernel_abi_mmio_release(identity: u64) {
 }
 
 pub(crate) fn kernel_api_v4() -> &'static KernelApiV4 {
-    &__exorust_kernel_api_v4
+    &__exorust_kernel_api_v5
 }
 
 // ============================================================================

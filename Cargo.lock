@@ -528,6 +528,7 @@ dependencies = [
  "hal",
  "log",
  "spin",
+ "unwinding",
 ]
 
 [[package]]
@@ -1068,6 +1069,15 @@ name = "unicode-ident"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
+
+[[package]]
+name = "unwinding"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e0dce4e27cc4259aa7b80bd2fbf724c383ff46d054a165ba453fce1ead3f6ba"
+dependencies = [
+ "gimli",
+]
 
 [[package]]
 name = "usb_driver"

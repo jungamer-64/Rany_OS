@@ -545,7 +545,7 @@ pub fn instance() -> &'static dyn KernelServices {
 
 unsafe extern "C" {
     /// The global KernelApiV4 instance exported by the kernel.
-    static __exorust_kernel_api_v4: KernelApiV4;
+    static __exorust_kernel_api_v5: KernelApiV4;
 }
 
 /// Get the stable ABI kernel API table
@@ -554,7 +554,7 @@ unsafe extern "C" {
 /// through the ABI-stable interface.
 #[inline]
 pub fn abi() -> &'static KernelApiV4 {
-    unsafe { &__exorust_kernel_api_v4 }
+    unsafe { &__exorust_kernel_api_v5 }
 }
 
 #[cfg(feature = "cell_runtime")]
@@ -614,6 +614,8 @@ impl CellDmaLeaseAuthority {
 
 #[cfg(feature = "cell_runtime")]
 struct ReadVisitor<'visitor> {
+    #[cfg(target_os = "none")]
+    panic: Option<alloc::boxed::Box<dyn core::any::Any + Send>>,
     visitor: &'visitor mut dyn FnMut(&[u8]),
 }
 
@@ -625,11 +627,20 @@ unsafe extern "C" fn visit_read_bytes(context: *mut u8, bytes: *const u8, len: u
     // SAFETY: the registry pins the allocation in CpuOwned for this callback;
     // the slice cannot escape the visitor's higher-ranked call boundary.
     let bytes = unsafe { core::slice::from_raw_parts(bytes, len) };
+    #[cfg(target_os = "none")]
+    {
+        // Kernel keeps the DMA borrow until this function returns. Resume
+        // the cell panic only after dma_read/dma_write releases that borrow.
+        context.panic = unwinding::panic::catch_unwind(|| (context.visitor)(bytes)).err();
+    }
+    #[cfg(not(target_os = "none"))]
     (context.visitor)(bytes);
 }
 
 #[cfg(feature = "cell_runtime")]
 struct WriteVisitor<'visitor> {
+    #[cfg(target_os = "none")]
+    panic: Option<alloc::boxed::Box<dyn core::any::Any + Send>>,
     visitor: &'visitor mut dyn FnMut(&mut [u8]),
 }
 
@@ -641,6 +652,13 @@ unsafe extern "C" fn visit_write_bytes(context: *mut u8, bytes: *mut u8, len: us
     // SAFETY: pointer validity, initialization, exclusivity, and callback
     // duration are established by the registry-owned ABI implementation.
     let bytes = unsafe { core::slice::from_raw_parts_mut(bytes, len) };
+    #[cfg(target_os = "none")]
+    {
+        // Kernel keeps the DMA borrow until this function returns. Resume
+        // the cell panic only after dma_read/dma_write releases that borrow.
+        context.panic = unwinding::panic::catch_unwind(|| (context.visitor)(bytes)).err();
+    }
+    #[cfg(not(target_os = "none"))]
     (context.visitor)(bytes);
 }
 
@@ -664,7 +682,11 @@ unsafe impl DmaLeaseAuthority for CellDmaLeaseAuthority {
     }
 
     fn with_cpu_bytes(&self, visitor: &mut dyn FnMut(&[u8])) -> Result<(), DmaLeaseError> {
-        let mut context = ReadVisitor { visitor };
+        let mut context = ReadVisitor {
+            visitor,
+            #[cfg(target_os = "none")]
+            panic: None,
+        };
         // SAFETY: the context and callback are live for the synchronous call;
         // the kernel validates lease ownership/state before exposing bytes.
         let status = unsafe {
@@ -674,11 +696,19 @@ unsafe impl DmaLeaseAuthority for CellDmaLeaseAuthority {
                 visit_read_bytes,
             )
         };
+        #[cfg(target_os = "none")]
+        if let Some(payload) = context.panic {
+            crate::runtime_impl::resume_cell_panic(payload);
+        }
         Self::status(status)
     }
 
     fn with_cpu_bytes_mut(&self, visitor: &mut dyn FnMut(&mut [u8])) -> Result<(), DmaLeaseError> {
-        let mut context = WriteVisitor { visitor };
+        let mut context = WriteVisitor {
+            visitor,
+            #[cfg(target_os = "none")]
+            panic: None,
+        };
         // SAFETY: as above, with exclusive registry access for the callback.
         let status = unsafe {
             (abi().dma_write)(
@@ -687,6 +717,10 @@ unsafe impl DmaLeaseAuthority for CellDmaLeaseAuthority {
                 visit_write_bytes,
             )
         };
+        #[cfg(target_os = "none")]
+        if let Some(payload) = context.panic {
+            crate::runtime_impl::resume_cell_panic(payload);
+        }
         Self::status(status)
     }
 
