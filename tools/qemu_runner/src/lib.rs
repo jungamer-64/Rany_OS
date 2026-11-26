@@ -1420,8 +1420,9 @@ pub fn run_fullboot(config: &RunConfig) -> Result<RunReport, RunError> {
         .arg(serial_arg)
         .arg("-device")
         .arg("isa-debug-exit,iobase=0xf4,iosize=0x04")
+        // The guest may reserve COM1 for KGDB. The debug-exit device must be
+        // allowed to terminate QEMU so its exit status reaches the runner.
         .arg("-no-reboot")
-        .arg("-no-shutdown")
         .arg("-drive")
         .arg(ovmf_code_arg)
         .arg("-drive")
