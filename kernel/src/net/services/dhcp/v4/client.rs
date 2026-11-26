@@ -570,11 +570,7 @@ impl DhcpClient {
         }
 
         if header.chaddr[0..6] != *self.mac_address.as_bytes() {
-            log::warn!(
-                "[NET] DHCP CHADDR does not match client MAC - rejecting (chaddr={:?} expected={:?})",
-                &header.chaddr[0..6],
-                self.mac_address.as_bytes()
-            );
+            log::warn!("[NET] DHCP reply rejected: client hardware address mismatch");
             return Err("CHADDR does not match client MAC");
         }
 

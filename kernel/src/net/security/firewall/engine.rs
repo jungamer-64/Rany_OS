@@ -160,7 +160,7 @@ impl FirewallEngine {
             .position(|r| r.priority > rule.priority)
             .unwrap_or(self.rules.len());
 
-        log::info!("[FIREWALL] rule added: {}", rule);
+        log::info!("[FIREWALL] rule added: id={}", id);
         self.rules.insert(pos, rule);
         id
     }
@@ -168,8 +168,8 @@ impl FirewallEngine {
     /// ルールを削除する
     pub fn remove_rule(&mut self, id: RuleId) -> bool {
         if let Some(pos) = self.rules.iter().position(|r| r.id == id) {
-            let rule = self.rules.remove(pos);
-            log::info!("[FIREWALL] rule removed: {}", rule);
+            self.rules.remove(pos);
+            log::info!("[FIREWALL] rule removed: id={}", id);
             true
         } else {
             false
