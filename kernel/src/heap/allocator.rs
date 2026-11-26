@@ -79,7 +79,7 @@ const _: () = assert!(core::mem::size_of::<AllocHeader>() < super::raw::SMALLEST
 
 unsafe impl GlobalAlloc for KernelHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let _preemption = hal::preemption::PreemptionGuard::enter();
+        let preemption = hal::preemption::PreemptionGuard::enter();
         let requested = layout.size() as u64;
         let Ok((extended, offset)) = Layout::new::<AllocHeader>().extend(layout) else {
             return null_mut();
@@ -120,7 +120,19 @@ unsafe impl GlobalAlloc for KernelHeap {
                 }
             }
             drop(quota);
-            if attempt == ALLOC_OOM_RETRY || !crate::heap::oom::try_free_memory() {
+            if attempt == ALLOC_OOM_RETRY {
+                break;
+            }
+            let reclaimed = oom::reclaim_caches();
+            // Runtime recovery can lock registries or run domain cleanup. A
+            // nested allocator cannot reenter the caller's critical section.
+            if preemption.is_outermost() && crate::interrupts::are_interrupts_enabled() {
+                crate::heap::request_remote_reclaim();
+                if !reclaimed && oom::try_retire_domain() {
+                    continue;
+                }
+            }
+            if !reclaimed {
                 break;
             }
         }

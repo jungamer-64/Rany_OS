@@ -184,6 +184,14 @@ impl PreemptionGuard {
     }
 }
 
+impl PreemptionGuard {
+    /// Whether this guard encloses a bound CPU without an outer guard.
+    pub fn is_outermost(&self) -> bool {
+        self.state
+            .is_some_and(|state| state.depth.load(Ordering::Acquire) == 1)
+    }
+}
+
 impl Drop for PreemptionGuard {
     fn drop(&mut self) {
         if let Some(state) = self.state {

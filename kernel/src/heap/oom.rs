@@ -113,7 +113,7 @@ impl OomKiller {
 // Public API
 // ============================================================================
 
-pub fn try_free_memory() -> bool {
+pub(super) fn reclaim_caches() -> bool {
     let local = crate::heap::reclaim_local_caches();
     let shared = crate::heap::reclaim_shared_pools();
     let physical_reclaimed = local.physical_reclaimed_bytes + shared.reclaimed_bytes;
@@ -126,8 +126,11 @@ pub fn try_free_memory() -> bool {
     if shared.busy_pools != 0 || shared.poisoned_pools != 0 {
         log::warn!("shared pool reclaim deferred: {shared:?}");
     }
-    crate::heap::request_remote_reclaim();
-    local.made_progress() || shared.made_progress() || OOM_KILLER.try_free_memory().is_some()
+    local.made_progress() || shared.made_progress()
+}
+
+pub(super) fn try_retire_domain() -> bool {
+    OOM_KILLER.try_free_memory().is_some()
 }
 
 pub fn stats() -> OomStats {
