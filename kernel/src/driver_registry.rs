@@ -1526,16 +1526,6 @@ extern "C" fn kernel_abi_heap_dealloc(ptr: *mut u8, size: usize) {
     unsafe { alloc::alloc::dealloc(ptr, layout) }
 }
 
-extern "C" fn kernel_abi_panic_abort(msg_ptr: *const u8, msg_len: usize) -> ! {
-    if !msg_ptr.is_null() && msg_len > 0 {
-        let slice = unsafe { core::slice::from_raw_parts(msg_ptr, msg_len) };
-        if let Ok(s) = core::str::from_utf8(slice) {
-            log::error!(target: "cell", "Cell panic: {}", s);
-        }
-    }
-    panic!("Cell panic - aborting");
-}
-
 extern "C" fn kernel_abi_current_domain_id() -> u64 {
     #[cfg(all(
         test,
