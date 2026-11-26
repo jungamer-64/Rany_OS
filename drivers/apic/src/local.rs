@@ -415,6 +415,14 @@ impl LocalApic {
         self.write_icr(destination, u32::from(vector))
     }
 
+    /// Delivers an edge-triggered NMI to one physical APIC destination.
+    ///
+    /// # Errors
+    /// Returns an addressability or delivery timeout error.
+    pub fn send_nmi(&self, destination: ApicDestination) -> Result<(), LocalApicError> {
+        self.write_icr(destination, DELIVERY_NMI)
+    }
+
     /// Sends the INIT assert/deassert sequence to one APIC destination.
     ///
     /// # Errors

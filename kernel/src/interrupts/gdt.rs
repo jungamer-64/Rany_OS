@@ -12,6 +12,8 @@ use x86_64::structures::tss::TaskStateSegment;
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 pub const PAGE_FAULT_IST_INDEX: u16 = 1;
 pub const SMP_IPI_IST_INDEX: u16 = 2;
+#[cfg(target_os = "none")]
+pub(crate) const NMI_IST_INDEX: u16 = 3;
 
 const IST_STACK_SIZE: usize = 16 * 1024;
 
@@ -22,6 +24,8 @@ pub(crate) struct CpuDescriptorTables {
     double_fault_stack: IstStack,
     page_fault_stack: IstStack,
     smp_ipi_stack: IstStack,
+    #[cfg(target_os = "none")]
+    nmi_stack: IstStack,
     tss: UnsafeCell<MaybeUninit<TaskStateSegment>>,
     gdt: UnsafeCell<MaybeUninit<GlobalDescriptorTable>>,
     selectors: UnsafeCell<MaybeUninit<Selectors>>,
@@ -43,6 +47,11 @@ impl CpuDescriptorTables {
             VirtAddr::new(self.page_fault_stack_end());
         tss.interrupt_stack_table[SMP_IPI_IST_INDEX as usize] =
             VirtAddr::new(self.smp_ipi_stack_end());
+        #[cfg(target_os = "none")]
+        {
+            let end = &self.nmi_stack as *const IstStack as u64 + IST_STACK_SIZE as u64;
+            tss.interrupt_stack_table[NMI_IST_INDEX as usize] = VirtAddr::new(end);
+        }
         let tss_storage = unsafe { &mut *self.tss.get() };
         tss_storage.write(tss);
 

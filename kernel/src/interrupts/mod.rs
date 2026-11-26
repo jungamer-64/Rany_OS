@@ -97,6 +97,14 @@ fn build_idt() -> InterruptDescriptorTable {
     let mut idt = InterruptDescriptorTable::new();
 
     // CPU例外ハンドラの設定
+    #[cfg(target_os = "none")]
+    unsafe {
+        idt.non_maskable_interrupt
+            .set_handler_fn(handler_to_x86!(
+                fatal_nmi as extern "x86-interrupt" fn(InterruptStackFrame)
+            ))
+            .set_stack_index(gdt::NMI_IST_INDEX);
+    }
     idt.divide_error.set_handler_fn(handler_to_x86!(
         exceptions::divide_error_handler as extern "x86-interrupt" fn(InterruptStackFrame)
     ));
@@ -314,9 +322,17 @@ pub fn init() {
 /// IDT が初期化されていないと未定義動作
 pub fn enable_interrupts() {
     load_idt_for_current_cpu().unwrap_or_else(|error| panic!("cannot enable interrupts: {error}"));
-    // actually enable
+    #[cfg(target_os = "none")]
+    crate::panic_handler::admit_current_cpu();
     x86_64::instructions::interrupts::enable();
 }
+
+#[cfg(target_os = "none")]
+define_interrupt!(
+    fn fatal_nmi(_stack_frame: InterruptStackFrame) {
+        crate::panic_handler::on_nmi();
+    }
+);
 
 /// 割り込みを無効化
 pub fn disable_interrupts() {

@@ -1,5 +1,52 @@
 //! Fatal kernel diagnostics and stack guards.
 
+mod record;
+
+pub(crate) use record::record;
+
+#[cfg(target_os = "none")]
+mod fail_stop;
+#[cfg(target_os = "none")]
+mod report;
+
+#[cfg(target_os = "none")]
+pub(crate) use fail_stop::{
+    QuiescedPeers, admit_current_cpu, on_nmi, remove_ejected_cpu, stop_current_cpu,
+    stop_if_fatal_requested,
+};
+#[cfg(target_os = "none")]
+pub(crate) use record::reserve_record_page;
+#[cfg(all(not(test), target_os = "none"))]
+pub(crate) use report::{handle_oom, handle_panic};
+
+pub(crate) enum FatalFault {
+    InvalidOpcode,
+    DoubleFault {
+        code: u64,
+    },
+    PageFault {
+        address: u64,
+        code: u64,
+        reason: crate::mm::virt::fault_handler::FaultResult,
+    },
+    MachineCheck,
+}
+
+pub(crate) fn handle_fault(
+    fault: FatalFault,
+    frame: &x86_64::structures::idt::InterruptStackFrame,
+) -> ! {
+    #[cfg(target_os = "none")]
+    {
+        report::handle_fault(fault, frame)
+    }
+    #[cfg(not(target_os = "none"))]
+    {
+        let _ = (fault, frame);
+        panic!("fatal CPU exception")
+    }
+}
+
 const MAX_PANIC_MSG: usize = 1024;
 
 fn bounded_message(message: &str) -> &str {

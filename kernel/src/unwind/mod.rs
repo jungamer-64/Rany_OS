@@ -154,8 +154,12 @@ impl Backtrace {
     /// 現在の位置からバックトレースをキャプチャ
     pub fn capture() -> Self {
         let registers = StackRegisters::read();
+        Self::from_stack_registers(registers.rsp, registers.rbp)
+    }
+
+    pub(crate) fn from_stack_registers(rsp: usize, rbp: usize) -> Self {
         let mut trace = Self::new();
-        trace.capture_frames(registers);
+        trace.capture_frames(StackRegisters { rsp, rbp });
         trace
     }
 
@@ -264,13 +268,12 @@ impl ActiveStack {
         if let Some(bounds) = cpu.descriptor_tables().ist_bounds_containing(rsp) {
             return Some(Self(rsp..bounds.end));
         }
-        if cpu.id() == crate::cpu::CpuId::BOOTSTRAP {
-            let bounds = crate::boot::entry::bootstrap_stack_bounds();
-            if bounds.contains(&rsp) {
-                return Some(Self(rsp..bounds.end));
-            }
-        }
-        None
+        let bounds = if cpu.id() == crate::cpu::CpuId::BOOTSTRAP {
+            crate::boot::entry::bootstrap_stack_bounds()
+        } else {
+            cpu.scheduler_stack()?
+        };
+        bounds.contains(&rsp).then_some(Self(rsp..bounds.end))
     }
 
     fn record_end(&self, address: usize, size: usize) -> Option<usize> {

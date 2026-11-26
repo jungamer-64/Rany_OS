@@ -83,7 +83,7 @@ pub struct BsodInfo<'a> {
     pub file: Option<&'a str>,
     pub line: Option<u32>,
     pub column: Option<u32>,
-    pub backtrace: Option<Backtrace>,
+    pub backtrace: Option<&'a Backtrace>,
     pub registers: Option<RegisterDump>,
     pub error_code: &'a str,
 }
@@ -108,7 +108,7 @@ impl<'a> BsodInfo<'a> {
         self
     }
 
-    pub fn with_backtrace(mut self, backtrace: Backtrace) -> Self {
+    pub fn with_backtrace(mut self, backtrace: &'a Backtrace) -> Self {
         self.backtrace = Some(backtrace);
         self
     }
@@ -231,98 +231,77 @@ impl RegisterDump {
 // Serial Dump Helper
 // ============================================================================
 
-pub fn dump_bsod_info_to_serial(info: &BsodInfo) {
-    use crate::io::log::{early_print, early_print_dec, early_print_hex};
+pub fn dump_bsod_info_to_serial(info: &BsodInfo<'_>) {
+    crate::io::log::print(format_args!("{info}"));
+}
 
-    early_print("\n[PANIC] ");
-    early_print(info.message);
-    early_print("\n");
-
-    if let (Some(file), Some(line), Some(col)) = (info.file, info.line, info.column) {
-        early_print("[PANIC] Location: ");
-        early_print(file);
-        early_print(":");
-        early_print_dec(line as u64);
-        early_print(":");
-        early_print_dec(col as u64);
-        early_print("\n");
-    }
-
-    if let Some(regs) = &info.registers {
-        early_print("[PANIC] Registers:\n");
-        // Row 1
-        early_print("RAX=");
-        early_print_hex(regs.rax);
-        early_print(" RBX=");
-        early_print_hex(regs.rbx);
-        early_print(" RCX=");
-        early_print_hex(regs.rcx);
-        early_print("\n");
-        // Row 2
-        early_print("RDX=");
-        early_print_hex(regs.rdx);
-        early_print(" RSI=");
-        early_print_hex(regs.rsi);
-        early_print(" RDI=");
-        early_print_hex(regs.rdi);
-        early_print("\n");
-        // Row 3
-        early_print("RBP=");
-        early_print_hex(regs.rbp);
-        early_print(" RSP=");
-        early_print_hex(regs.rsp);
-        early_print(" RIP=");
-        early_print_hex(regs.rip);
-        early_print("\n");
-        // Row 4
-        early_print("R8 =");
-        early_print_hex(regs.r8);
-        early_print(" R9 =");
-        early_print_hex(regs.r9);
-        early_print(" R10=");
-        early_print_hex(regs.r10);
-        early_print("\n");
-        // Row 5
-        early_print("R11=");
-        early_print_hex(regs.r11);
-        early_print(" R12=");
-        early_print_hex(regs.r12);
-        early_print(" R13=");
-        early_print_hex(regs.r13);
-        early_print("\n");
-        // Row 6
-        early_print("R14=");
-        early_print_hex(regs.r14);
-        early_print(" R15=");
-        early_print_hex(regs.r15);
-        early_print(" FLG=");
-        early_print_hex(regs.rflags);
-        early_print("\n");
-        // CRs
-        early_print("CR0=");
-        early_print_hex(regs.cr0);
-        early_print(" CR2=");
-        early_print_hex(regs.cr2);
-        early_print(" CR3=");
-        early_print_hex(regs.cr3);
-        early_print("\n");
-    }
-
-    if let Some(bt) = &info.backtrace {
-        early_print("[PANIC] Stack Trace:\n");
-        for entry in bt.iter().take(10) {
-            early_print("  #");
-            early_print_dec(entry.frame_number as u64);
-            early_print(" IP=");
-            early_print_hex(entry.frame.instruction_pointer as u64);
-            early_print(" SP=");
-            early_print_hex(entry.frame.stack_pointer as u64);
-            early_print("\n");
+impl core::fmt::Display for BsodInfo<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        writeln!(f, "\n[PANIC] {}", self.message)?;
+        if let (Some(file), Some(line), Some(column)) = (self.file, self.line, self.column) {
+            writeln!(f, "[PANIC] Location: {file}:{line}:{column}")?;
         }
-        if bt.len() > 10 {
-            early_print("  ... and more\n");
+        if let Some(r) = &self.registers {
+            writeln!(f, "[PANIC] Registers:")?;
+            writeln!(
+                f,
+                "RAX={:#018x} RBX={:#018x} RCX={:#018x}",
+                r.rax, r.rbx, r.rcx
+            )?;
+            writeln!(
+                f,
+                "RDX={:#018x} RSI={:#018x} RDI={:#018x}",
+                r.rdx, r.rsi, r.rdi
+            )?;
+            writeln!(
+                f,
+                "RBP={:#018x} RSP={:#018x} RIP={:#018x}",
+                r.rbp, r.rsp, r.rip
+            )?;
+            writeln!(
+                f,
+                "R8 ={:#018x} R9 ={:#018x} R10={:#018x}",
+                r.r8, r.r9, r.r10
+            )?;
+            writeln!(
+                f,
+                "R11={:#018x} R12={:#018x} R13={:#018x}",
+                r.r11, r.r12, r.r13
+            )?;
+            writeln!(
+                f,
+                "R14={:#018x} R15={:#018x} FLG={:#018x}",
+                r.r14, r.r15, r.rflags
+            )?;
+            writeln!(
+                f,
+                "CR0={:#018x} CR2={:#018x} CR3={:#018x}",
+                r.cr0, r.cr2, r.cr3
+            )?;
         }
+        if let Some(trace) = self.backtrace {
+            write_backtrace(f, trace)?;
+        }
+        Ok(())
     }
+}
+
+pub(crate) fn write_backtrace(
+    f: &mut impl core::fmt::Write,
+    trace: &Backtrace,
+) -> core::fmt::Result {
+    writeln!(f, "[PANIC] Stack Trace:")?;
+    for entry in trace.iter().take(10) {
+        writeln!(
+            f,
+            "  #{} IP={:#018x} SP={:#018x}",
+            entry.frame_number, entry.frame.instruction_pointer, entry.frame.stack_pointer,
+        )?;
+    }
+    if trace.len() > 10 {
+        writeln!(f, "  ... and more")?;
+    }
+    Ok(())
 }
 
 // ============================================================================

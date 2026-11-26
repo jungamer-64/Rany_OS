@@ -143,12 +143,7 @@ pub extern "C" fn _start() -> ! {
     exit_qemu(QemuExitCode::Success);
 }
 
-#[cfg(all(
-    test,
-    not(feature = "full_mm_tests"),
-    not(feature = "std"),
-    not(target_os = "linux")
-))]
+#[cfg(all(test, not(feature = "std"), not(target_os = "linux")))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     unsafe {
@@ -160,17 +155,6 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
         }
     }
     exit_qemu(QemuExitCode::Failed);
-}
-
-#[cfg(all(
-    test,
-    feature = "full_mm_tests",
-    not(feature = "std"),
-    not(target_os = "linux")
-))]
-#[panic_handler]
-pub fn panic(info: &core::panic::PanicInfo) -> ! {
-    crate::panic_handler::panic(info)
 }
 
 // Macro helpers

@@ -799,23 +799,20 @@ impl SysNamespace {
     /// パニック記録
     pub fn panic_record() -> ExoValue<'static> {
         let mut map = BTreeMap::new();
-        if let Some(info) = crate::io::iommu::api::last_panic_record() {
+        if let Some(record) = crate::panic_handler::record() {
             map.insert(String::from("available"), ExoValue::Bool(true));
             map.insert(
-                String::from("phys"),
-                ExoValue::Int(info.phys.as_u64() as i64),
+                String::from("len"),
+                ExoValue::Int(record.message.len() as i64),
             );
-            map.insert(String::from("len"), ExoValue::Int(info.len as i64));
-            map.insert(String::from("total"), ExoValue::Int(info.total as i64));
-            let message = crate::io::iommu::api::last_panic_record_message();
             map.insert(
                 String::from("message"),
-                ExoValue::String(Cow::Owned(
-                    message
-                        .map(String::from)
-                        .unwrap_or_else(|| String::from("<invalid>")),
-                )),
+                ExoValue::String(Cow::Borrowed(record.message)),
             );
+            if let Some(page) = &record.page {
+                map.insert(String::from("phys"), ExoValue::Int(page.phys as i64));
+                map.insert(String::from("total"), ExoValue::Int(page.capacity as i64));
+            }
         } else {
             map.insert(String::from("available"), ExoValue::Bool(false));
         }

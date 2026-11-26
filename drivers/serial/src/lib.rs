@@ -85,12 +85,37 @@ pub enum BaudRate {
 }
 
 pub struct SerialPort {
-    registers: IrqPoisonLock<SerialRegisters>,
+    registers: SerialRegisters,
+    transaction: IrqPoisonLock<()>,
     initialized: AtomicBool,
 }
 
 /// The lock protects DLAB multiplexing and each status/data transaction from
 /// concurrent interrupt handlers, transmitters, and reconfiguration.
+/// Polled output owned by one irrevocable fatal report.
+pub struct EmergencyTransmit<'a> {
+    registers: &'a SerialRegisters,
+    _transaction: Option<exorust_sync::IrqPoisonLockGuard<'a, ()>>,
+}
+
+impl EmergencyTransmit<'_> {
+    /// # Errors
+    /// Returns a timeout when the UART fails to make progress within the budget.
+    pub fn send(&self, byte: u8, spin_budget: usize) -> Result<(), SerialError> {
+        self.registers.send(byte, spin_budget)
+    }
+
+    pub fn drain(&self, spin_budget: usize) -> bool {
+        for _ in 0..spin_budget {
+            if self.registers.line_status().0 & LineStatus::TRANSMITTER_EMPTY != 0 {
+                return true;
+            }
+            core::hint::spin_loop();
+        }
+        false
+    }
+}
+
 struct SerialRegisters {
     ports: IoPortRange,
 }
@@ -118,7 +143,8 @@ impl SerialPort {
             return Err(SerialError::InvalidPortRange);
         }
         Ok(Self {
-            registers: IrqPoisonLock::new(SerialRegisters { ports }),
+            registers: SerialRegisters { ports },
+            transaction: IrqPoisonLock::new(()),
             initialized: AtomicBool::new(false),
         })
     }
@@ -132,10 +158,11 @@ impl SerialPort {
         stop_bits: StopBits,
         parity: Parity,
     ) -> Result<(), SerialError> {
-        let registers = self
-            .registers
+        let _transaction = self
+            .transaction
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        let registers = &self.registers;
         if self.initialized.load(Ordering::Acquire) {
             return Ok(());
         }
@@ -175,33 +202,42 @@ impl SerialPort {
     /// using the UART, or [`SerialError::TransmitTimeout`] when the device does
     /// not become ready within `spin_budget` observations.
     pub fn try_send(&self, byte: u8, spin_budget: usize) -> Result<(), SerialError> {
-        let Some(lock_result) = self.registers.try_lock() else {
+        let Some(lock_result) = self.transaction.try_lock() else {
             return Err(SerialError::Busy);
         };
-        let registers = lock_result.unwrap_or_else(|error| error.into_inner());
+        let _transaction = lock_result.unwrap_or_else(|error| error.into_inner());
+        self.registers.send(byte, spin_budget)
+    }
+}
+
+impl SerialRegisters {
+    fn send(&self, byte: u8, spin_budget: usize) -> Result<(), SerialError> {
         for _ in 0..spin_budget {
-            if registers.line_status().is_tx_ready() {
-                registers.port_at(reg::DATA).write(byte);
+            if self.line_status().is_tx_ready() {
+                self.port_at(reg::DATA).write(byte);
                 return Ok(());
             }
             core::hint::spin_loop();
         }
-        if registers.line_status().is_tx_ready() {
-            registers.port_at(reg::DATA).write(byte);
+        if self.line_status().is_tx_ready() {
+            self.port_at(reg::DATA).write(byte);
             Ok(())
         } else {
             Err(SerialError::TransmitTimeout)
         }
     }
+}
 
+impl SerialPort {
     /// # Errors
     ///
     /// Returns an error if the request is invalid or the required device state cannot be read.
     pub fn try_receive(&self) -> Result<u8, SerialError> {
-        let registers = self
-            .registers
+        let _transaction = self
+            .transaction
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        let registers = &self.registers;
         if registers.line_status().is_data_ready() {
             Ok(registers.port_at(reg::DATA).read())
         } else {
@@ -212,32 +248,62 @@ impl SerialPort {
     ///
     /// Returns false if a concurrent UART transaction prevents the observation.
     pub fn transmitter_idle(&self) -> bool {
-        self.registers.try_lock().is_some_and(|lock_result| {
-            let registers = lock_result.unwrap_or_else(|error| error.into_inner());
-            registers.line_status().0 & LineStatus::TRANSMITTER_EMPTY != 0
+        self.transaction.try_lock().is_some_and(|lock_result| {
+            let _transaction = lock_result.unwrap_or_else(|error| error.into_inner());
+            self.registers.line_status().0 & LineStatus::TRANSMITTER_EMPTY != 0
         })
     }
 
     /// Selects the complete interrupt mask in one serialized register write.
     pub fn set_interrupt_mode(&self, mode: SerialInterruptMode) {
-        let registers = self
-            .registers
+        let _transaction = self
+            .transaction
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        let registers = &self.registers;
         registers.port_at(reg::IER).write(mode.register_value());
     }
 
-    /// Best-effort terminal transition used after panic ownership has been
-    /// established. Failure leaves the current hardware state unchanged.
-    #[must_use]
-    pub fn try_quiesce_for_panic(&self) -> bool {
-        let Some(lock_result) = self.registers.try_lock() else {
-            return false;
-        };
-        let registers = lock_result.unwrap_or_else(|error| error.into_inner());
-        registers.port_at(reg::IER).write(0);
-        registers.port_at(reg::FCR).write(0x07);
-        true
+    /// Takes over a terminal UART even if a stopped context owned its lock.
+    ///
+    /// The hardware handoff requires the caller to have stopped the normal
+    /// UART users permanently, including any context interrupted inside a
+    /// register transaction.
+    pub fn take_emergency(&self) -> EmergencyTransmit<'_> {
+        self.emergency(None)
+    }
+
+    /// Attempts emergency output while peers are still potentially active.
+    pub fn try_emergency(&self) -> Option<EmergencyTransmit<'_>> {
+        let guard = self
+            .transaction
+            .try_lock()?
+            .unwrap_or_else(|error| error.into_inner());
+        Some(self.emergency(Some(guard)))
+    }
+
+    fn emergency<'a>(
+        &'a self,
+        guard: Option<exorust_sync::IrqPoisonLockGuard<'a, ()>>,
+    ) -> EmergencyTransmit<'a> {
+        let registers = &self.registers;
+        let mut lcr = registers.port_at(reg::LCR);
+        let mut ier = registers.port_at(reg::IER);
+        // Recovery may begin in divisor-latch mode or during the loopback test.
+        lcr.write(0x03);
+        ier.write(0);
+        lcr.write(0x83);
+        registers
+            .port_at(reg::DATA)
+            .write(BaudRate::Baud115200 as u8);
+        ier.write(0);
+        lcr.write(0x03);
+        registers.port_at(reg::MCR).write(0x0b);
+        registers.port_at(reg::FCR).write(0x01);
+        EmergencyTransmit {
+            registers,
+            _transaction: guard,
+        }
     }
 
     /// Services UART interrupt causes while holding the sole register
@@ -249,10 +315,11 @@ impl SerialPort {
         mut receive: impl FnMut(u8) -> bool,
         mut next_transmit: impl FnMut() -> Option<u8>,
     ) -> SerialInterruptReport {
-        let registers = self
-            .registers
+        let _transaction = self
+            .transaction
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        let registers = &self.registers;
         let mut report = SerialInterruptReport::default();
         let mut causes = 0usize;
 

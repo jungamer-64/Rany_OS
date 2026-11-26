@@ -889,6 +889,8 @@ fn firmware_error(error: crate::drivers::acpi::AcpiError) -> FirmwareError {
 #[inline(never)]
 unsafe extern "C" fn ap_trampoline_entry(mailbox_ptr: *const u8) -> ! {
     super::CurrentCpu::clear_boot_binding();
+    #[cfg(target_os = "none")]
+    crate::panic_handler::stop_if_fatal_requested();
     let mailbox = unsafe { TrampolineMailboxReadHandle::from_const_ptr(mailbox_ptr) }
         .and_then(|mailbox| mailbox.read_verified());
     let Ok(mailbox) = mailbox else {
@@ -927,10 +929,12 @@ fn ap_entry(id: CpuId) -> ! {
         resource.publish(ApStartupSignal::MissingCachePolicy);
         fail_stop_ap();
     }
-    if super::CurrentCpu::bind(id).is_err() {
+    let Ok(current) = super::CurrentCpu::bind(id) else {
         resource.publish(ApStartupSignal::CpuLocalBindingFailed);
         fail_stop_ap();
-    }
+    };
+    let bottom = resource.window_base.as_u64() + PAGE_SIZE;
+    current.install_scheduler_stack(bottom as usize..resource.stack_top().get() as usize);
     resource.publish(ApStartupSignal::CpuLocalBound);
     if crate::interrupts::load_for_current_cpu().is_err() {
         resource.publish(ApStartupSignal::InterruptTablesFailed);
@@ -956,7 +960,6 @@ fn ap_entry(id: CpuId) -> ! {
     resource.publish(ApStartupSignal::LocalApicReady);
 
     crate::mm::sync::tlb::enter_lazy_mode();
-    let current = super::CurrentCpu::acquire().unwrap_or_else(|| fail_stop_ap());
     local_apic.set_task_priority(0xe0);
     crate::interrupts::enable_interrupts();
     current.acknowledge_parked();
@@ -1020,10 +1023,10 @@ fn fail_stop_ap() -> ! {
         // The owner drains before this terminal path abandons its execution.
         crate::heap::reclaim_local_caches();
     }
-    // LOOP_PROOF: mode=halt; reason=Failed AP admission is terminal and interrupts are disabled before this permanent HLT state.;
-    loop {
-        x86_64::instructions::hlt();
-    }
+    #[cfg(target_os = "none")]
+    crate::panic_handler::stop_current_cpu();
+    #[cfg(not(target_os = "none"))]
+    panic!("AP admission is unavailable on a hosted target");
 }
 
 #[cfg(test)]

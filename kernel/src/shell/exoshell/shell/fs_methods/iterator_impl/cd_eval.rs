@@ -185,7 +185,7 @@ impl ExoShell {
     sys.thermal()         - Temperature/throttling status
     sys.watchdog()        - Watchdog status
     sys.power()           - Power state/CPU idle stats
-    sys.panic_record()    - Last panic DMA record
+    sys.panic_record()    - Last fatal kernel record
     sys.shutdown()        - Request shutdown
     sys.reboot()          - Request reboot
 

@@ -428,9 +428,14 @@ fn perform_finish_eject(
     outcome: EjectOutcome,
 ) -> Result<(), CpuTransitionError> {
     match outcome {
-        EjectOutcome::FirmwareAbsent => super::runtime()
-            .eject_complete(permit.id)
-            .map_err(runtime_error),
+        EjectOutcome::FirmwareAbsent => {
+            super::runtime()
+                .eject_complete(permit.id)
+                .map_err(runtime_error)?;
+            #[cfg(target_os = "none")]
+            crate::panic_handler::remove_ejected_cpu(permit.id);
+            Ok(())
+        }
         EjectOutcome::PresentOffline(error) => super::runtime()
             .eject_failed(permit.id, CpuFailureReason::Firmware(error))
             .map_err(runtime_error),

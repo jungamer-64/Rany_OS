@@ -1294,19 +1294,5 @@ pub(crate) static GLOBAL_ALLOCATOR: GlobalAllocatorWrapper = GlobalAllocatorWrap
 #[cfg(all(not(test), target_os = "none"))]
 #[alloc_error_handler]
 pub(crate) fn alloc_error_handler(layout: alloc::alloc::Layout) -> ! {
-    crate::io::log::early_print("\n!!! ALLOCATION FAILED !!!\n");
-    crate::io::log::early_print("Layout Size: ");
-    crate::io::log::early_print_dec(layout.size() as u64);
-    crate::io::log::early_print("\nLayout Align: ");
-    crate::io::log::early_print_dec(layout.align() as u64);
-    crate::io::log::early_print("\n");
-    let recovered = crate::heap::oom::try_free_memory();
-    crate::io::log::early_print("OOM recovery attempt: ");
-    crate::io::log::early_print(if recovered { "success\n" } else { "failed\n" });
-    panic!(
-        "allocation error: size={} align={} oom_recovered={}",
-        layout.size(),
-        layout.align(),
-        recovered
-    )
+    crate::panic_handler::handle_oom(layout)
 }

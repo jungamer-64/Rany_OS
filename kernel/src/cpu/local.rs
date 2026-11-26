@@ -424,6 +424,7 @@ pub struct CpuLocal {
     exchange_cache: core::cell::RefCell<crate::heap::ExchangeMagazine>,
     remote: CpuRemoteAccess,
     descriptor_tables: Pin<Box<crate::interrupts::gdt::CpuDescriptorTables>>,
+    scheduler_stack: spin::Once<core::ops::Range<usize>>,
     tls: Option<CpuTls>,
     _pin: PhantomPinned,
 }
@@ -459,6 +460,7 @@ impl CpuLocal {
             exchange_cache: core::cell::RefCell::new(crate::heap::ExchangeMagazine::new()),
             remote: CpuRemoteAccess::new(),
             descriptor_tables,
+            scheduler_stack: spin::Once::new(),
             tls,
             _pin: PhantomPinned,
         });
@@ -812,6 +814,16 @@ impl CurrentCpu {
 
     pub const fn id(&self) -> CpuId {
         self.local.id()
+    }
+
+    pub(super) fn install_scheduler_stack(&self, bounds: core::ops::Range<usize>) {
+        // The pinned startup mapping and its bounds are retained across
+        // offline, eject and physical re-admission of this slot.
+        self.local.scheduler_stack.call_once(|| bounds);
+    }
+
+    pub(crate) fn scheduler_stack(&self) -> Option<core::ops::Range<usize>> {
+        self.local.scheduler_stack.get().cloned()
     }
 
     pub fn execution(&self) -> Option<crate::task::Subject> {

@@ -119,135 +119,6 @@ fn dump_registers() {
     early_print("\n");
 }
 
-/// コントロールレジスタのダンプ
-fn dump_control_registers() {
-    use x86_64::registers::control::{Cr0, Cr3, Cr4};
-
-    let cr0 = Cr0::read();
-    let (cr3_frame, _cr3_flags) = Cr3::read();
-    let cr4 = Cr4::read();
-
-    early_print("  CR0: ");
-    early_print_hex(cr0.bits());
-    early_print("\n  CR2: ");
-    // Cr2::read() returns Result in newer x86_64 crate
-    if let Ok(addr) = Cr2::read() {
-        early_print_hex(addr.as_u64());
-    } else {
-        early_print("(invalid)");
-    }
-    early_print(" (Faulting Address)\n  CR3: ");
-    early_print_hex(cr3_frame.start_address().as_u64());
-    early_print(" (PML4)\n  CR4: ");
-    early_print_hex(cr4.bits());
-    early_print("\n");
-}
-
-#[repr(C, packed)]
-struct Idtr {
-    limit: u16,
-    base: u64,
-}
-
-fn dump_idt_gate(label: &str, vector: u8) {
-    let mut idtr = Idtr { limit: 0, base: 0 };
-    unsafe {
-        core::arch::asm!("sidt [{}]", in(reg) &mut idtr, options(nostack, preserves_flags));
-    }
-
-    early_print("  ");
-    early_print(label);
-    early_print(" IDTR base=");
-    early_print_hex(idtr.base);
-    early_print(" limit=");
-    early_print_hex(idtr.limit as u64);
-    early_print("\n");
-
-    let gate_offset = (vector as usize) * 16;
-    if gate_offset + 16 > idtr.limit as usize + 1 {
-        early_print("    gate out of range\n");
-        return;
-    }
-
-    let gate_ptr = (idtr.base as usize + gate_offset) as *const u8;
-    let mut raw = [0u8; 16];
-    for (idx, byte) in raw.iter_mut().enumerate() {
-        *byte = unsafe { *gate_ptr.add(idx) };
-    }
-
-    early_print("    raw=");
-    for byte in raw {
-        let high = (byte >> 4) & 0xF;
-        let low = byte & 0xF;
-        let high_char = if high < 10 {
-            b'0' + high
-        } else {
-            b'a' + high - 10
-        };
-        let low_char = if low < 10 {
-            b'0' + low
-        } else {
-            b'a' + low - 10
-        };
-        crate::io::log::early_print_char(high_char);
-        crate::io::log::early_print_char(low_char);
-        early_print(" ");
-    }
-    early_print("\n");
-
-    let offset_low = u16::from_le_bytes([raw[0], raw[1]]) as u64;
-    let selector = u16::from_le_bytes([raw[2], raw[3]]) as u64;
-    let ist = (raw[4] & 0x7) as u64;
-    let type_attr = raw[5] as u64;
-    let offset_mid = u16::from_le_bytes([raw[6], raw[7]]) as u64;
-    let offset_high = u32::from_le_bytes([raw[8], raw[9], raw[10], raw[11]]) as u64;
-    let target = offset_low | (offset_mid << 16) | (offset_high << 32);
-
-    early_print("    target=");
-    early_print_hex(target);
-    early_print(" selector=");
-    early_print_hex(selector);
-    early_print(" ist=");
-    early_print_hex(ist);
-    early_print(" attr=");
-    early_print_hex(type_attr);
-    early_print("\n");
-}
-
-fn dump_local_apic_in_service() {
-    early_print("  LAPIC ISR:");
-    let Ok(apic) = crate::drivers::apic::local_apic() else {
-        early_print(" unavailable\n");
-        return;
-    };
-    let in_service = apic.in_service_vectors();
-    let mut found = false;
-    for vector in in_service.iter() {
-        found = true;
-        early_print(" [");
-        early_print_hex(u64::from(vector));
-        early_print("]");
-    }
-
-    if !found {
-        early_print(" none");
-    }
-    early_print("\n");
-}
-
-fn dump_saved_rsp_words(stack_frame: &InterruptStackFrame) {
-    let rsp = stack_frame.stack_pointer.as_u64() as *const u64;
-    early_print("  Saved RSP words:");
-    for idx in 0..4usize {
-        let word = unsafe { *rsp.add(idx) };
-        early_print(" [");
-        early_print_dec(idx as u64);
-        early_print("]=");
-        early_print_hex(word);
-    }
-    early_print("\n");
-}
-
 // ============================================================================
 // Exception Handlers
 // ============================================================================
@@ -294,90 +165,9 @@ define_interrupt!(
         EXCEPTION_STATS
             .invalid_opcodes
             .fetch_add(1, Ordering::Relaxed);
-        crate::io::log::enter_panic_mode();
-
-        early_print("\n[EXCEPTION] INVALID OPCODE (#UD)\n");
-        dump_stack_frame(&stack_frame);
-        dump_registers();
-
-        // 問題の命令を表示
-        let rip = stack_frame.instruction_pointer.as_u64() as *const u8;
-        early_print("  Instruction bytes: ");
-        for i in 0..8 {
-            let byte = unsafe { *rip.add(i) };
-            // 16進数でバイトを表示
-            let high = (byte >> 4) & 0xF;
-            let low = byte & 0xF;
-            let high_char = if high < 10 {
-                b'0' + high
-            } else {
-                b'a' + high - 10
-            };
-            let low_char = if low < 10 {
-                b'0' + low
-            } else {
-                b'a' + low - 10
-            };
-            crate::io::log::early_print_char(high_char);
-            crate::io::log::early_print_char(low_char);
-            early_print(" ");
-        }
-        early_print("\n");
-        let rip_u64 = stack_frame.instruction_pointer.as_u64();
-        let symbol = crate::unwind::resolve_symbol_name(rip_u64 as usize).unwrap_or("unknown");
-        early_print("  Symbol: ");
-        early_print(symbol);
-        early_print("\n");
-        let current_cpu = crate::cpu::CurrentCpu::acquire();
-        let cpu_id = current_cpu.as_ref().map(crate::cpu::CurrentCpu::id);
-        let cpu_state = cpu_id
-            .and_then(|id| crate::cpu::snapshot().slot(id).map(|slot| slot.state))
-            .map(crate::cpu::CpuSlotState::name)
-            .unwrap_or("unavailable");
-        early_print("  CPU: ");
-        if let Some(cpu_id) = cpu_id {
-            early_print_dec(u64::from(cpu_id.as_u16()));
-        } else {
-            early_print("unavailable");
-        }
-        early_print("\n  CPU state: ");
-        early_print(cpu_state);
-        if let Some(last_interrupt) = cpu_id.and_then(crate::interrupts::last_interrupt_context) {
-            early_print("\n  Last vector: ");
-            early_print_hex(u64::from(last_interrupt.vector));
-            early_print("\n  Last interrupted RIP: ");
-            early_print_hex(last_interrupt.instruction_pointer);
-            early_print("\n  Last interrupted RSP: ");
-            early_print_hex(last_interrupt.stack_pointer);
-        }
-        early_print("\n");
-        dump_idt_gate("com1", crate::interrupts::InterruptVector::Com1 as u8);
-        dump_idt_gate("wake", crate::interrupts::EXECUTOR_WAKE_VECTOR);
-        dump_idt_gate("tlb", crate::mm::sync::tlb::TLB_FLUSH_VECTOR);
-        dump_idt_gate("timer", crate::interrupts::InterruptVector::Timer as u8);
-        dump_local_apic_in_service();
-        dump_saved_rsp_words(&stack_frame);
-
-        if let Some(context) = current_cpu.and_then(|current| current.execution()) {
-            early_print("  Task context: task=");
-            early_print_dec(context.task.as_u64());
-            early_print(" domain=");
-            early_print_dec(context.domain.as_u64());
-            early_print("\n");
-            panic!(
-                "Invalid opcode rip={:#x} symbol={} cpu={:?} state={} task={} domain={}",
-                rip_u64,
-                symbol,
-                cpu_id,
-                cpu_state,
-                context.task.as_u64(),
-                context.domain.as_u64()
-            );
-        }
-
-        panic!(
-            "Invalid opcode rip={:#x} symbol={} cpu={:?} state={}",
-            rip_u64, symbol, cpu_id, cpu_state
+        crate::panic_handler::handle_fault(
+            crate::panic_handler::FatalFault::InvalidOpcode,
+            &stack_frame,
         );
     }
 );
@@ -402,14 +192,10 @@ define_interrupt!(
             .double_faults
             .fetch_add(1, Ordering::Relaxed);
 
-        crate::io::log::enter_panic_mode();
-        early_print("\n!!! DOUBLE FAULT (#DF) !!!\n");
-        early_print("Error code: ");
-        early_print_hex(error_code);
-        early_print("\n");
-        dump_stack_frame(&stack_frame);
-        dump_control_registers();
-        crate::panic_handler::halt_current_cpu();
+        crate::panic_handler::handle_fault(
+            crate::panic_handler::FatalFault::DoubleFault { code: error_code },
+            &stack_frame,
+        );
     }
 );
 
@@ -466,55 +252,14 @@ define_interrupt!(
             return;
         }
 
-        // 解決できなかった場合は詳細を表示してパニック
-        let fault_addr = Cr2::read().unwrap_or(x86_64::VirtAddr::zero());
-
-        early_print("\n[EXCEPTION] UNRESOLVED PAGE FAULT (#PF)\n");
-        early_print("Faulting Address: ");
-        early_print_hex(fault_addr.as_u64());
-        early_print("\nError Code: ");
-        early_print_hex(error_code.bits());
-        early_print("\nResult: ");
-        early_print(match res {
-            crate::mm::virt::fault_handler::FaultResult::NoVma => "No VMA found",
-            crate::mm::virt::fault_handler::FaultResult::PermissionDenied => "Permission Denied",
-            crate::mm::virt::fault_handler::FaultResult::OutOfMemory => "Out of Memory",
-            crate::mm::virt::fault_handler::FaultResult::StackOverflow => "Stack Overflow",
-            crate::mm::virt::fault_handler::FaultResult::KernelBug => "Kernel Bug",
-            crate::mm::virt::fault_handler::FaultResult::IoError => "I/O Error",
-            crate::mm::virt::fault_handler::FaultResult::Resolved => "Resolved",
-        });
-        early_print("\n");
-
-        // エラーコードの詳細解析
-        let error_bits = error_code.bits();
-        early_print("  Present: ");
-        early_print(if (error_bits & 0x1) != 0 {
-            "true"
-        } else {
-            "false"
-        });
-        early_print("\n  Write: ");
-        early_print(if (error_bits & 0x2) != 0 {
-            "true"
-        } else {
-            "false"
-        });
-        early_print("\n  User Mode: ");
-        early_print(if (error_bits & 0x4) != 0 {
-            "true"
-        } else {
-            "false"
-        });
-        early_print("\n");
-
-        early_print("\nStack Frame:\n");
-        dump_stack_frame(&stack_frame);
-
-        panic!(
-            "Page fault at {:#x} (Result: {:?})",
-            fault_addr.as_u64(),
-            res
+        let address = Cr2::read().unwrap_or(x86_64::VirtAddr::zero()).as_u64();
+        crate::panic_handler::handle_fault(
+            crate::panic_handler::FatalFault::PageFault {
+                address,
+                code: error_code.bits(),
+                reason: res,
+            },
+            &stack_frame,
         );
     }
 );
@@ -535,14 +280,10 @@ define_interrupt!(
 // Machine Check (#MC)
 define_interrupt!(
     pub fn machine_check_handler(stack_frame: InterruptStackFrame) -> ! {
-        early_print("\n[EXCEPTION] MACHINE CHECK (#MC) - HARDWARE ERROR\n");
-        dump_stack_frame(&stack_frame);
-
-        // ハードウェアエラーは回復不能
-        // LOOP_PROOF: mode=halt; reason=Machine check handler intentionally halts forever because hardware state is no longer trustworthy.;
-        loop {
-            x86_64::instructions::hlt();
-        }
+        crate::panic_handler::handle_fault(
+            crate::panic_handler::FatalFault::MachineCheck,
+            &stack_frame,
+        );
     }
 );
 

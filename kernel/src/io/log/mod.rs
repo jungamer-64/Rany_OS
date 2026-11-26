@@ -4,7 +4,7 @@ mod level_parse;
 mod record;
 
 use core::fmt::{self, Write};
-use core::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use log::{LevelFilter, Log, Metadata, Record, SetLoggerError};
 
 use super::serial::{self, Channel};
@@ -12,11 +12,8 @@ use record::WireRecord;
 
 pub use level_parse::set_log_level_from_str;
 
-const PANIC_OUTPUT_NO_OWNER: u16 = crate::cpu::MAX_POSSIBLE_CPUS as u16;
-
 static CONSOLE_MIRROR_ENABLED: AtomicBool = AtomicBool::new(true);
 static SERIAL_OUTPUT_ENABLED: AtomicBool = AtomicBool::new(true);
-static PANIC_OUTPUT_OWNER: AtomicU16 = AtomicU16::new(PANIC_OUTPUT_NO_OWNER);
 static DROPPED_LOG_RECORDS: AtomicUsize = AtomicUsize::new(0);
 static LOGGER: KernelLogger = KernelLogger;
 
@@ -111,28 +108,6 @@ pub fn serial_output_enabled() -> bool {
     SERIAL_OUTPUT_ENABLED.load(Ordering::Acquire)
 }
 
-pub fn enter_panic_mode() {
-    if let Some(current) = crate::cpu::CurrentCpu::acquire() {
-        let _ = PANIC_OUTPUT_OWNER.compare_exchange(
-            PANIC_OUTPUT_NO_OWNER,
-            current.id().as_u16(),
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        );
-    }
-    serial::enter_panic_mode();
-}
-
-fn diagnostic_channel() -> Option<Channel> {
-    if !serial::in_panic() {
-        return Some(Channel::Console);
-    }
-    let owner = PANIC_OUTPUT_OWNER.load(Ordering::Acquire);
-    (owner == PANIC_OUTPUT_NO_OWNER
-        || crate::cpu::CurrentCpu::acquire().is_some_and(|cpu| cpu.id().as_u16() == owner))
-    .then_some(Channel::Emergency)
-}
-
 struct DiagnosticWriter(Channel);
 
 impl Write for DiagnosticWriter {
@@ -166,9 +141,7 @@ pub fn early_print(text: &str) {
 }
 
 pub fn early_print_char(byte: u8) {
-    if let Some(channel) = diagnostic_channel() {
-        let _ = serial::write(channel, &[byte]);
-    }
+    let _ = serial::write(Channel::Console, &[byte]);
 }
 
 pub fn early_print_dec(number: u64) {
@@ -180,8 +153,8 @@ pub fn early_print_hex(number: u64) {
 }
 
 pub fn print(args: fmt::Arguments<'_>) {
-    if let Some(channel) = diagnostic_channel() {
-        let _ = DiagnosticWriter(channel).write_fmt(args);
+    if !serial::in_panic() {
+        let _ = DiagnosticWriter(Channel::Console).write_fmt(args);
     }
 }
 

@@ -236,10 +236,9 @@ pub(super) fn init_acpi_and_iommu(boot_info: &boot_proto::ExoBootInfoView<'_>) {
     // Security: Protect BIOS/UEFI reserved regions from DMA.
     // This is called after IOMMU security init in init_iommu_from_acpi.
 
-    if let Err(e) = io::iommu::runtime::panic::init_panic_dma_pool_default() {
-        warn!(target: "init", "IOMMU panic DMA pool init failed: {:?}", e);
-    } else {
-        info!(target: "init", "IOMMU panic DMA pool initialized");
+    #[cfg(target_os = "none")]
+    if let Err(cause) = crate::panic_handler::reserve_record_page() {
+        warn!(target: "init", "Panic record page unavailable: {cause:?}");
     }
 
     match catalog.first(drivers::acpi::TableSignature::MCFG) {

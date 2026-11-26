@@ -63,7 +63,6 @@ pub(super) enum Channel {
     Log,
     Console,
     Debugger,
-    Emergency,
 }
 
 impl Channel {
@@ -75,7 +74,6 @@ impl Channel {
         match self {
             Self::Log | Self::Console => session == Session::Console,
             Self::Debugger => session != Session::Panic,
-            Self::Emergency => session == Session::Panic,
         }
     }
 }
@@ -197,12 +195,64 @@ pub(super) fn log_channel_available() -> bool {
 }
 
 pub(super) fn in_panic() -> bool {
-    Channel::Emergency.allowed()
+    Session::load() == Session::Panic
 }
 
-pub(super) fn enter_panic_mode() {
-    if SESSION.swap(Session::Panic as u8, Ordering::AcqRel) != Session::Panic as u8 {
-        let _ = PORT.try_quiesce_for_panic();
+#[cfg(target_os = "none")]
+pub(crate) fn suppress_runtime_serial() {
+    SESSION.store(Session::Panic as u8, Ordering::Release);
+}
+
+#[cfg(target_os = "none")]
+pub(crate) struct FatalSerial {
+    port: serial_driver::EmergencyTransmit<'static>,
+    last_was_cr: bool,
+    failed: bool,
+}
+
+#[cfg(target_os = "none")]
+impl FatalSerial {
+    /// Bypasses retained register locks after the peers have stopped.
+    pub(crate) fn take_quiesced(_: crate::panic_handler::QuiescedPeers) -> Self {
+        Self::new(PORT.take_emergency())
+    }
+
+    pub(crate) fn try_open() -> Option<Self> {
+        PORT.try_emergency().map(Self::new)
+    }
+
+    fn new(port: serial_driver::EmergencyTransmit<'static>) -> Self {
+        Self {
+            port,
+            last_was_cr: false,
+            failed: false,
+        }
+    }
+
+    pub(crate) fn finish(&self) {
+        // Terminal best effort. A failed UART has no retry owner.
+        let _drained = self.port.drain(TRANSMIT_POLLS);
+    }
+}
+
+#[cfg(target_os = "none")]
+impl core::fmt::Write for FatalSerial {
+    fn write_str(&mut self, text: &str) -> core::fmt::Result {
+        if self.failed {
+            return Err(core::fmt::Error);
+        }
+        for byte in text.bytes() {
+            if (byte == b'\n'
+                && !self.last_was_cr
+                && self.port.send(b'\r', TRANSMIT_POLLS).is_err())
+                || self.port.send(byte, TRANSMIT_POLLS).is_err()
+            {
+                self.failed = true;
+                return Err(core::fmt::Error);
+            }
+            self.last_was_cr = byte == b'\r';
+        }
+        Ok(())
     }
 }
 
@@ -242,11 +292,7 @@ pub(super) fn write(channel: Channel, bytes: &[u8]) -> usize {
             }
             return if admitted { bytes.len() } else { 0 };
         }
-        let _direct = if matches!(channel, Channel::Emergency) {
-            None
-        } else if let Ok(guard) = DIRECT_OUTPUT.try_lock() {
-            Some(guard)
-        } else {
+        let Ok(_direct) = DIRECT_OUTPUT.try_lock() else {
             return 0;
         };
         bytes
@@ -342,7 +388,8 @@ mod tests {
         assert!(Channel::Debugger.allowed_in(Session::Debugger));
         assert!(!Channel::Console.allowed_in(Session::Debugger));
         assert!(!Channel::Log.allowed_in(Session::Debugger));
-        assert!(Channel::Emergency.allowed_in(Session::Panic));
+        assert!(!Channel::Console.allowed_in(Session::Panic));
+        assert!(!Channel::Log.allowed_in(Session::Panic));
         assert!(!Channel::Debugger.allowed_in(Session::Panic));
     }
 }
