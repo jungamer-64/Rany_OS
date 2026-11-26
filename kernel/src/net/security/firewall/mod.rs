@@ -106,7 +106,7 @@ pub fn check_ingress_in(
                     };
                     crate::net::runtime::transport::tcp_table_in(runtime)
                         .read(ingress, local, remote, |entry| {
-                            !matches!(entry.state(), TcpState::Closed | TcpState::Listen)
+                            entry.state() != TcpState::Closed
                         })
                         .unwrap_or(false)
                 },
