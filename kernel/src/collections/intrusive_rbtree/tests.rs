@@ -29,12 +29,8 @@ unsafe impl KeyAdapter for TestAdapter {
         &entry.key
     }
 
-    fn get_link(entry: &Self::Entry) -> &RBLink {
-        &entry.link
-    }
-
-    fn get_link_mut(entry: &mut Self::Entry) -> &mut RBLink {
-        &mut entry.link
+    unsafe fn link_from_entry(entry: *mut Self::Entry) -> *mut RBLink {
+        unsafe { &raw mut (*entry).link }
     }
 
     unsafe fn entry_from_link(link: *mut RBLink) -> *mut Self::Entry {
@@ -60,7 +56,7 @@ fn test_insert_find() {
     let mut entry = Box::new(TestEntry::new(42, 100));
 
     unsafe {
-        assert!(tree.insert(entry.as_mut()));
+        assert!(tree.insert(Box::as_mut_ptr(&mut entry)));
     }
 
     assert_eq!(tree.len(), 1);
@@ -77,9 +73,11 @@ fn test_insert_find() {
     assert!(tree.find(&999).is_none());
 
     // クリーンアップ
+    assert_eq!(tree.find_near(&42), found);
     unsafe {
-        tree.remove(entry.as_mut());
+        tree.remove(Box::as_mut_ptr(&mut entry));
     }
+    assert!(tree.find_near(&42).is_none());
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -93,7 +91,7 @@ fn test_multiple_inserts() {
     // 挿入
     for entry in entries.iter_mut() {
         unsafe {
-            assert!(tree.insert(entry.as_mut()));
+            assert!(tree.insert(Box::as_mut_ptr(entry)));
         }
     }
 
@@ -107,7 +105,7 @@ fn test_multiple_inserts() {
     // クリーンアップ
     for entry in entries.iter_mut() {
         unsafe {
-            tree.remove(entry.as_mut());
+            tree.remove(Box::as_mut_ptr(entry));
         }
     }
 }
@@ -124,7 +122,7 @@ fn test_ordering() {
 
     for entry in entries.iter_mut() {
         unsafe {
-            tree.insert(entry.as_mut());
+            tree.insert(Box::as_mut_ptr(entry));
         }
     }
 
@@ -145,7 +143,7 @@ fn test_ordering() {
     // クリーンアップ
     for entry in entries.iter_mut() {
         unsafe {
-            tree.remove(entry.as_mut());
+            tree.remove(Box::as_mut_ptr(entry));
         }
     }
 }
@@ -158,16 +156,16 @@ fn test_duplicate_key() {
     let mut entry2 = Box::new(TestEntry::new(42, 200));
 
     unsafe {
-        assert!(tree.insert(entry1.as_mut()));
+        assert!(tree.insert(Box::as_mut_ptr(&mut entry1)));
         // 重複は拒否
-        assert!(!tree.insert(entry2.as_mut()));
+        assert!(!tree.insert(Box::as_mut_ptr(&mut entry2)));
     }
 
     assert_eq!(tree.len(), 1);
 
     // クリーンアップ
     unsafe {
-        tree.remove(entry1.as_mut());
+        tree.remove(Box::as_mut_ptr(&mut entry1));
     }
 }
 
@@ -181,7 +179,7 @@ fn test_remove() {
 
     for entry in entries.iter_mut() {
         unsafe {
-            tree.insert(entry.as_mut());
+            tree.insert(Box::as_mut_ptr(entry));
         }
     }
 
@@ -189,20 +187,20 @@ fn test_remove() {
 
     // 中間を削除
     unsafe {
-        tree.remove(entries[2].as_mut());
+        tree.remove(Box::as_mut_ptr(&mut entries[2]));
     }
     assert_eq!(tree.len(), 4);
     assert!(tree.find(&2).is_none());
 
     // 最初を削除
     unsafe {
-        tree.remove(entries[0].as_mut());
+        tree.remove(Box::as_mut_ptr(&mut entries[0]));
     }
     assert_eq!(tree.len(), 3);
 
     // 最後を削除
     unsafe {
-        tree.remove(entries[4].as_mut());
+        tree.remove(Box::as_mut_ptr(&mut entries[4]));
     }
     assert_eq!(tree.len(), 2);
 
@@ -212,7 +210,7 @@ fn test_remove() {
 
     // クリーンアップ
     unsafe {
-        tree.remove(entries[1].as_mut());
-        tree.remove(entries[3].as_mut());
+        tree.remove(Box::as_mut_ptr(&mut entries[1]));
+        tree.remove(Box::as_mut_ptr(&mut entries[3]));
     }
 }

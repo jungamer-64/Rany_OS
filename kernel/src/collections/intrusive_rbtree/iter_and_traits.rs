@@ -18,12 +18,12 @@ unsafe impl<A: KeyAdapter> Sync for RBTree<A> where A::Entry: Sync {}
 ///
 /// 侵入型コンテナはエントリを所有しないため、参照ではなくポインタを返す。
 /// 参照への変換は呼び出し側が `unsafe` で行う。
-pub struct RBTreeIter<A: KeyAdapter> {
-    pub(crate) current: Option<*mut RBLink>,
-    pub(crate) _marker: PhantomData<A>,
+pub struct RBTreeIter<'tree, A: KeyAdapter> {
+    pub(super) current: Option<*mut RBLink>,
+    pub(super) _marker: PhantomData<&'tree RBTree<A>>,
 }
 
-impl<A: KeyAdapter> Iterator for RBTreeIter<A> {
+impl<A: KeyAdapter> Iterator for RBTreeIter<'_, A> {
     type Item = *mut A::Entry;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -39,7 +39,7 @@ impl<A: KeyAdapter> Iterator for RBTreeIter<A> {
     }
 }
 
-impl<A: KeyAdapter> RBTreeIter<A> {
+impl<A: KeyAdapter> RBTreeIter<'_, A> {
     /// 後継ノードを見つける
     unsafe fn successor(node: *mut RBLink) -> Option<*mut RBLink> {
         // 右子がある場合、その左端
@@ -112,15 +112,10 @@ macro_rules! intrusive_adapter {
             }
 
             #[inline]
-            fn get_link(entry: &Self::Entry) -> &$crate::collections::intrusive_rbtree::RBLink {
-                &entry.$link_field
-            }
-
-            #[inline]
-            fn get_link_mut(
-                entry: &mut Self::Entry,
-            ) -> &mut $crate::collections::intrusive_rbtree::RBLink {
-                &mut entry.$link_field
+            unsafe fn link_from_entry(
+                entry: *mut Self::Entry,
+            ) -> *mut $crate::collections::intrusive_rbtree::RBLink {
+                unsafe { &raw mut (*entry).$link_field }
             }
 
             #[inline]

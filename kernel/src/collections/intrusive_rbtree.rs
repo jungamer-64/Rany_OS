@@ -31,8 +31,9 @@
 //!     type Entry = MyEntry;
 //!
 //!     fn get_key(entry: &Self::Entry) -> &Self::Key { &entry.key }
-//!     fn get_link(entry: &Self::Entry) -> &RBLink { &entry.link }
-//!     fn get_link_mut(entry: &mut Self::Entry) -> &mut RBLink { &mut entry.link }
+//!     unsafe fn link_from_entry(entry: *mut Self::Entry) -> *mut RBLink {
+//!         unsafe { &raw mut (*entry).link }
+//!     }
 //!     unsafe fn entry_from_link(link: *mut RBLink) -> *mut Self::Entry {
 //!         // container_of equivalent
 //!         link.cast::<u8>().sub(offset_of!(MyEntry, link)).cast()
@@ -68,7 +69,7 @@ pub enum Color {
 #[repr(C)]
 pub struct RBLink {
     /// 親ポインタ + 色 (LSB = 色)
-    parent_color: usize,
+    parent_color: *mut RBLink,
     /// 左子ノード
     left: *mut RBLink,
     /// 右子ノード
@@ -79,7 +80,7 @@ impl RBLink {
     /// 新しい未リンク状態のRBLinkを作成
     pub const fn new() -> Self {
         Self {
-            parent_color: 0,
+            parent_color: ptr::null_mut(),
             left: ptr::null_mut(),
             right: ptr::null_mut(),
         }
@@ -89,19 +90,19 @@ impl RBLink {
     #[inline]
     pub fn is_linked(&self) -> bool {
         // 親がある、または左右の子がある場合はリンク済み
-        self.parent_color != 0 || !self.left.is_null() || !self.right.is_null()
+        !self.parent_color.is_null() || !self.left.is_null() || !self.right.is_null()
     }
 
     /// 親ポインタを取得
     #[inline]
     fn parent(&self) -> *mut RBLink {
-        (self.parent_color & !1) as *mut RBLink
+        self.parent_color.map_addr(|addr| addr & !1)
     }
 
     /// 色を取得
     #[inline]
     fn color(&self) -> Color {
-        if self.parent_color & 1 == 0 {
+        if self.parent_color.addr() & 1 == 0 {
             Color::Red
         } else {
             Color::Black
@@ -111,25 +112,27 @@ impl RBLink {
     /// 親と色を設定
     #[inline]
     fn set_parent_color(&mut self, parent: *mut RBLink, color: Color) {
-        self.parent_color = (parent as usize) | (color as usize);
+        self.parent_color = parent.map_addr(|addr| addr | color as usize);
     }
 
     /// 色のみを設定
     #[inline]
     fn set_color(&mut self, color: Color) {
-        self.parent_color = (self.parent_color & !1) | (color as usize);
+        self.parent_color = self
+            .parent_color
+            .map_addr(|addr| (addr & !1) | color as usize);
     }
 
     /// 親のみを設定（色は維持）
     #[inline]
     fn set_parent(&mut self, parent: *mut RBLink) {
-        self.parent_color = (parent as usize) | (self.parent_color & 1);
+        self.parent_color = parent.map_addr(|addr| addr | (self.parent_color.addr() & 1));
     }
 
     /// リンクをクリア（削除後のクリーンアップ用）
     #[inline]
     fn clear(&mut self) {
-        self.parent_color = 0;
+        self.parent_color = ptr::null_mut();
         self.left = ptr::null_mut();
         self.right = ptr::null_mut();
     }
@@ -280,7 +283,7 @@ impl<A: KeyAdapter> RBTree<A> {
         // フォールバック: 通常検索 + ヒント更新
         let result = self.find(key);
         if let Some(entry) = result {
-            self.last_hint = unsafe { A::get_link(&*entry) as *const RBLink as *mut RBLink };
+            self.last_hint = unsafe { A::link_from_entry(entry) };
         }
         result
     }
@@ -319,10 +322,10 @@ impl<A: KeyAdapter> RBTree<A> {
     /// # Safety
     ///
     /// `entry` は有効なポインタで、ツリーに挿入されている間は有効である必要がある。
-    /// また、エントリの RBLink は未リンク状態である必要がある。
+    /// Its link must be unlinked and exclusively available for tree writes;
+    /// the entry must stay at the same address with an unchanged key until removal.
     pub unsafe fn insert(&mut self, entry: *mut A::Entry) -> bool {
-        // &mut を保持せず、shared ref から raw ptr を取得（参照エイリアシング回避）
-        let new_link = A::get_link(&*entry) as *const RBLink as *mut RBLink;
+        let new_link = A::link_from_entry(entry);
 
         debug_assert!(!(*new_link).is_linked(), "Entry is already linked");
         // RBLink は 2byte 以上にアラインされている必要がある（LSB に色を格納）
@@ -381,11 +384,13 @@ impl<A: KeyAdapter> RBTree<A> {
     ///
     /// `entry` はこのツリーに含まれている必要がある。
     pub unsafe fn remove(&mut self, entry: *mut A::Entry) {
-        // &mut を保持せず raw ptr を取得
-        let link = A::get_link(&*entry) as *const RBLink as *mut RBLink;
+        let link = A::link_from_entry(entry);
 
         debug_assert!((*link).is_linked(), "Entry is not linked");
 
+        if self.last_hint == link {
+            self.last_hint = ptr::null_mut();
+        }
         self.remove_node(link);
         (*link).clear();
         self.len -= 1;
@@ -427,7 +432,7 @@ impl<A: KeyAdapter> RBTree<A> {
     ///
     /// 返されるポインタはツリーが変更されるまで、かつエントリが有効である間のみ使用可能。
     /// 侵入型コンテナはエントリを所有しないため、参照ではなくポインタを返す。
-    pub fn iter(&self) -> RBTreeIter<A> {
+    pub fn iter(&self) -> RBTreeIter<'_, A> {
         RBTreeIter {
             current: self.first_link(),
             _marker: PhantomData,

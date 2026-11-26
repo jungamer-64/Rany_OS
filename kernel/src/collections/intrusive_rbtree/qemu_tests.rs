@@ -28,12 +28,8 @@ unsafe impl KeyAdapter for TestAdapter {
         &entry.key
     }
 
-    fn get_link(entry: &Self::Entry) -> &RBLink {
-        &entry.link
-    }
-
-    fn get_link_mut(entry: &mut Self::Entry) -> &mut RBLink {
-        &mut entry.link
+    unsafe fn link_from_entry(entry: *mut Self::Entry) -> *mut RBLink {
+        unsafe { &raw mut (*entry).link }
     }
 
     unsafe fn entry_from_link(link: *mut RBLink) -> *mut Self::Entry {
@@ -52,7 +48,7 @@ pub fn rbtree_insert_find_smoke() -> bool {
     let mut entry = Box::new(TestEntry::new(42, 100));
 
     unsafe {
-        if !tree.insert(entry.as_mut()) {
+        if !tree.insert(Box::as_mut_ptr(&mut entry)) {
             return false;
         }
     }
@@ -78,7 +74,7 @@ pub fn rbtree_insert_find_smoke() -> bool {
     }
 
     unsafe {
-        tree.remove(entry.as_mut());
+        tree.remove(Box::as_mut_ptr(&mut entry));
     }
     true
 }
@@ -91,7 +87,7 @@ pub fn rbtree_multiple_inserts_smoke() -> bool {
 
     for entry in entries.iter_mut() {
         unsafe {
-            if !tree.insert(entry.as_mut()) {
+            if !tree.insert(Box::as_mut_ptr(entry)) {
                 return false;
             }
         }
@@ -109,7 +105,7 @@ pub fn rbtree_multiple_inserts_smoke() -> bool {
 
     for entry in entries.iter_mut() {
         unsafe {
-            tree.remove(entry.as_mut());
+            tree.remove(Box::as_mut_ptr(entry));
         }
     }
     true
@@ -125,7 +121,7 @@ pub fn rbtree_ordering_smoke() -> bool {
 
     for entry in entries.iter_mut() {
         unsafe {
-            tree.insert(entry.as_mut());
+            tree.insert(Box::as_mut_ptr(entry));
         }
     }
 
@@ -137,7 +133,7 @@ pub fn rbtree_ordering_smoke() -> bool {
 
     for entry in entries.iter_mut() {
         unsafe {
-            tree.remove(entry.as_mut());
+            tree.remove(Box::as_mut_ptr(entry));
         }
     }
 
@@ -150,10 +146,10 @@ pub fn rbtree_duplicate_key_smoke() -> bool {
     let mut entry2 = Box::new(TestEntry::new(42, 200));
 
     unsafe {
-        if !tree.insert(entry1.as_mut()) {
+        if !tree.insert(Box::as_mut_ptr(&mut entry1)) {
             return false;
         }
-        if tree.insert(entry2.as_mut()) {
+        if tree.insert(Box::as_mut_ptr(&mut entry2)) {
             return false;
         } // should reject
     }
@@ -161,7 +157,7 @@ pub fn rbtree_duplicate_key_smoke() -> bool {
     let ok = tree.len() == 1;
 
     unsafe {
-        tree.remove(entry1.as_mut());
+        tree.remove(Box::as_mut_ptr(&mut entry1));
     }
     ok
 }
@@ -174,7 +170,7 @@ pub fn rbtree_remove_smoke() -> bool {
 
     for entry in entries.iter_mut() {
         unsafe {
-            tree.insert(entry.as_mut());
+            tree.insert(Box::as_mut_ptr(entry));
         }
     }
 
@@ -183,7 +179,7 @@ pub fn rbtree_remove_smoke() -> bool {
     }
 
     unsafe {
-        tree.remove(entries[2].as_mut());
+        tree.remove(Box::as_mut_ptr(&mut entries[2]));
     }
     if tree.len() != 4 {
         return false;
@@ -193,14 +189,14 @@ pub fn rbtree_remove_smoke() -> bool {
     }
 
     unsafe {
-        tree.remove(entries[0].as_mut());
+        tree.remove(Box::as_mut_ptr(&mut entries[0]));
     }
     if tree.len() != 3 {
         return false;
     }
 
     unsafe {
-        tree.remove(entries[4].as_mut());
+        tree.remove(Box::as_mut_ptr(&mut entries[4]));
     }
     if tree.len() != 2 {
         return false;
