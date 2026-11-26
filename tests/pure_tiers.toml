@@ -32,6 +32,18 @@ mode = "hybrid"
 features = ["std"]
 
 [[package]]
+name = "rany_kernel"
+tier = "pr-required"
+root_default = false
+run_ignored = false
+test_filter = "io::iommu::runtime::zombie::tests::unwind::"
+exact = false
+serial = false
+mode = "hybrid"
+features = ["std"]
+panic = "unwind"
+
+[[package]]
 name = "boot_proto"
 tier = "pr-required"
 root_default = false

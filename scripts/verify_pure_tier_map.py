@@ -18,7 +18,7 @@ REQUIRED_PACKAGE_KEYS = {
     "exact",
     "serial",
 }
-OPTIONAL_PACKAGE_KEYS = {"features", "mode"}
+OPTIONAL_PACKAGE_KEYS = {"features", "mode", "panic"}
 VALID_PACKAGE_MODES = {"pure-only", "hybrid"}
 VALID_MIGRATION_DEST_KINDS = {"crate-test", "qemu-fullboot", "dropped"}
 VALID_MIGRATION_CLASSIFICATIONS = {"pure", "qemu_fullboot", "dropped"}
@@ -301,6 +301,9 @@ def main() -> int:
         features = entry.get("features", [])
         if not isinstance(features, list) or not all(isinstance(v, str) and v for v in features):
             return fail(f"package[{idx}] features must be a list of non-empty strings")
+        panic = entry.get("panic")
+        if "panic" in entry and panic not in ("abort", "unwind"):
+            return fail(f"package[{idx}] invalid panic strategy: {panic}")
         mode = entry.get("mode", "pure-only")
         if mode not in VALID_PACKAGE_MODES:
             return fail(
@@ -320,6 +323,7 @@ def main() -> int:
             entry["test_filter"],
             entry["run_ignored"],
             tuple(features),
+            panic,
         )
         if key in seen:
             return fail(f"duplicate package entry: {key}")

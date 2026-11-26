@@ -257,57 +257,6 @@ fn test_enable_queued_invalidation_poisoned_returns_hw_error() {
     assert_eq!(res.err(), Some(IommuError::HardwareError));
 }
 
-#[cfg(feature = "std")]
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_map_for_device_async_and_unmap() {
-    let controller = Arc::new(controller());
-    controller
-        .init_iova(0x1000, 0x10000)
-        .expect("IOVA admission");
-    let domain_id = controller
-        .create_domain(None, IommuDomainType::Translated)
-        .expect("domain");
-    let device = DeviceId::new(0, 0, 1, 0);
-    controller
-        .device_domains
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .insert(device, domain_id);
-    let driver = crate::io::iommu::vendors::intel::IntelIommuDriver::with_controller(Arc::clone(
-        &controller,
-    ));
-    use core::future::Future;
-    use core::task::{Context, Poll, Waker};
-    let backing = crate::mm::phys::frame_allocator::alloc_contiguous_frames(1)
-        .expect("exclusive DMA backing admission");
-    let mut context = Context::from_waker(Waker::noop());
-    // SAFETY: the exclusive RAM owner remains retained until the mapping's
-    // captured-origin retirement completes below. No device command is issued.
-    let mut admission = core::pin::pin!(unsafe {
-        driver.map_for_device_async(&device, backing.start_address(), backing.size_bytes())
-    });
-    let Poll::Ready(Ok(mapping)) = admission.as_mut().poll(&mut context) else {
-        panic!("register fixture did not complete mapping admission");
-    };
-    let iova = mapping.iova();
-    let domain = controller.domain(domain_id).expect("domain retained");
-    assert!(domain.mapping(iova).is_some());
-    // Retirement uses the captured origin even after the device binding changes.
-    controller
-        .device_domains
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .remove(&device);
-    let mut retirement = core::pin::pin!(mapping.unmap_async());
-    assert!(matches!(
-        retirement.as_mut().poll(&mut context),
-        Poll::Ready(Ok(()))
-    ));
-    assert!(domain.mapping(iova).is_none());
-    backing.release();
-}
-
 #[cfg(feature = "qemu-test-export")]
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]

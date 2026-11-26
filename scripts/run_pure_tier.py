@@ -32,7 +32,11 @@ def build_cargo_cmd(entry: dict, include_ignored: bool) -> list[str] | None:
     if entry["run_ignored"] and not include_ignored:
         return None
 
-    cmd = ["cargo", "test", "-p", entry["name"]]
+    cmd = ["cargo"]
+    if "panic" in entry:
+        abort_tests = str(entry["panic"] == "abort").lower()
+        cmd.extend(["--config", f"unstable.panic-abort-tests={abort_tests}"])
+    cmd.extend(["test", "-p", entry["name"]])
     features = entry.get("features", [])
     if features:
         cmd.extend(["--features", ",".join(features)])

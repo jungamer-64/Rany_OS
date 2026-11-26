@@ -139,56 +139,59 @@ fn admitted_slot_survives_a_full_queue_and_cancellation_releases_capacity() {
     assert!(slots.reserve().is_some());
 }
 
-#[cfg(all(feature = "std", test))]
-#[test]
-fn interrupted_reclaimer_retains_its_progress_and_owner() {
-    let slots = ReclaimSlots::<OwnedValue, 1>::new();
-    let dropped = Arc::new(AtomicUsize::new(0));
-    assert!(offer(&slots, value(17, &dropped)).is_ok());
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        slots.process(1, |owner| {
-            owner.progress = 7;
-            panic!("injected reclaimer interruption");
-        });
-    }));
-    assert!(outcome.is_err());
-    assert_eq!(dropped.load(Ordering::Relaxed), 0);
-    assert!(slots.has_pending());
-    assert_eq!(
-        slots.process(1, |owner| {
-            assert_eq!(owner.identity, 17);
-            assert_eq!(owner.progress, 7);
-            Ok(())
-        }),
-        1
-    );
-    assert_eq!(dropped.load(Ordering::Relaxed), 1);
-}
+#[cfg(all(feature = "std", panic = "unwind"))]
+mod unwind {
+    use super::*;
 
-#[cfg(all(feature = "std", test))]
-#[test]
-fn panicking_destructor_cannot_republish_a_consumed_value() {
-    struct PanickingDrop(Arc<AtomicUsize>);
-    impl Drop for PanickingDrop {
-        fn drop(&mut self) {
-            self.0.fetch_add(1, Ordering::Relaxed);
-            panic!("injected destructor interruption");
-        }
+    #[test]
+    fn interrupted_reclaimer_retains_its_progress_and_owner() {
+        let slots = ReclaimSlots::<OwnedValue, 1>::new();
+        let dropped = Arc::new(AtomicUsize::new(0));
+        assert!(offer(&slots, value(17, &dropped)).is_ok());
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            slots.process(1, |owner| {
+                owner.progress = 7;
+                panic!("injected reclaimer interruption");
+            });
+        }));
+        assert!(outcome.is_err());
+        assert_eq!(dropped.load(Ordering::Relaxed), 0);
+        assert!(slots.has_pending());
+        assert_eq!(
+            slots.process(1, |owner| {
+                assert_eq!(owner.identity, 17);
+                assert_eq!(owner.progress, 7);
+                Ok(())
+            }),
+            1
+        );
+        assert_eq!(dropped.load(Ordering::Relaxed), 1);
     }
-    let slots = ReclaimSlots::<PanickingDrop, 1>::new();
-    let dropped = Arc::new(AtomicUsize::new(0));
-    slots
-        .reserve()
-        .expect("admission")
-        .publish(PanickingDrop(Arc::clone(&dropped)));
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        slots.process(1, |_| Ok(()));
-    }));
-    assert!(outcome.is_err());
-    assert_eq!(dropped.load(Ordering::Relaxed), 1);
-    assert!(!slots.has_pending());
-    let admission = slots.reserve().expect("consumed slot is available");
-    drop(admission);
-    drop(slots);
-    assert_eq!(dropped.load(Ordering::Relaxed), 1);
+
+    #[test]
+    fn panicking_destructor_cannot_republish_a_consumed_value() {
+        struct PanickingDrop(Arc<AtomicUsize>);
+        impl Drop for PanickingDrop {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                panic!("injected destructor interruption");
+            }
+        }
+        let slots = ReclaimSlots::<PanickingDrop, 1>::new();
+        let dropped = Arc::new(AtomicUsize::new(0));
+        slots
+            .reserve()
+            .expect("admission")
+            .publish(PanickingDrop(Arc::clone(&dropped)));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            slots.process(1, |_| Ok(()));
+        }));
+        assert!(outcome.is_err());
+        assert_eq!(dropped.load(Ordering::Relaxed), 1);
+        assert!(!slots.has_pending());
+        let admission = slots.reserve().expect("consumed slot is available");
+        drop(admission);
+        drop(slots);
+        assert_eq!(dropped.load(Ordering::Relaxed), 1);
+    }
 }

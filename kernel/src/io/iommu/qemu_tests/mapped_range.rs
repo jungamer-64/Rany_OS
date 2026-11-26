@@ -1,7 +1,8 @@
 use crate::io::iommu::common::dma::iova_allocator::{IovaAllocator, PageGranularity};
 use crate::io::iommu::common::dma::mapping_outcome::{DeviceMappedRange, DmaInvalidationSource};
 use crate::io::iommu::common::domain::IommuDomain;
-use crate::io::iommu::types::{IommuDomainType, PteFormat};
+use crate::io::iommu::types::{DeviceId, IommuDomainType, PteFormat};
+use crate::io::iommu::vendors::intel::IntelIommuDriver;
 use crate::io::iommu::vendors::intel::controller::IommuController;
 use crate::io::iommu::vendors::intel::controller::dma::DomainManager;
 use crate::mm::types::PAGE_SIZE_4K;
@@ -137,6 +138,37 @@ pub(crate) async fn masked_mapping_retirement() -> bool {
             .free_immediate(iova, page)
             .expect("unpublished IOVA release");
     }
+
+    // The QEMU PCI bus has no device in this segment. Publish a software
+    // binding only, so no device can access the fixture RAM.
+    let device = DeviceId::new(u16::MAX, 0, 0, 0);
+    {
+        let mut bindings = controller.device_domains.lock().expect("device bindings");
+        assert!(!bindings.contains_key(&device));
+        bindings.insert(device, id);
+    }
+    let driver = IntelIommuDriver::with_controller(Arc::clone(&controller));
+    // SAFETY: data owns the aligned RAM through translation retirement.
+    let admission = unsafe {
+        driver
+            .map_for_device_async(&device, data.start_address(), page)
+            .await
+    };
+    let prior = controller
+        .device_domains
+        .lock()
+        .expect("device bindings")
+        .remove(&device);
+    assert_eq!(prior, Some(id));
+    let mapping = admission.expect("synchronized device mapping");
+    let iova = mapping.iova();
+    check_live_page(&controller, &domain, iova, physical);
+    mapping
+        .unmap_async()
+        .await
+        .expect("retirement through the captured origin after binding removal");
+    assert!(domain.mapping(iova).is_none());
+
     drop(domain);
     controller
         .destroy_domain(id)
