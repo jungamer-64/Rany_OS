@@ -46,6 +46,10 @@ pub trait GdbTarget {
 
 pub trait GdbTransport: Send + Sync {
     fn try_read_byte(&self) -> Option<u8>;
+
+    /// # Errors
+    /// `TransportWrite` reports the prefix accepted before transmission
+    /// stopped. A peer may already have observed that prefix.
     fn write_bytes(&self, bytes: &[u8]) -> Result<(), GdbStubError>;
 }
 
