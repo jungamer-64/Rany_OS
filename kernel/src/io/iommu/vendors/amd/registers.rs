@@ -34,7 +34,6 @@ pub(super) struct AmdRegisters {
     command: IrqMutex<CommandRegisters>,
     event: IrqMutex<EventRegisters>,
     device_table: IrqMutex<WriteRegister>,
-    interrupt_table: IrqMutex<WriteRegister>,
     extended_features: ReadRegister,
 }
 
@@ -78,7 +77,6 @@ impl AmdRegisters {
                 status: update(MMIO_STATUS_OFFSET as usize)?,
             }),
             device_table: IrqMutex::new(write(MMIO_DEV_TABLE_OFFSET as usize)?),
-            interrupt_table: IrqMutex::new(write(MMIO_IRT_BASE_OFFSET as usize)?),
             extended_features: read(MMIO_EXT_FEATURE_OFFSET as usize)?,
         })
     }
@@ -95,10 +93,6 @@ impl AmdRegisters {
 
     pub(super) fn program_device_table(&self, value: u64) {
         self.device_table.lock().write(value);
-    }
-
-    pub(super) fn program_interrupt_table(&self, value: u64) {
-        self.interrupt_table.lock().write(value);
     }
 
     pub(super) fn program_command_buffer(&self, base: u64) {
@@ -163,7 +157,6 @@ impl AmdRegisters {
 pub(crate) const MMIO_DEV_TABLE_OFFSET: u64 = 0x0000;
 pub(crate) const MMIO_EVT_BUF_OFFSET: u64 = 0x0010;
 pub(crate) const MMIO_CONTROL_OFFSET: u64 = 0x0018;
-pub(crate) const MMIO_IRT_BASE_OFFSET: u64 = 0x0068;
 pub(crate) const MMIO_EVT_HEAD_OFFSET: u64 = 0x2010;
 pub(crate) const MMIO_EVT_TAIL_OFFSET: u64 = 0x2018;
 pub(crate) const MMIO_STATUS_OFFSET: u64 = 0x2020;
@@ -172,7 +165,6 @@ pub(crate) const MMIO_STATUS_OFFSET: u64 = 0x2020;
 pub(crate) const CONTROL_IOMMU_EN: u64 = 1 << 0;
 pub(crate) const CONTROL_EVT_LOG_EN: u64 = 1 << 2;
 pub(crate) const CONTROL_EVT_INT_EN: u64 = 1 << 3;
-pub(crate) const CONTROL_INT_MAP_EN: u64 = 1 << 4;
 pub(crate) const CONTROL_CMDBUF_EN: u64 = 1 << 12;
 
 // Device table entry page mode fields

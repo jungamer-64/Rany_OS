@@ -199,7 +199,6 @@ pub struct AmdIommuDriver {
     pub(super) event_logs: Vec<Option<AmdEventLog>>,
     pub(super) device_tables: HashMap<u16, AmdDeviceTable>,
     pub(super) domains: PoisonLock<HashMap<u16, AmdDomainInfo>>,
-    pub(super) device_domains: PoisonLock<HashMap<DeviceId, u16>>,
     pub(super) next_domain_id: AtomicU64,
     pub(super) page_table_pool: Arc<PageTablePool>,
     pub command_queue: Option<CommandQueue>,
@@ -207,7 +206,6 @@ pub struct AmdIommuDriver {
     pub(super) enabled: AtomicBool,
     pub(super) security_notifier: crate::sync::InitOnce<Arc<dyn SecurityNotifier>>,
     pub(super) max_addr_bits: u8,
-    pub(super) interrupt_remap_tables: Vec<Option<PoisonLock<AmdUnitIrt>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -321,7 +319,6 @@ impl AmdIommuDriver {
             event_logs,
             device_tables,
             domains: PoisonLock::new(domain_map),
-            device_domains: PoisonLock::new(HashMap::new()),
             next_domain_id: AtomicU64::new(1),
             page_table_pool,
             command_queue: Some(CommandQueue::new(None)?),
@@ -329,7 +326,6 @@ impl AmdIommuDriver {
             enabled: AtomicBool::new(false),
             security_notifier: crate::sync::InitOnce::new(),
             max_addr_bits,
-            interrupt_remap_tables,
         })
     }
 
