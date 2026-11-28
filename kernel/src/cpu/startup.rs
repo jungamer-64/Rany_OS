@@ -10,7 +10,7 @@ use ap_trampoline::{
     ApTrampolineLaunchInfo, PageTable32Addr, TrampolineMailboxHandle, TrampolineMailboxReadHandle,
     TrampolinePhysAddr, TrampolineVirtAddr,
 };
-use boot_proto::ExoBootInfo;
+use boot_proto::ExoBootInfoView;
 
 use crate::drivers::apic::{ApicDestination, ApicMode, ApicModePolicy, LocalApicError};
 use crate::sync::PoisonLock;
@@ -299,11 +299,14 @@ struct CpuStartupController {
     mailbox: PoisonLock<TrampolineMailboxHandle>,
     launch: PoisonLock<()>,
     required_features: RequiredCpuFeatures,
+    #[cfg(all(target_os = "none", feature = "qemu-test-export"))]
+    panic_during_ap_startup: bool,
 }
 
 impl CpuStartupController {
-    fn new(boot_info: &ExoBootInfo, mode: ApicMode) -> Result<Self, CpuInitializationError> {
-        let trampoline = boot_info
+    fn new(boot: &ExoBootInfoView<'_>, mode: ApicMode) -> Result<Self, CpuInitializationError> {
+        let trampoline = boot
+            .boot_info()
             .ap_trampoline
             .address()
             .map_err(CpuInitializationError::Trampoline)?;
@@ -318,6 +321,12 @@ impl CpuStartupController {
             mailbox: PoisonLock::new(mailbox),
             launch: PoisonLock::new(()),
             required_features: RequiredCpuFeatures::detect(mode),
+            #[cfg(all(target_os = "none", feature = "qemu-test-export"))]
+            panic_during_ap_startup: boot.cmdline().is_some_and(|cmdline| {
+                crate::util::get_cmdline_option(cmdline, "run_integration") == Some("fatal")
+                    && crate::util::get_cmdline_option(cmdline, "run_case")
+                        == Some("fatal.ap_startup")
+            }),
         })
     }
 
@@ -453,7 +462,7 @@ pub(crate) enum CpuInitializationError {
     TransitionWorker(crate::task::SpawnError),
 }
 
-pub(crate) fn prepare_bootstrap(boot_info: &ExoBootInfo) -> Result<(), CpuInitializationError> {
+pub(crate) fn prepare_bootstrap(boot: &ExoBootInfoView<'_>) -> Result<(), CpuInitializationError> {
     if BOOT_CPU_INVENTORY.get().is_some() {
         return Ok(());
     }
@@ -481,7 +490,7 @@ pub(crate) fn prepare_bootstrap(boot_info: &ExoBootInfo) -> Result<(), CpuInitia
         placement,
     )
     .map_err(CpuInitializationError::CpuPlacement)?;
-    super::install_bootstrap(located, Some(boot_info.tls_template))
+    super::install_bootstrap(located, Some(boot.boot_info().tls_template))
         .map_err(CpuInitializationError::Topology)?;
     super::CurrentCpu::bind(CpuId::BOOTSTRAP)
         .map_err(|_| CpuInitializationError::BootstrapBinding)?;
@@ -489,7 +498,7 @@ pub(crate) fn prepare_bootstrap(boot_info: &ExoBootInfo) -> Result<(), CpuInitia
     crate::task::initialize_scheduler().map_err(|_| CpuInitializationError::BootstrapBinding)?;
     super::transition::initialize().map_err(CpuInitializationError::TransitionWorker)?;
 
-    STARTUP_CONTROLLER.call_once(|| CpuStartupController::new(boot_info, local_apic.mode()));
+    STARTUP_CONTROLLER.call_once(|| CpuStartupController::new(boot, local_apic.mode()));
 
     let mut discovered = 1usize;
     let mut enabled = Vec::new();
@@ -961,6 +970,11 @@ fn ap_entry(id: CpuId) -> ! {
     }
     #[cfg(target_os = "none")]
     crate::panic_handler::admit_current_cpu(local_apic);
+    #[cfg(all(target_os = "none", feature = "qemu-test-export"))]
+    if controller.panic_during_ap_startup {
+        assert!(!crate::interrupts::are_interrupts_enabled());
+        panic!("AP panic before completing startup");
+    }
     resource.publish(ApStartupSignal::LocalApicReady);
 
     crate::mm::sync::tlb::enter_lazy_mode();

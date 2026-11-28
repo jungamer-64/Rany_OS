@@ -1238,7 +1238,16 @@ fn observed_fatal_report(config: &RunConfig, log_path: &Path) -> bool {
     }
     let case_id = config.case_filter.as_deref().unwrap_or("fatal.page_fault");
     let case = match case_id {
-        "fatal.page_fault" => ["Unresolved page fault (#PF)", "[PANIC] CR2="],
+        "fatal.page_fault" => ["Unresolved page fault (#PF)", "result=NoVma"],
+        "fatal.page_tables_busy" => ["Unresolved page fault (#PF)", "result=PageTablesBusy"],
+        "fatal.ap_startup" => [
+            "AP panic before completing startup",
+            "run_case=fatal.ap_startup",
+        ],
+        "fatal.general_protection" => [
+            "General protection fault (#GP)",
+            "[PANIC] Error code=0xfff8",
+        ],
         "fatal.oom" => [
             "Kernel allocation failed",
             "[PANIC] Allocation size=1099511627776 align=8",
@@ -1255,30 +1264,45 @@ fn observed_fatal_report(config: &RunConfig, log_path: &Path) -> bool {
         .into_iter()
         .chain([
             stop.as_str(),
-            "[PANIC] record saved at",
             "[PANIC] Stack Trace:",
             "  #0 IP=",
             "[PANIC] Halting reporting CPU",
         ])
-        .all(|expected| output.contains(expected));
-    if !complete || case_id != "fatal.page_fault" {
+        .all(|expected| output.contains(expected))
+        && (case_id == "fatal.ap_startup" || output.contains("[PANIC] record saved at"));
+    if !complete || matches!(case_id, "fatal.oom" | "fatal.ap_startup") {
         return complete;
     }
+    if case_id == "fatal.page_fault" && !output.contains("[kernel-test] NUMA hint fault resumed") {
+        return false;
+    }
+    matches_interrupted_trace(&output)
+}
 
-    // The fault's unmapped data address belongs in CR2, never in the
-    // executable return-address field of a frame.
-    let fault_address = output.lines().find_map(|line| {
-        line.strip_prefix("[PANIC] CR2=")
-            .and_then(|detail| detail.split_whitespace().next())
-    });
-    fault_address.is_some_and(|address| {
-        !output.lines().any(|line| {
-            line.trim_start().starts_with('#')
-                && line
-                    .split_whitespace()
-                    .any(|field| field.strip_prefix("IP=") == Some(address))
+fn matches_interrupted_trace(output: &str) -> bool {
+    fn read_frame(line: &str, prefix: &str, stack_prefix: &str) -> Option<(u64, u64)> {
+        let (ip, sp) = line.strip_prefix(prefix)?.split_once(stack_prefix)?;
+        let ip = u64::from_str_radix(ip.strip_prefix("0x")?, 16).ok()?;
+        let sp = u64::from_str_radix(sp.strip_prefix("0x")?, 16).ok()?;
+        Some((ip, sp))
+    }
+
+    let lines = || output.lines();
+    let Some(origin) = lines().find_map(|line| read_frame(line, "[PANIC] Fault RIP=", " RSP="))
+    else {
+        return false;
+    };
+    let first = lines().find_map(|line| read_frame(line, "  #0 IP=", " SP="));
+    let caller = lines().find_map(|line| read_frame(line, "  #1 IP=", " SP="));
+    // Check that the walk starts at the hardware-saved PC/SP and advances
+    // into the interrupted call stack, within the kernel's 1 MiB stack bound.
+    first == Some(origin)
+        && caller.is_some_and(|(ip, sp)| {
+            ip != origin.0
+                && sp
+                    .checked_sub(origin.1)
+                    .is_some_and(|delta| (1..=1024 * 1024).contains(&delta))
         })
-    })
 }
 
 fn poll_qemu(

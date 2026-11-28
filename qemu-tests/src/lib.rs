@@ -62,13 +62,21 @@ fn run_required_profile(profile: &str) {
     if profile == "fatal" {
         // A destructive case owns its guest for the entire run. Exercise the
         // NMI acknowledgements even when the general PR tier uses one CPU.
-        cfg.smp = 4;
-        cfg.max_cpus = 4;
         let cases = match cfg.case_filter.take() {
             Some(case) => vec![case],
-            None => vec![String::from("fatal.page_fault"), String::from("fatal.oom")],
+            None => [
+                "fatal.page_fault",
+                "fatal.page_tables_busy",
+                "fatal.general_protection",
+                "fatal.ap_startup",
+                "fatal.oom",
+            ]
+            .map(String::from)
+            .into(),
         };
         for case in cases {
+            cfg.smp = if case == "fatal.ap_startup" { 2 } else { 4 };
+            cfg.max_cpus = cfg.smp;
             cfg.case_filter = Some(case);
             let report = run_fullboot(&cfg).expect("terminal kernel diagnostics must complete");
             eprintln!(

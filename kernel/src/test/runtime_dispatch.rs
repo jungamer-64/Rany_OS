@@ -61,6 +61,7 @@ pub enum RuntimeGroup {
 
 enum RuntimeTestBody {
     Sync(fn(Option<&str>) -> RuntimeTestResult),
+    FatalPageFault,
     StorageIntegration,
     IommuIntegration,
     NetworkRuntime,
@@ -483,7 +484,19 @@ static CASES: &[RuntimeTestCase] = &[
     },
     RuntimeTestCase {
         id: "fatal.page_fault",
-        body: RuntimeTestBody::Sync(fatal_page_fault),
+        body: RuntimeTestBody::FatalPageFault,
+        tier: RuntimeTier::PrRequired,
+        group: RuntimeGroup::Fatal,
+    },
+    RuntimeTestCase {
+        id: "fatal.page_tables_busy",
+        body: RuntimeTestBody::Sync(fatal_page_tables_busy),
+        tier: RuntimeTier::PrRequired,
+        group: RuntimeGroup::Fatal,
+    },
+    RuntimeTestCase {
+        id: "fatal.general_protection",
+        body: RuntimeTestBody::Sync(fatal_general_protection),
         tier: RuntimeTier::PrRequired,
         group: RuntimeGroup::Fatal,
     },
@@ -501,25 +514,112 @@ static CASES: &[RuntimeTestCase] = &[
     },
 ];
 
-fn fatal_page_fault(_case_filter: Option<&str>) -> RuntimeTestResult {
+async fn fatal_page_fault() -> RuntimeTestResult {
     #[cfg(all(feature = "qemu-test-export", target_os = "none"))]
     {
-        let Some(cpu) = crate::cpu::CurrentCpu::acquire() else {
-            return RuntimeTestResult::fail("CPU binding missing");
+        use crate::mm::virt::higher_half::{PageFlags, VirtAddr, with_current_pte_mut};
+
+        let page = {
+            let Some(cpu) = crate::cpu::CurrentCpu::acquire() else {
+                return RuntimeTestResult::fail("CPU binding missing");
+            };
+            let Some(stack) = crate::task::context::task_stack_bounds(&cpu) else {
+                return RuntimeTestResult::fail("test is not running on a guarded task stack");
+            };
+            // The bottom mapped page belongs exclusively to this task and lies
+            // below its active frames. The #PF gate uses a separate IST stack.
+            VirtAddr::new(stack.start)
         };
-        let Some(stack) = crate::task::context::task_stack_bounds(&cpu) else {
-            return RuntimeTestResult::fail("test is not running on a guarded task stack");
+        let flags = with_current_pte_mut(page, |pte| {
+            let flags = pte.flags();
+            if !pte.is_present() || pte.is_huge() {
+                return None;
+            }
+            pte.set_flags(flags.clear(PageFlags::PRESENT).set(PageFlags::NUMA_HINT));
+            Some(flags)
+        });
+        let Some(Some(flags)) = flags else {
+            return RuntimeTestResult::fail("task stack has no 4 KiB leaf for the NUMA hint");
         };
-        let guard_address = stack.start - crate::mm::types::PAGE_SIZE_4K as u64;
-        // SAFETY: this isolated guest intentionally checks that hardware
-        // routes a read of its unmapped task guard through the fatal #PF path.
+
+        // SAFETY: the task owns this mapped stack page and the test retains
+        // the stack throughout the hardware fault, repair and return.
         unsafe {
-            core::arch::asm!("test byte ptr [{guard}], 1", guard = in(reg) guard_address, options(nostack));
+            core::arch::asm!("test byte ptr [{page}], 1", page = in(reg) page.as_u64(), options(nostack))
+        };
+        let restored = crate::mm::virt::higher_half::get_current_pte(page);
+        if !restored.is_some_and(|pte| {
+            pte.flags().as_u64() == flags.as_u64()
+                || pte.flags().as_u64() == flags.set(PageFlags::ACCESSED).as_u64()
+        }) {
+            return RuntimeTestResult::fail(
+                "NUMA hint fault did not restore the original mapping flags",
+            );
         }
-        RuntimeTestResult::fail("task guard page read did not fault")
+        info!(target: "init", "[kernel-test] NUMA hint fault resumed");
+        if !crate::drivers::serial::drain_for_shutdown().await {
+            return RuntimeTestResult::fail("could not send the NUMA hint recovery result");
+        }
+        fault_on_task_guard()
     }
     #[cfg(not(all(feature = "qemu-test-export", target_os = "none")))]
     RuntimeTestResult::blocked("fatal page fault requires an isolated booted guest")
+}
+
+fn fatal_page_tables_busy(_case_filter: Option<&str>) -> RuntimeTestResult {
+    #[cfg(all(feature = "qemu-test-export", target_os = "none"))]
+    {
+        let Ok(_interrupted_owner) = crate::mm::virt::higher_half::PAGE_TABLE_MANAGER.lock() else {
+            return RuntimeTestResult::fail("page-table lock is poisoned");
+        };
+        fault_on_task_guard()
+    }
+    #[cfg(not(all(feature = "qemu-test-export", target_os = "none")))]
+    RuntimeTestResult::blocked("page fault with retained page tables requires an isolated guest")
+}
+
+fn fatal_general_protection(_case_filter: Option<&str>) -> RuntimeTestResult {
+    #[cfg(all(feature = "qemu-test-export", target_os = "none"))]
+    {
+        let Some(current) = crate::cpu::CurrentCpu::acquire() else {
+            return RuntimeTestResult::fail("CPU binding missing");
+        };
+        if current.id() == crate::cpu::CpuId::BOOTSTRAP {
+            return RuntimeTestResult::fail("the general-protection fixture must run on an AP");
+        }
+        if crate::drivers::serial::start_interrupts().is_err() {
+            return RuntimeTestResult::fail("could not route the runtime UART interrupts");
+        }
+        let Some(_interrupted_uart) = crate::drivers::serial::FatalSerial::try_open() else {
+            return RuntimeTestResult::fail("could not retain the UART transaction");
+        };
+        // SAFETY: the selector names a GDT entry beyond this guest's table.
+        // The failed load leaves DS unchanged and enters the real #GP gate.
+        unsafe {
+            core::arch::asm!("mov ds, ax", in("ax") 0xfff8_u16, options(nostack));
+        }
+        RuntimeTestResult::fail("invalid GDT selector did not fault")
+    }
+    #[cfg(not(all(feature = "qemu-test-export", target_os = "none")))]
+    RuntimeTestResult::blocked("general protection fault requires an isolated booted guest")
+}
+
+#[cfg(all(feature = "qemu-test-export", target_os = "none"))]
+#[inline(never)]
+fn fault_on_task_guard() -> RuntimeTestResult {
+    let Some(cpu) = crate::cpu::CurrentCpu::acquire() else {
+        return RuntimeTestResult::fail("CPU binding missing");
+    };
+    let Some(stack) = crate::task::context::task_stack_bounds(&cpu) else {
+        return RuntimeTestResult::fail("test is not running on a guarded task stack");
+    };
+    let guard_address = stack.start - crate::mm::types::PAGE_SIZE_4K as u64;
+    // SAFETY: the guest intentionally reads its unmapped guard to exercise
+    // the hardware #PF gate and the interrupted task's frame chain.
+    unsafe {
+        core::arch::asm!("test byte ptr [{guard}], 1", guard = in(reg) guard_address, options(nostack));
+    }
+    RuntimeTestResult::fail("task guard page read did not fault")
 }
 
 fn fatal_oom(_case_filter: Option<&str>) -> RuntimeTestResult {
@@ -646,6 +746,7 @@ pub async fn run(profile: &str, case_filter: Option<&str>) -> RuntimeRunSummary 
         selected_any = true;
         let result = match case.body {
             RuntimeTestBody::Sync(run) => run(nested_case_filter),
+            RuntimeTestBody::FatalPageFault => fatal_page_fault().await,
             RuntimeTestBody::StorageIntegration => {
                 storage_integration_suite(nested_case_filter).await
             }

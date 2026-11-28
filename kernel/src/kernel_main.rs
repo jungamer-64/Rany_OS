@@ -293,7 +293,7 @@ fn phase_early_kernel_substrate(context: &KernelBootContext, heaps: heap::Bootst
     // owners must exist before that admission and before AP execution starts.
     domain::init().unwrap_or_else(|error| panic!("kernel domain admission failed: {error}"));
 
-    if let Err(error) = crate::cpu::prepare_bootstrap(context.boot_info()) {
+    if let Err(error) = crate::cpu::prepare_bootstrap(context.boot_info_view()) {
         panic!("bootstrap CPU initialization failed: {:?}", error);
     }
 
