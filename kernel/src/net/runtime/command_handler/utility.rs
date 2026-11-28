@@ -28,56 +28,6 @@ impl RuntimeCommandHandler {
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::DhcpV6ApplyLease { if_id, outcome },
-            ) => {
-                let crate::net::services::dhcp::DhcpV6ReplyOutcome {
-                    lease,
-                    dns_servers,
-                    domain_search,
-                } = outcome;
-                let ipv6_addr = lease.addr;
-                let Some(lifetimes) = crate::net::l3::ipv6::address_state::AddressLifetimes::new(
-                    lease.obtained_at,
-                    lease.preferred_lifetime,
-                    lease.valid_lifetime,
-                ) else {
-                    return EventHandleResult::ProtocolError(EndpointError::InvalidArgument);
-                };
-                if let Err(error) = crate::net::runtime::manager::stage_dhcp_ipv6_in(
-                    runtime,
-                    if_id,
-                    ipv6_addr,
-                    lifetimes,
-                    crate::task::current_tick(),
-                ) {
-                    return EventHandleResult::ProtocolError(
-                        crate::net::runtime::command_handler::common::endpoint_error_from_network(
-                            error,
-                        ),
-                    );
-                }
-
-                let is_primary =
-                    crate::net::runtime::manager::primary_interface_in(runtime) == Some(if_id);
-
-                if is_primary {
-                    // DNSサーバーを更新
-                    if !dns_servers.is_empty() {
-                        crate::net::services::dns::set_ipv6_servers_in(runtime, &dns_servers);
-                    }
-                    if !domain_search.is_empty() {
-                        crate::net::services::dns::set_search_domains_in(runtime, &domain_search);
-                    }
-                }
-
-                log::info!(
-                    "[NET] DHCPv6 lease applied: if{} addr={}",
-                    if_id.0,
-                    ipv6_addr
-                );
-                EventHandleResult::Success
-            }
-            RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::GetPrimaryInterfaceConfig { reply },
             ) => {
                 let result =
