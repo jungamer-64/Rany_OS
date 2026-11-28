@@ -116,13 +116,13 @@ impl Phase {
                     },
                 ),
                 DhcpV6MessageType::Reply,
-            ) => exchange.xid == xid && expected.id == *server,
+            ) => exchange.xid == xid && expected.id.as_bytes() == server.as_bytes(),
             _ => false,
         }
     }
 }
 
-enum Request<'a> {
+enum ClientMessage<'a> {
     Solicit,
     Request(&'a Server, Ipv6Address),
     Renew(&'a Binding),
@@ -130,7 +130,7 @@ enum Request<'a> {
     Release(&'a Binding),
 }
 
-impl Request<'_> {
+impl ClientMessage<'_> {
     fn kind(&self) -> DhcpV6MessageType {
         match self {
             Self::Solicit => DhcpV6MessageType::Solicit,
@@ -221,7 +221,12 @@ impl DhcpV6Client {
             })
     }
 
-    fn encode(&self, bytes: &mut [u8; 256], exchange: &Exchange, request: &Request<'_>) -> usize {
+    fn encode(
+        &self,
+        bytes: &mut [u8; 256],
+        exchange: &Exchange,
+        request: &ClientMessage<'_>,
+    ) -> usize {
         bytes[0] = request.kind() as u8;
         bytes[1..4].copy_from_slice(&exchange.xid);
         let mut offset = 4;
@@ -251,7 +256,7 @@ impl DhcpV6Client {
         offset
     }
 
-    fn send(&self, exchange: &Exchange, request: Request<'_>) -> Result<(), &'static str> {
+    fn send(&self, exchange: &Exchange, request: ClientMessage<'_>) -> Result<(), &'static str> {
         let src = self
             .get_link_local()
             .ok_or("No assigned link-local address")?;
@@ -292,7 +297,7 @@ impl DhcpV6Client {
                     address: src,
                 };
                 let exchange = Exchange::begin(now).map_err(ResponseError::PrepareRequest)?;
-                self.send(&exchange, Request::Request(&server, address))
+                self.send(&exchange, ClientMessage::Request(&server, address))
                     .map_err(ResponseError::PrepareRequest)?;
                 *phase = Phase::Requesting {
                     exchange,
@@ -347,7 +352,7 @@ impl DhcpV6Client {
         match &mut *phase {
             Phase::Init if self.get_link_local().is_some() => {
                 let exchange = Exchange::begin(now)?;
-                self.send(&exchange, Request::Solicit)?;
+                self.send(&exchange, ClientMessage::Solicit)?;
                 *phase = Phase::Soliciting(exchange);
             }
             Phase::Soliciting(exchange) if exchange.due(now, jitter, 1, 120) => {
@@ -355,7 +360,7 @@ impl DhcpV6Client {
                     *phase = Phase::Init;
                 } else {
                     exchange.attempted(now);
-                    self.send(exchange, Request::Solicit)?;
+                    self.send(exchange, ClientMessage::Solicit)?;
                 }
             }
             Phase::Requesting {
@@ -367,14 +372,14 @@ impl DhcpV6Client {
                     *phase = Phase::Init;
                 } else {
                     exchange.attempted(now);
-                    self.send(exchange, Request::Request(server, *offered))?;
+                    self.send(exchange, ClientMessage::Request(server, *offered))?;
                 }
             }
             Phase::Bound(binding) | Phase::Renewing(_, binding)
                 if elapsed(now, &binding.lease, binding.lease.t2) =>
             {
                 let exchange = Exchange::begin(now)?;
-                self.send(&exchange, Request::Rebind(binding))?;
+                self.send(&exchange, ClientMessage::Rebind(binding))?;
                 if let Phase::Bound(binding) | Phase::Renewing(_, binding) =
                     core::mem::replace(&mut *phase, Phase::Init)
                 {
@@ -383,18 +388,18 @@ impl DhcpV6Client {
             }
             Phase::Bound(binding) if elapsed(now, &binding.lease, binding.lease.t1) => {
                 let exchange = Exchange::begin(now)?;
-                self.send(&exchange, Request::Renew(binding))?;
+                self.send(&exchange, ClientMessage::Renew(binding))?;
                 if let Phase::Bound(binding) = core::mem::replace(&mut *phase, Phase::Init) {
                     *phase = Phase::Renewing(exchange, binding);
                 }
             }
             Phase::Renewing(exchange, binding) if exchange.due(now, jitter, 10, 600) => {
                 exchange.attempted(now);
-                self.send(exchange, Request::Renew(binding))?;
+                self.send(exchange, ClientMessage::Renew(binding))?;
             }
             Phase::Rebinding(exchange, binding) if exchange.due(now, jitter, 10, 600) => {
                 exchange.attempted(now);
-                self.send(exchange, Request::Rebind(binding))?;
+                self.send(exchange, ClientMessage::Rebind(binding))?;
             }
             _ => {}
         }
@@ -405,7 +410,7 @@ impl DhcpV6Client {
         if let Ok(mut phase) = self.phase.lock() {
             if let Some(binding) = phase.binding()
                 && let Err(error) = Exchange::begin(crate::task::current_tick())
-                    .and_then(|exchange| self.send(&exchange, Request::Release(binding)))
+                    .and_then(|exchange| self.send(&exchange, ClientMessage::Release(binding)))
             {
                 log::warn!("[NET] DHCPv6 RELEASE admission failed: {error}");
             }
@@ -420,7 +425,7 @@ impl DhcpV6Client {
             return Ok(());
         };
         let exchange = Exchange::begin(now)?;
-        self.send(&exchange, Request::Renew(binding))?;
+        self.send(&exchange, ClientMessage::Renew(binding))?;
         match core::mem::replace(&mut *phase, Phase::Init) {
             Phase::Bound(binding) | Phase::Renewing(_, binding) | Phase::Rebinding(_, binding) => {
                 *phase = Phase::Renewing(exchange, binding);
@@ -596,7 +601,7 @@ pub(crate) mod tests {
     pub fn test_build_solicit_min_size() {
         let client = interface();
         let mut bytes = [0; 256];
-        let len = client.encode(&mut bytes, &exchange(), &Request::Solicit);
+        let len = client.encode(&mut bytes, &exchange(), &ClientMessage::Solicit);
         assert_eq!(&bytes[..4], &[1, 1, 2, 3]);
         assert_eq!(len, 34);
         assert_eq!(&bytes[22..26], &client.iaid.to_be_bytes());
@@ -637,7 +642,11 @@ pub(crate) mod tests {
         let client = interface();
         let mut bytes = [0; 256];
         let server = server(&SERVER_ID);
-        let len = client.encode(&mut bytes, &exchange(), &Request::Request(&server, ADDRESS));
+        let len = client.encode(
+            &mut bytes,
+            &exchange(),
+            &ClientMessage::Request(&server, ADDRESS),
+        );
         assert_eq!(&bytes[..4], &[3, 1, 2, 3]);
         assert_eq!(&bytes[18..28], &[0, 2, 0, 6, 0, 3, 0, 1, 2, 3]);
         assert_eq!(&bytes[48..64], ADDRESS.as_bytes());
@@ -887,8 +896,8 @@ pub(crate) mod tests {
                 obtained_at: 1000,
             },
         };
-        let renew = Request::Renew(&binding);
-        let rebind = Request::Rebind(&binding);
+        let renew = ClientMessage::Renew(&binding);
+        let rebind = ClientMessage::Rebind(&binding);
         assert_eq!(renew.server().unwrap().address, SERVER);
         assert!(rebind.server().is_none());
         let mut bytes = [0; 256];

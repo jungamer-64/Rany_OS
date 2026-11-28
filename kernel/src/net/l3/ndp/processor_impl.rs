@@ -96,21 +96,16 @@ impl NdpProcessor {
             Message::Router {
                 source,
                 lifetime,
-                mut options,
+                options,
             } => {
                 self.stats.ra_received.fetch_add(1, Ordering::Relaxed);
-                options.retain(|option| {
-                    if let NdpOption::LinkLayerAddress { mac, .. } = option {
-                        self.cache.update_stale(&source, *mac, now);
-                        false
-                    } else {
-                        true
-                    }
-                });
+                if let Some(mac) = options.source_mac {
+                    self.cache.update_stale(&source, mac, now);
+                }
                 NdpResult::RouterAdvertisement {
                     router: source,
                     router_lifetime_secs: lifetime,
-                    prefixes: options,
+                    prefixes: options.advertised,
                 }
             }
         }

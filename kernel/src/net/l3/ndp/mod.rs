@@ -65,52 +65,9 @@ pub const MAX_MULTICAST_SOLICIT: u8 = 3;
 // NDP Option Types
 // =====================================================
 
-/// NDP option type codes (RFC 4861 Section 4.6)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum NdpOptionType {
-    /// Source Link-Layer Address
-    SourceLinkLayerAddress = 1,
-    /// Target Link-Layer Address
-    TargetLinkLayerAddress = 2,
-    /// Prefix Information
-    PrefixInformation = 3,
-    /// Redirected Header
-    RedirectedHeader = 4,
-    /// MTU
-    Mtu = 5,
-    /// Recursive DNS Server (RFC 8106)
-    RecursiveDnsServer = 25,
-    /// Unknown option
-    Unknown(u8),
-}
-
-impl From<u8> for NdpOptionType {
-    fn from(value: u8) -> Self {
-        match value {
-            1 => NdpOptionType::SourceLinkLayerAddress,
-            2 => NdpOptionType::TargetLinkLayerAddress,
-            3 => NdpOptionType::PrefixInformation,
-            4 => NdpOptionType::RedirectedHeader,
-            5 => NdpOptionType::Mtu,
-            25 => NdpOptionType::RecursiveDnsServer,
-            other => NdpOptionType::Unknown(other),
-        }
-    }
-}
-
-// =====================================================
-// NDP Option Parser
-// =====================================================
-
 /// Parsed NDP option
 #[derive(Debug)]
 pub enum NdpOption {
-    /// Source/Target Link-Layer Address (6-byte MAC)
-    LinkLayerAddress {
-        option_type: NdpOptionType,
-        mac: [u8; 6],
-    },
     /// Prefix Information
     PrefixInfo {
         prefix_len: u8,
@@ -286,21 +243,6 @@ impl NeighborCache {
     #[cfg(test)]
     fn remove(&mut self, ip: &Ipv6Address) -> Option<NeighborEntry> {
         self.entries.remove(ip.as_bytes())
-    }
-
-    /// Update a neighbor's MAC address and set Reachable (for solicited NA)
-    pub fn update_reachable(&mut self, ip: &Ipv6Address, mac: [u8; 6], timestamp: u64) {
-        if let Some(entry) = self.entries.get_mut(ip.as_bytes()) {
-            entry.mac = mac;
-            entry.state = NeighborState::Reachable;
-            entry.timestamp = timestamp;
-            entry.probes_sent = 0;
-        } else {
-            // RFC 4861 Section 7.2.5: SHOULD discard if not in cache.
-            // But if we're here, process_na should have already checked.
-            // We use new_reachable if forced.
-            self.insert(NeighborEntry::new_reachable(*ip, mac, timestamp));
-        }
     }
 
     /// Update a neighbor's MAC address and set Stale (for unsolicited info like NS SLLA or RA)

@@ -73,7 +73,7 @@ fn test_neighbor_cache_update() {
 
     // Update to reachable
     let mac = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
-    cache.update_reachable(&ip, mac, 200);
+    cache.insert(NeighborEntry::new_reachable(ip, mac, 200));
     let entry = cache.lookup(&ip).unwrap();
     assert!(entry.has_mac());
     assert_eq!(entry.mac, mac);
@@ -109,14 +109,11 @@ pub fn test_parse_slla_option() {
     let payload = fixture_payload(&data);
     let options =
         validation::router_options(&PacketPayloadView::new(&payload), 0).expect("complete options");
-    assert_eq!(options.len(), 1);
-    match &options[0] {
-        NdpOption::LinkLayerAddress { option_type, mac } => {
-            assert_eq!(*option_type, NdpOptionType::SourceLinkLayerAddress);
-            assert_eq!(*mac, [0x52, 0x54, 0x00, 0x12, 0x34, 0x56]);
-        }
-        _ => panic!("Expected LinkLayerAddress"),
-    }
+    assert_eq!(
+        options.source_mac,
+        Some([0x52, 0x54, 0x00, 0x12, 0x34, 0x56])
+    );
+    assert!(options.advertised.is_empty());
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -147,8 +144,8 @@ pub fn test_parse_prefix_info_option() {
     let payload = fixture_payload(&data);
     let options =
         validation::router_options(&PacketPayloadView::new(&payload), 0).expect("complete options");
-    assert_eq!(options.len(), 1);
-    match &options[0] {
+    assert_eq!(options.advertised.len(), 1);
+    match &options.advertised[0] {
         NdpOption::PrefixInfo {
             prefix_len,
             on_link,
@@ -553,8 +550,8 @@ fn ndp_peer_updates_respect_accepted_mapping_and_reachability() {
     let ip = Ipv6Address::from_eui64(&mac);
     let mut ingress = NeighborCache::new();
     let mut peer = NeighborCache::new();
-    ingress.update_reachable(&ip, mac, 0);
-    peer.update_reachable(&ip, mac, 0);
+    ingress.insert(NeighborEntry::new_reachable(ip, mac, 0));
+    peer.insert(NeighborEntry::new_reachable(ip, mac, 0));
 
     let demotion = ingress
         .observe_advertisement(&ip, Some(next_mac), true, false, 10)

@@ -1,6 +1,6 @@
 use super::types::{DhcpV6Lease, DhcpV6MessageType};
 use crate::net::l3::ipv6::{Ipv6Address, address_state::AddressLifetimes};
-use crate::net::payload::PayloadSpanRef;
+use crate::net::payload::{FixedPayloadBytes, PayloadSpanRef};
 use crate::net::services::dns::{DNS_MAX_SEARCH_DOMAINS, DnsNormalizedName};
 use crate::net::types::NetworkError;
 use alloc::{string::String, vec::Vec};
@@ -31,30 +31,22 @@ impl core::fmt::Display for ResponseError {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub(super) struct ServerId {
-    bytes: [u8; 130],
-    len: u8,
-}
+pub(super) struct ServerId(FixedPayloadBytes<130>);
 
 impl ServerId {
     pub(super) fn parse(value: PayloadSpanRef<'_>) -> Result<Self, ResponseError> {
         let len = value.total_len();
-        if !(3..=130).contains(&len) {
+        if len < 3 {
             return Err(ResponseError::Malformed);
         }
-        let mut bytes = [0; 130];
-        for (index, byte) in bytes[..len].iter_mut().enumerate() {
-            *byte = value.byte_at(index).ok_or(ResponseError::Malformed)?;
-        }
-        Ok(Self {
-            bytes,
-            len: len as u8,
-        })
+        value
+            .read_fixed_bytes(len)
+            .map(Self)
+            .ok_or(ResponseError::Malformed)
     }
 
     pub(super) fn as_bytes(&self) -> &[u8] {
-        &self.bytes[..usize::from(self.len)]
+        self.0.as_slice()
     }
 }
 
@@ -118,7 +110,7 @@ impl Response {
         let mut dns_servers = Vec::new();
         let mut domain_search = Vec::new();
 
-        // LOOP_PROOF: mode=bounded; reason=Options::next consumes a checked four-byte header and value per iteration.;
+        // LOOP_PROOF: mode=condition; reason=Options::next consumes a checked four-byte header and value per iteration.;
         while let Some((code, value)) = options.next()? {
             match code {
                 1 if !client_matches => {
@@ -220,7 +212,7 @@ fn parse_ia(
     let mut options = Options(ia.subspan(12, ia.total_len() - 12).ok_or(Malformed)?);
     let mut address = None;
     let mut status = None;
-    // LOOP_PROOF: mode=bounded; reason=Each IA suboption consumes a checked header and value.;
+    // LOOP_PROOF: mode=condition; reason=Each IA suboption consumes a checked header and value.;
     while let Some((code, value)) = options.next()? {
         match code {
             5 => {
@@ -265,7 +257,7 @@ fn parse_address(
     let valid = u32::from_be_bytes(value.read_array::<4>(20).ok_or(Malformed)?);
     let mut options = Options(value.subspan(24, value.total_len() - 24).ok_or(Malformed)?);
     let mut status = None;
-    // LOOP_PROOF: mode=bounded; reason=Each IA Address suboption consumes a checked header and value.;
+    // LOOP_PROOF: mode=condition; reason=Each IA Address suboption consumes a checked header and value.;
     while let Some((code, option)) = options.next()? {
         if code == 13 {
             if status.is_some() {

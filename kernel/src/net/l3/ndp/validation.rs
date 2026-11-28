@@ -18,7 +18,7 @@ pub(super) enum Message {
     Router {
         source: Ipv6Address,
         lifetime: u16,
-        options: Vec<NdpOption>,
+        options: RouterOptions,
     },
 }
 
@@ -48,7 +48,8 @@ impl ValidatedNdp {
                     return None;
                 }
                 if kind == Icmpv6Type::NeighborSolicitation {
-                    let (mac, nonce) = neighbor_options(&view, NS_MIN_SIZE, 1, src_mac)?;
+                    let NeighborOptions { mac, nonce } =
+                        neighbor_options(&view, NS_MIN_SIZE, 1, src_mac)?;
                     if src.is_unspecified() && (dst != target.solicited_node() || mac.is_some()) {
                         return None;
                     }
@@ -64,7 +65,8 @@ impl ValidatedNdp {
                     if src.is_unspecified() || (solicited && dst.is_multicast()) {
                         return None;
                     }
-                    let (mac, _) = neighbor_options(&view, NA_MIN_SIZE, 2, src_mac)?;
+                    let NeighborOptions { mac, .. } =
+                        neighbor_options(&view, NA_MIN_SIZE, 2, src_mac)?;
                     Message::Advertisement {
                         target,
                         mac,
@@ -128,12 +130,17 @@ fn walk_options(
     Some(())
 }
 
+struct NeighborOptions {
+    mac: Option<[u8; 6]>,
+    nonce: Option<[u8; 6]>,
+}
+
 fn neighbor_options(
     view: &PacketPayloadView<'_>,
     start: usize,
     link_layer_option: u8,
     src_mac: [u8; 6],
-) -> Option<(Option<[u8; 6]>, Option<[u8; 6]>)> {
+) -> Option<NeighborOptions> {
     let mut mac = None;
     let mut nonce = None;
     walk_options(view, start, |kind, offset, len| {
@@ -148,19 +155,26 @@ fn neighbor_options(
         }
         Some(())
     })?;
-    Some((mac, nonce))
+    Some(NeighborOptions { mac, nonce })
 }
 
-pub(super) fn router_options(view: &PacketPayloadView<'_>, start: usize) -> Option<Vec<NdpOption>> {
-    let mut options = Vec::new();
+pub(super) struct RouterOptions {
+    pub(super) source_mac: Option<[u8; 6]>,
+    pub(super) advertised: Vec<NdpOption>,
+}
+
+pub(super) fn router_options(view: &PacketPayloadView<'_>, start: usize) -> Option<RouterOptions> {
+    let mut options = RouterOptions {
+        source_mac: None,
+        advertised: Vec::new(),
+    };
     walk_options(view, start, |kind, offset, len| {
-        let option_type = NdpOptionType::from(kind);
-        let option = match option_type {
-            NdpOptionType::SourceLinkLayerAddress if len == 8 => NdpOption::LinkLayerAddress {
-                option_type,
-                mac: view.read_array::<6>(offset + 2)?,
-            },
-            NdpOptionType::PrefixInformation if len == 32 => {
+        let option = match kind {
+            1 if len == 8 => {
+                options.source_mac = Some(view.read_array::<6>(offset + 2)?);
+                return Some(());
+            }
+            3 if len == 32 => {
                 let [prefix_len, flags] = view.read_array::<2>(offset + 2)?;
                 NdpOption::PrefixInfo {
                     prefix_len,
@@ -171,7 +185,7 @@ pub(super) fn router_options(view: &PacketPayloadView<'_>, start: usize) -> Opti
                     prefix: Ipv6Address::new(view.read_array::<16>(offset + 16)?),
                 }
             }
-            NdpOptionType::RecursiveDnsServer if len >= 24 && len % 16 == 8 => {
+            25 if len >= 24 && len % 16 == 8 => {
                 let lifetime = u32::from_be_bytes(view.read_array::<4>(offset + 4)?);
                 let mut servers = Vec::new();
                 for addr_offset in (offset + 8..offset + len).step_by(16) {
@@ -185,7 +199,7 @@ pub(super) fn router_options(view: &PacketPayloadView<'_>, start: usize) -> Opti
             }
             _ => return Some(()),
         };
-        options.push(option);
+        options.advertised.push(option);
         Some(())
     })?;
     Some(options)
