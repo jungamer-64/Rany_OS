@@ -164,31 +164,6 @@ impl DnsClient {
         Ok(parsed.next_offset + 4)
     }
 
-    fn skip_authority_section_payload(
-        &self,
-        view: &crate::net::payload::PacketPayloadView<'_>,
-        offset: &mut usize,
-        nscount: usize,
-    ) -> Result<(), DnsResponseCode> {
-        for _ in 0..nscount {
-            if *offset >= view.total_len() {
-                break;
-            }
-
-            *offset = self.skip_name_payload(view, *offset)?;
-            if *offset + 10 > view.total_len() {
-                break;
-            }
-
-            let rdlength = view
-                .read_array::<2>(*offset + 8)
-                .map(u16::from_be_bytes)
-                .ok_or(DnsResponseCode::FormatError)? as usize;
-            *offset += 10 + rdlength;
-        }
-        Ok(())
-    }
-
     fn parse_matched_response(
         &self,
         payload: PacketPayload,
@@ -199,14 +174,21 @@ impl DnsClient {
     ) -> Result<DnsResponseView, DnsResponseCode> {
         let view = PacketPayloadView::new(&payload);
         let counts = self.parse_section_counts_payload(&view)?;
+        let mut records = Vec::new();
+        for _ in 0..counts.acount {
+            let header = self.parse_record_header_payload(&payload, &view, &mut offset)?;
+            if records.len() < DNS_MAX_ANSWER_COUNT {
+                records.push(self.build_record_meta_payload(&payload, &view, header));
+            }
+        }
+        for _ in 0..counts.nscount + counts.arcount {
+            self.parse_record_header_payload(&payload, &view, &mut offset)?;
+        }
         self.handle_response_code_payload(flags, expected_name, current_tick)?;
-
-        let records =
-            self.parse_answer_section_payload(&payload, &view, &mut offset, counts.acount)?;
-        self.skip_authority_section_payload(&view, &mut offset, counts.nscount)?;
-        let _ = self.parse_answer_section_payload(&payload, &view, &mut offset, counts.arcount)?;
-
-        Ok(self.finalize_response_payload(payload, expected_name, current_tick, records))
+        self.stats
+            .responses_received
+            .fetch_add(1, Ordering::Relaxed);
+        Ok(DnsResponseView { payload, records })
     }
 
     fn parse_name_pointer_payload(
@@ -324,67 +306,16 @@ impl DnsClient {
         DnsRecordData::TXT(DnsTxtView::from_ranges(spans, text_len))
     }
 
-    fn finalize_response_payload(
-        &self,
-        payload: kernel_api::resource::net::PacketPayload,
-        _expected_name: &DnsNameOwned,
-        _current_tick: u64,
-        records: Vec<DnsRecordMeta>,
-    ) -> DnsResponseView {
-        self.stats
-            .responses_received
-            .fetch_add(1, Ordering::Relaxed);
-        DnsResponseView { payload, records }
-    }
-
-    fn skip_name_payload(
-        &self,
-        view: &crate::net::payload::PacketPayloadView<'_>,
-        mut offset: usize,
-    ) -> Result<usize, DnsResponseCode> {
-        let mut labels = 0usize;
-        // LOOP_PROOF: mode=event; reason=Each label advances offset and the bounded label count, while a terminator, pointer, 128-label exhaustion, or malformed input returns.;
-        loop {
-            let len = view
-                .read_array::<1>(offset)
-                .map(|bytes| bytes[0])
-                .ok_or(DnsResponseCode::FormatError)?;
-            if len == 0 {
-                return Ok(offset + 1);
-            }
-
-            if len & 0xC0 == 0xC0 {
-                if view.read_array::<1>(offset + 1).is_none() {
-                    return Err(DnsResponseCode::FormatError);
-                }
-                return Ok(offset + 2);
-            }
-
-            if len > 63 {
-                return Err(DnsResponseCode::FormatError);
-            }
-            labels += 1;
-            if labels > 128 {
-                return Err(DnsResponseCode::FormatError);
-            }
-            offset += 1 + len as usize;
-        }
-    }
-
     fn parse_record_header_payload(
         &self,
         payload: &kernel_api::resource::net::PacketPayload,
         view: &crate::net::payload::PacketPayloadView<'_>,
         offset: &mut usize,
-    ) -> Result<Option<DnsRecordHeader>, DnsResponseCode> {
-        if *offset >= view.total_len() {
-            return Ok(None);
-        }
-
+    ) -> Result<DnsRecordHeader, DnsResponseCode> {
         let parsed_name = Self::parse_name_payload(payload, view, *offset)?;
         *offset = parsed_name.next_offset;
         if *offset + 10 > view.total_len() {
-            return Ok(None);
+            return Err(DnsResponseCode::FormatError);
         }
 
         let rtype = view
@@ -406,17 +337,19 @@ impl DnsClient {
 
         *offset += 10;
         if *offset + rdlength > view.total_len() {
-            return Ok(None);
+            return Err(DnsResponseCode::FormatError);
         }
 
-        Ok(Some(DnsRecordHeader {
+        let header = DnsRecordHeader {
             name: parsed_name.name,
             rtype,
             rclass,
             ttl,
             rdlength,
             rdata_offset: *offset,
-        }))
+        };
+        *offset += rdlength;
+        Ok(header)
     }
 
     fn build_record_meta_payload(
@@ -441,29 +374,6 @@ impl DnsClient {
             data: record_data,
         }
     }
-
-    fn parse_answer_section_payload(
-        &self,
-        payload: &kernel_api::resource::net::PacketPayload,
-        view: &crate::net::payload::PacketPayloadView<'_>,
-        offset: &mut usize,
-        acount: usize,
-    ) -> Result<Vec<DnsRecordMeta>, DnsResponseCode> {
-        let mut records = Vec::new();
-        for _ in 0..acount {
-            let Some(header) = self.parse_record_header_payload(payload, view, offset)? else {
-                break;
-            };
-
-            let next_offset = header.rdata_offset + header.rdlength;
-            if records.len() < DNS_MAX_ANSWER_COUNT {
-                records.push(self.build_record_meta_payload(payload, view, header));
-            }
-            *offset = next_offset;
-        }
-
-        Ok(records)
-    }
 }
 
 #[cfg(all(test, any(feature = "std", target_os = "linux")))]
@@ -473,6 +383,56 @@ mod tests {
 
     fn payload(bytes: &[u8]) -> PacketPayload {
         PacketPayload::try_single(packet_fixture_with_data(bytes)).expect("fixture payload")
+    }
+
+    #[test]
+    fn dns_reply_requires_complete_declared_sections_before_cache_admission() {
+        let client = DnsClient::new(crate::net::runtime::default_runtime(), 1000);
+        let name_data = payload(b"host");
+        let name = DnsNameOwned {
+            labels: alloc::vec![PayloadRange::checked(&name_data, 0, 4).expect("label")],
+            payload: name_data,
+        };
+        let question = DnsQuestion {
+            id: 0x0123,
+            name: &name,
+            kind: DnsQueryType::A,
+        };
+        let base = &[
+            1, 0x23, 0x81, 0x80, 0, 1, 0, 0, 0, 0, 0, 0, 4, b'h', b'o', b's', b't', 0, 0, 1, 0, 1,
+        ];
+        let record = &[0xc0, 12, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 192, 0, 2, 1];
+
+        for count_offset in [7, 9, 11] {
+            for length in [0, 4, 15] {
+                let mut message = base.to_vec();
+                message[count_offset] = 1;
+                message.extend_from_slice(&record[..length]);
+                assert!(matches!(
+                    client.parse_reply(payload(&message), &question),
+                    DnsReply::Answer(Err(DnsResponseCode::FormatError))
+                ));
+                message[3] |= 3;
+                assert!(matches!(
+                    client.parse_reply(payload(&message), &question),
+                    DnsReply::Answer(Err(DnsResponseCode::FormatError))
+                ));
+                assert_eq!(client.cache_len(), (0, 0));
+            }
+
+            let mut message = base.to_vec();
+            message[count_offset] = 1;
+            message.extend_from_slice(record);
+            let DnsReply::Answer(Ok(response)) = client.parse_reply(payload(&message), &question)
+            else {
+                panic!("complete response");
+            };
+            assert_eq!(response.records.len(), usize::from(count_offset == 7));
+        }
+        let DnsReply::Answer(Ok(nodata)) = client.parse_reply(payload(base), &question) else {
+            panic!("complete response with no records");
+        };
+        assert!(nodata.records.is_empty());
     }
 
     #[test]
