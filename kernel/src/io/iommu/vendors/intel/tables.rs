@@ -114,8 +114,6 @@ impl ScalableContextEntry {
     pub const PRESENT: u64 = 1 << 0;
     /// Fault Processing Disable (QWORD 0, bit 1)
     pub const FAULT_DISABLE: u64 = 1 << 1;
-    /// PASID Enable (QWORD 0, bit 3)
-    pub const PASID_ENABLE: u64 = 1 << 3;
     /// PASID Directory Pointer (QWORD 0, bits 12-63)
     pub const PASID_DIR_MASK: u64 = !0xFFF;
     /// PASID Directory Size (QWORD 0, bits 9-11)
@@ -135,8 +133,7 @@ impl ScalableContextEntry {
 
     /// Set the PASID directory pointer and size
     pub fn set_pasid_dir(&mut self, pasid_dir_addr: u64, pds: u8) {
-        // Preserve control bits in bits [8:0] (Present, FPD, DTE, PASID_EN)
-        // to avoid fragile dependency on call ordering.
+        // Preserve control bits in bits [8:0] regardless of call ordering.
         let control_mask: u64 = 0x1FF; // bits [8:0]
         let preserved = self.qwords[0] & control_mask;
         self.qwords[0] = (pasid_dir_addr & Self::PASID_DIR_MASK)
@@ -158,11 +155,6 @@ impl ScalableContextEntry {
     /// Enable fault processing (clear FPD)
     pub fn set_fault_enable(&mut self) {
         self.qwords[0] &= !Self::FAULT_DISABLE;
-    }
-
-    /// Enable PASID translation
-    pub fn set_pasid_enable(&mut self) {
-        self.qwords[0] |= Self::PASID_ENABLE;
     }
 }
 

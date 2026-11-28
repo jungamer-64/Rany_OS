@@ -87,8 +87,8 @@ pub mod ccmd_bits {
 
 /// Root table address register bits
 pub mod rtaddr_bits {
-    /// Scalable Mode Translation enable (RTT/SMT)
-    pub const RTADDR_SMT: u64 = 1 << 11;
+    /// Scalable mode is TTM[11:10] = 01b.
+    pub const RTADDR_TTM_SCALABLE: u64 = 1 << 10;
 }
 
 /// Capability register bits

@@ -333,8 +333,8 @@ impl IommuController {
             }
             let mut next = ScalableContextEntry::new();
             next.set_pasid_dir(pasid.phys_addr(), pasid.pds());
+            // The binding admits requester-ID DMA through entry zero and leaves PASIDE clear.
             next.set_rid2pasid(0);
-            next.set_pasid_enable();
             next.set_fault_enable();
             next.set_present();
             entry.qwords[1..].copy_from_slice(&next.qwords[1..]);

@@ -48,6 +48,13 @@ fn iommu_device_arg(profile: &str) -> &'static str {
     }
 }
 
+fn guest_profile(profile: &str) -> &str {
+    match profile {
+        "iommu-scalable" => "iommu",
+        _ => profile,
+    }
+}
+
 impl RunConfig {
     #[must_use]
     pub fn for_profile(profile: impl Into<String>) -> Self {
@@ -470,11 +477,7 @@ fn fullboot_label(config: &RunConfig) -> String {
 
 fn kernel_cmdline(config: &RunConfig) -> String {
     let profile = config.profile.as_str();
-    let guest_profile = if profile == "iommu-scalable" {
-        "iommu"
-    } else {
-        profile
-    };
+    let guest_profile = guest_profile(profile);
     let mut parts = vec![
         format!("run_integration={guest_profile}"),
         String::from("shell=off"),
@@ -495,14 +498,14 @@ fn kernel_cmdline(config: &RunConfig) -> String {
 
 fn profile_needs_storage_disk(profile: &str) -> bool {
     matches!(
-        profile,
+        guest_profile(profile),
         "storage" | "iommu" | "pr-required" | "nightly-required" | "step9-heavy"
     )
 }
 
 fn profile_needs_boot_artifacts(profile: &str) -> bool {
     matches!(
-        profile,
+        guest_profile(profile),
         "storage" | "driver_domain" | "iommu" | "network" | "pr-required" | "nightly-required"
     )
 }
@@ -1760,6 +1763,17 @@ macro output
         assert!(!kernel_cmdline(&cfg).contains("qemu_no_if=1"));
         assert!(profile_needs_boot_artifacts("driver_domain"));
         assert!(profile_needs_boot_artifacts("pr-required"));
+    }
+
+    #[test]
+    fn scalable_iommu_profile_runs_the_iommu_suite_with_its_boot_devices() {
+        let config = RunConfig::for_profile("iommu-scalable");
+        let cmdline = kernel_cmdline(&config);
+        assert!(cmdline.contains("run_integration=iommu "));
+        assert!(cmdline.contains("iommu_scalable=on"));
+        assert!(iommu_device_arg(&config.profile).contains("scalable-mode=on"));
+        assert!(profile_needs_storage_disk(&config.profile));
+        assert!(profile_needs_boot_artifacts(&config.profile));
     }
 
     #[test]

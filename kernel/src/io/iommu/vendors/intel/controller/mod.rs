@@ -369,7 +369,7 @@ impl IommuController {
                 .expect("root table assigned before programming")
                 .phys_addr();
             if self.is_scalable_mode_enabled() {
-                root_phys |= rtaddr_bits::RTADDR_SMT;
+                root_phys |= rtaddr_bits::RTADDR_TTM_SCALABLE;
             }
             root_phys
         };
