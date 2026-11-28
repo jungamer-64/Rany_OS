@@ -89,7 +89,10 @@ pub trait DomainManager {
 pub(in crate::io::iommu) enum DeviceBinding {
     Publishing(PublishedContext),
     Attached(PublishedContext),
-    Revoking(PublishedContext),
+    Revoking {
+        context: Option<PublishedContext>,
+        operation: ContextRevocation,
+    },
     Isolated,
 }
 
@@ -108,23 +111,31 @@ impl DeviceBinding {
 
     pub(super) fn retained_domain_id(&self) -> Option<u16> {
         match self {
-            Self::Publishing(context) | Self::Attached(context) | Self::Revoking(context) => {
-                Some(context.domain.id())
-            }
-            Self::Isolated => None,
+            Self::Publishing(context)
+            | Self::Attached(context)
+            | Self::Revoking {
+                context: Some(context),
+                ..
+            } => Some(context.domain.id()),
+            _ => None,
         }
     }
 
     pub(super) fn fault_domain_id(&self, pasid: Option<u32>) -> Option<u16> {
         match self {
-            Self::Publishing(context) | Self::Attached(context) | Self::Revoking(context) => {
+            Self::Publishing(context)
+            | Self::Attached(context)
+            | Self::Revoking {
+                context: Some(context),
+                ..
+            } => {
                 if let Some(table) = &context.pasid {
                     table.domain_id(pasid.unwrap_or(0))
                 } else {
                     Some(context.domain.id())
                 }
             }
-            Self::Isolated => None,
+            _ => None,
         }
     }
 }
@@ -147,7 +158,8 @@ impl PublishedContext {
     }
 }
 
-pub(super) enum ContextRevocation {
+#[derive(Clone, Copy)]
+pub(in crate::io::iommu) enum ContextRevocation {
     Detach,
     Isolate(crate::io::iommu::runtime::security::IsolationReason),
 }
@@ -184,25 +196,29 @@ impl IommuController {
         if matches!(bindings.get(&device), Some(DeviceBinding::Isolated)) {
             return Ok(());
         }
-        if matches!(
-            bindings.get(&device),
-            Some(DeviceBinding::Attached(_) | DeviceBinding::Publishing(_))
-        ) {
-            let binding = core::mem::replace(
-                bindings.get_mut(&device).expect("binding lock held"),
-                DeviceBinding::Isolated,
-            );
-            let (DeviceBinding::Attached(context) | DeviceBinding::Publishing(context)) = binding
-            else {
-                unreachable!("binding lock held");
-            };
-            bindings.insert(device, DeviceBinding::Revoking(context));
-        }
-        if matches!(operation, ContextRevocation::Isolate(_)) && !bindings.contains_key(&device) {
+        if !bindings.contains_key(&device) {
             bindings
                 .try_reserve(1)
                 .map_err(|_| IommuError::MetadataAllocation)?;
         }
+        let (context, operation) = match bindings.remove(&device) {
+            Some(DeviceBinding::Attached(context) | DeviceBinding::Publishing(context)) => {
+                (Some(context), operation)
+            }
+            Some(DeviceBinding::Revoking {
+                context,
+                operation: pending,
+            }) => {
+                let operation = match pending {
+                    ContextRevocation::Detach => operation,
+                    ContextRevocation::Isolate(_) => pending,
+                };
+                (context, operation)
+            }
+            Some(DeviceBinding::Isolated) => unreachable!("isolated binding handled above"),
+            None => (None, operation),
+        };
+        bindings.insert(device, DeviceBinding::Revoking { context, operation });
         let domain_id = bindings
             .get(&device)
             .and_then(DeviceBinding::retained_domain_id);
@@ -214,7 +230,11 @@ impl IommuController {
             bindings.insert(device, DeviceBinding::Isolated);
         }
         drop(bindings);
-        if let Some(DeviceBinding::Revoking(context)) = retired {
+        if let Some(DeviceBinding::Revoking {
+            context: Some(context),
+            ..
+        }) = retired
+        {
             // SAFETY: Present was cleared and context/PASID/IOTLB/ATS
             // invalidations completed while admitting no new device binding.
             unsafe { context.retire() };
@@ -308,6 +328,9 @@ impl IommuController {
                 .ok_or(IommuError::InvalidAddress)?;
             let table_phys = table.phys_addr();
             let entry = table.get_mut(devfn).ok_or(IommuError::InvalidAddress)?;
+            if entry.is_present() {
+                return Err(IommuError::AlreadyMapped);
+            }
             let mut next = ScalableContextEntry::new();
             next.set_pasid_dir(pasid.phys_addr(), pasid.pds());
             next.set_rid2pasid(0);
@@ -327,6 +350,9 @@ impl IommuController {
                 .ok_or(IommuError::InvalidAddress)?;
             let table_phys = table.phys_addr();
             let entry = table.get_mut(devfn).ok_or(IommuError::InvalidAddress)?;
+            if entry.is_present() {
+                return Err(IommuError::AlreadyMapped);
+            }
             let did = binding.domain.id();
             let agaw = self.selected_agaw_code();
             if binding.domain.domain_type() == IommuDomainType::Passthrough {
@@ -353,7 +379,6 @@ impl IommuController {
             .get(&domain_id)
             .cloned()
             .ok_or(IommuError::DomainNotFound)?;
-        map_rmrr_for_device(&domain_arc, device)?;
         let bus = device.bus as usize;
         let devfn = ((device.device as usize) << 3) | (device.function as usize);
         // Retain the domain through hardware and device-registry publication.

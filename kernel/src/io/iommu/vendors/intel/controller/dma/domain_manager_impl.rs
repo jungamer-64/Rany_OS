@@ -136,6 +136,7 @@ impl DomainManager for IommuController {
             Some(DeviceBinding::Publishing(context)) if context.domain.id() == domain_id => {}
             Some(_) => return Err(IommuError::AlreadyMapped),
             None => {
+                map_rmrr_for_device(&domain, device)?;
                 bindings
                     .try_reserve(1)
                     .map_err(|_| IommuError::MetadataAllocation)?;

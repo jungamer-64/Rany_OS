@@ -226,7 +226,10 @@ pub(crate) fn context_publication_retains_owner() -> bool {
 
     // No register ever received RTADDR, so the fixture can release the RAM.
     let hw = core::mem::take(&mut *controller.hardware.lock().unwrap());
-    let Some(DeviceBinding::Revoking(context)) = controller
+    let Some(DeviceBinding::Revoking {
+        context: Some(context),
+        ..
+    }) = controller
         .device_bindings
         .lock()
         .unwrap_or_else(|_| panic!("device registry poisoned"))

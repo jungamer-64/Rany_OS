@@ -83,6 +83,7 @@ impl ContextEntry {
         self.lo = (2 << 2) | 1;
     }
 
+    #[cfg(feature = "qemu-test-export")]
     /// Get domain ID
     pub fn domain_id(&self) -> u16 {
         ((self.hi >> 8) & 0xFFFF) as u16
