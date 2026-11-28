@@ -5,6 +5,7 @@ use crate::io::iommu::types::{DeviceId, IommuDomainType, PteFormat};
 use crate::io::iommu::vendors::intel::IntelIommuDriver;
 use crate::io::iommu::vendors::intel::controller::IommuController;
 use crate::io::iommu::vendors::intel::controller::dma::DomainManager;
+use crate::io::iommu::vendors::intel::controller::dma::{DeviceBinding, PublishedContext};
 use crate::mm::types::PAGE_SIZE_4K;
 use alloc::sync::Arc;
 
@@ -143,9 +144,12 @@ pub(crate) async fn masked_mapping_retirement() -> bool {
     // binding only, so no device can access the fixture RAM.
     let device = DeviceId::new(u16::MAX, 0, 0, 0);
     {
-        let mut bindings = controller.device_domains.lock().expect("device bindings");
+        let mut bindings = controller.device_bindings.lock().expect("device bindings");
         assert!(!bindings.contains_key(&device));
-        bindings.insert(device, id);
+        bindings.insert(
+            device,
+            DeviceBinding::Attached(PublishedContext::new(Arc::clone(&domain), None)),
+        );
     }
     let driver = IntelIommuDriver::with_controller(Arc::clone(&controller));
     // SAFETY: data owns the aligned RAM through translation retirement.
@@ -155,11 +159,12 @@ pub(crate) async fn masked_mapping_retirement() -> bool {
             .await
     };
     let prior = controller
-        .device_domains
+        .device_bindings
         .lock()
         .expect("device bindings")
         .remove(&device);
-    assert_eq!(prior, Some(id));
+    assert!(matches!(prior, Some(DeviceBinding::Attached(_))));
+    drop(prior);
     let mapping = admission.expect("synchronized device mapping");
     let iova = mapping.iova();
     check_live_page(&controller, &domain, iova, physical);

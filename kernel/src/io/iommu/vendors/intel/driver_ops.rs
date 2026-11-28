@@ -144,9 +144,7 @@ impl IntelIommuDriver {
         validate_dma_params(phys_addr, size)?;
 
         if let Some(ref controller) = self.controller {
-            if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device)
-                && let Some(domain_arc) = controller.domain(domain_id)
-            {
+            if let Ok(Some(domain_arc)) = controller.domain_for_device(*device) {
                 return unsafe {
                     apply_mapping_sync(
                         controller,
@@ -168,9 +166,7 @@ impl IntelIommuDriver {
         }
 
         for controller in &registry.controllers {
-            if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device)
-                && let Some(domain_arc) = controller.domain(domain_id)
-            {
+            if let Ok(Some(domain_arc)) = controller.domain_for_device(*device) {
                 return unsafe {
                     apply_mapping_sync(
                         controller,
@@ -197,11 +193,8 @@ impl IntelIommuDriver {
         validate_dma_params(phys_addr, size)?;
 
         if let Some(controller) = &self.controller {
-            let domain_id = controller
-                .get_domain_for_device(*device)?
-                .ok_or(IommuError::DomainNotFound)?;
             let domain = controller
-                .domain(domain_id)
+                .domain_for_device(*device)?
                 .ok_or(IommuError::DomainNotFound)?;
             // SAFETY: this unsafe boundary inherits the caller's exclusive RAM
             // lifetime obligation until the returned mapping is retired.
@@ -216,9 +209,7 @@ impl IntelIommuDriver {
         }
 
         for controller in &registry.controllers {
-            if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device)
-                && let Some(domain_arc) = controller.domain(domain_id)
-            {
+            if let Ok(Some(domain_arc)) = controller.domain_for_device(*device) {
                 return unsafe {
                     apply_mapping_async(controller, &domain_arc, device, phys_addr.as_u64(), size)
                 }
@@ -356,20 +347,13 @@ impl IntelIommuDriver {
             )
             .ok_or(IommuError::DeviceNotFound)?;
 
-        if let Some(controller) = registry.controllers.get(controller_idx) {
-            // Disable context entry in hardware tables
-            let domain_id =
-                controller.disable_device_context_entry(device.bus, device.device, device.function);
-
-            // An earlier attempt may have cleared Present before its cache
-            // invalidation failed. Every retry must still establish completion.
-            controller.perform_isolation_invalidation(
-                device.requester_id(),
-                domain_id,
-                crate::io::iommu::runtime::security::IsolationReason::PolicyViolation,
-            )
-        } else {
-            Err(IommuError::HardwareError)
-        }
+        let controller = registry
+            .controllers
+            .get(controller_idx)
+            .ok_or(IommuError::HardwareError)?;
+        controller.isolate_device(
+            device,
+            crate::io::iommu::runtime::security::IsolationReason::PolicyViolation,
+        )
     }
 }

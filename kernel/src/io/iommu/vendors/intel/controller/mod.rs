@@ -35,13 +35,11 @@ use crate::io::iommu::runtime::command::queue::CommandQueue;
 use crate::io::iommu::runtime::fault_log::FaultLog;
 use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};
 use crate::io::iommu::types::{DeviceId, IommuDeviceScope, IommuError};
-use crate::io::iommu::vendors::intel::qi::{InvalidationQueue, QiStats};
+use crate::io::iommu::vendors::intel::qi::{InvalidationQueue, InvalidationQueueEntry, QiStats};
 use crate::io::iommu::vendors::intel::registers::{
     cap_bits, fsts_bits, gcmd_bits, gsts_bits, rtaddr_bits,
 };
-use crate::io::iommu::vendors::intel::tables::{
-    ContextEntry, PasidTable, RootEntry, ScalableContextEntry,
-};
+use crate::io::iommu::vendors::intel::tables::{ContextEntry, RootEntry, ScalableContextEntry};
 
 use crate::sync::{IrqMutex, PoisonLock, WakerQueue};
 
@@ -105,6 +103,7 @@ pub struct IommuController {
     selected_levels: u8,
     /// Hardware/Table Lock (protects root_table and context tables)
     pub(crate) hardware: PoisonLock<HardwareContext>,
+    pub(in crate::io::iommu) device_bindings: PoisonLock<HashMap<DeviceId, dma::DeviceBinding>>,
     /// Domains
     pub domains: PoisonLock<HashMap<u16, Arc<IommuDomain>>>,
     /// Next domain ID
@@ -180,6 +179,7 @@ impl IommuController {
             selected_addr_bits,
             selected_levels,
             hardware: PoisonLock::new(HardwareContext::default()),
+            device_bindings: PoisonLock::new(HashMap::new()),
             domains: PoisonLock::new(HashMap::new()),
             next_domain_id: AtomicU64::new(0),
             enabled: AtomicBool::new(false),
@@ -517,6 +517,25 @@ impl IommuController {
         Ok(())
     }
 
+    /// Complete context and PASID-cache invalidations before issuing an IOTLB
+    /// invalidation. Scalable mode admits only queued invalidation.
+    fn invalidate_context_translations(&self, domain_id: Option<u16>) -> Result<(), IommuError> {
+        use crate::io::iommu::vendors::intel::controller::qi_ops::InvalidationOps;
+        self.invalidate_context_global_sync()?;
+        if self.is_scalable_mode_enabled() {
+            if !self.is_queued_invalidation_enabled() {
+                return Err(IommuError::NotSupported);
+            }
+            self.submit_invalidation(InvalidationQueueEntry::pasid_cache_invalidate_global())?;
+            self.qi_wait_sync()?;
+        }
+        if let Some(domain_id) = domain_id {
+            self.invalidate_iotlb(domain_id, false)
+        } else {
+            self.invalidate_iotlb_global_sync()
+        }
+    }
+
     /// Register-based global context cache invalidation.
     unsafe fn invalidate_context_global_direct(&self) -> Result<(), IommuError> {
         use crate::io::iommu::vendors::intel::registers::ccmd_bits;
@@ -544,13 +563,11 @@ impl IommuController {
 
     /// Lookup device to domain mapping.
     pub fn device_to_domain(&self, bus: u8, devfn: u8) -> Option<u16> {
-        // Use the device_domains hashmap directly
-        let device_id = DeviceId::from_bus_devfn(self.segment, bus, devfn);
-
-        match self.device_domains.lock() {
-            Ok(device_domains) => device_domains.get(&device_id).copied(),
-            Err(_) => None,
-        }
+        self.device_bindings
+            .lock()
+            .ok()?
+            .get(&DeviceId::from_bus_devfn(self.segment, bus, devfn))?
+            .domain_id()
     }
 
     /// Enable IOMMU Translation

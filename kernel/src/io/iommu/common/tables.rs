@@ -43,12 +43,9 @@ impl SlPte {
     }
 
     /// Create a present entry with address and permissions
-    /// Intel VT-d spec: W bit is reserved (must be 0) when R=0,
-    /// so if write is requested, read is automatically enabled.
     pub fn mapping(phys_addr: u64, read: bool, write: bool) -> Self {
         let mut flags = 0;
-        // VT-d: R must be set for W to be valid
-        if read || write {
+        if read {
             flags |= Self::READ;
         }
         if write {
@@ -63,8 +60,7 @@ impl SlPte {
     pub fn super_page_2mb(phys_addr: u64, read: bool, write: bool) -> Self {
         const MASK_2MB: u64 = (2 * 1024 * 1024) - 1;
         let mut flags = Self::SUPER_PAGE;
-        // VT-d: R must be set for W to be valid
-        if read || write {
+        if read {
             flags |= Self::READ;
         }
         if write {
@@ -79,8 +75,7 @@ impl SlPte {
     pub fn super_page_1gb(phys_addr: u64, read: bool, write: bool) -> Self {
         const MASK_1GB: u64 = (1024 * 1024 * 1024) - 1;
         let mut flags = Self::SUPER_PAGE;
-        // VT-d: R must be set for W to be valid
-        if read || write {
+        if read {
             flags |= Self::READ;
         }
         if write {
@@ -512,5 +507,22 @@ impl<T: Sized + Copy> HardwareTable<T> {
             self.backing.size_bytes(),
         );
         self.backing.release();
+    }
+}
+
+#[cfg(test)]
+mod permission_tests {
+    use super::SlPte;
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn intel_second_stage_preserves_write_only_permissions() {
+        assert_eq!(SlPte::mapping(0x4000, false, true).0, 0x4002);
+        assert_eq!(SlPte::super_page_2mb(0x20_0000, false, true).0, 0x20_0082);
+        assert_eq!(
+            SlPte::super_page_1gb(0x4000_0000, false, true).0,
+            0x4000_0082
+        );
+        assert_eq!(SlPte::mapping(0x4000, true, false).0, 0x4001);
     }
 }

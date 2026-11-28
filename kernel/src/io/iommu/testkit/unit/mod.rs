@@ -130,12 +130,15 @@ fn test_get_domain_for_device_poisoned_returns_hw_error() {
     let device = DeviceId::new(0, 0, 1, 0);
     assert_eq!(ctrl.get_domain_for_device(device), Ok(None));
 
-    // Poison device_domains lock
-    let held = ctrl.device_domains.lock().expect("unpoisoned fixture lock");
+    // Poison device_bindings lock
+    let held = ctrl
+        .device_bindings
+        .lock()
+        .expect("unpoisoned fixture lock");
     set_panicking(true);
     drop(held);
     set_panicking(false);
-    assert!(ctrl.device_domains.is_poisoned());
+    assert!(ctrl.device_bindings.is_poisoned());
 
     assert_eq!(
         ctrl.get_domain_for_device(device).err(),

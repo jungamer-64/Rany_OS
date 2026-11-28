@@ -91,13 +91,15 @@ impl IommuController {
         am: Option<u8>,
     ) -> Result<(), IommuError> {
         let device_domains = self
-            .device_domains
+            .device_bindings
             .lock()
             .map_err(|_| IommuError::Poisoned)?;
         let ats_devices = self.ats_devices.lock().map_err(|_| IommuError::Poisoned)?;
 
         for device in ats_devices.keys() {
-            if let Some(&did) = device_domains.get(device)
+            if let Some(did) = device_domains
+                .get(device)
+                .and_then(super::dma::DeviceBinding::retained_domain_id)
                 && did == domain_id
             {
                 let source_id = device.requester_id();

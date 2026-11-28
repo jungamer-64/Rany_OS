@@ -86,13 +86,6 @@ pub trait InvalidationOps {
     /// Submit a global context-cache invalidation via queued invalidation
     fn qi_invalidate_context_global(&self) -> Result<(), IommuError>;
 
-    /// Submit a device-selective context-cache invalidation via queued invalidation
-    fn qi_invalidate_context_device(
-        &self,
-        source_id: u16,
-        domain_id: u16,
-    ) -> Result<(), IommuError>;
-
     /// Submit a global IEC invalidation via queued invalidation
     fn qi_invalidate_iec_global(&self) -> Result<(), IommuError>;
 
@@ -169,16 +162,6 @@ impl InvalidationOps for IommuController {
     #[inline]
     fn qi_invalidate_context_global(&self) -> Result<(), IommuError> {
         let entry = InvalidationQueueEntry::context_cache_invalidate_global();
-        self.submit_invalidation(entry)
-    }
-
-    #[inline]
-    fn qi_invalidate_context_device(
-        &self,
-        source_id: u16,
-        domain_id: u16,
-    ) -> Result<(), IommuError> {
-        let entry = InvalidationQueueEntry::context_cache_invalidate(3, domain_id, source_id);
         self.submit_invalidation(entry)
     }
 

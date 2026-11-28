@@ -535,6 +535,17 @@ pub async fn test_iommu() -> IntegrationTestSuite {
     let mut suite = IntegrationTestSuite::new("IOMMU");
 
     #[cfg(feature = "qemu-test-export")]
+    suite.add_result(run_test("iommu_context_publication_retains_owner", || {
+        if crate::io::iommu::qemu_tests::context_publication_retains_owner() {
+            Ok(String::from("Failed invalidation retains context backing"))
+        } else {
+            Err(String::from(
+                "Context owner was lost after failed invalidation",
+            ))
+        }
+    }));
+
+    #[cfg(feature = "qemu-test-export")]
     suite.add_result(run_test("iommu_poisoned_ownership", || {
         if crate::io::iommu::qemu_tests::poisoned_ownership() {
             Ok(String::from(

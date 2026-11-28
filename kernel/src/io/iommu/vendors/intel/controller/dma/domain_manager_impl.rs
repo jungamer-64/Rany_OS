@@ -28,14 +28,19 @@ impl DomainManager for IommuController {
         };
 
         // Find a free domain ID starting from next_domain_id hint
-        let mut id = (self.next_domain_id.load(Ordering::Relaxed) % max_ids as u64) as u16;
+        // CAP.CM reserves DID 0 for cache entries that produce faults.
+        let first = u64::from(self.cap & (1 << 7) != 0);
+        let count = max_ids as u64 - first;
+        let mut offset = self.next_domain_id.load(Ordering::Relaxed) % count;
+        let mut id = (first + offset) as u16;
         let mut found = false;
-        for _ in 0..max_ids {
+        for _ in 0..count {
             if !domains.contains_key(&id) {
                 found = true;
                 break;
             }
-            id = ((id as u64 + 1) % max_ids as u64) as u16;
+            offset = (offset + 1) % count;
+            id = (first + offset) as u16;
         }
 
         if !found {
@@ -43,7 +48,7 @@ impl DomainManager for IommuController {
             return Err(IommuError::OutOfMemory);
         }
         self.next_domain_id
-            .store((id as u64 + 1) % max_ids as u64, Ordering::Relaxed);
+            .store((offset + 1) % count, Ordering::Relaxed);
 
         let supports_2mb = self.supports_2mb_pages();
         let supports_1gb = self.supports_1gb_pages();
@@ -87,27 +92,10 @@ impl DomainManager for IommuController {
     }
 
     fn destroy_domain(&self, id: u16) -> Result<(), IommuError> {
-        // Exclude lookup/attach admission through completion. Every admitted
-        // attach retains an Arc until device-registry publication, so unique
-        // ownership excludes both CPU borrowers and in-flight publishers.
         let mut domains = self.domains.lock().map_err(|_| IommuError::Poisoned)?;
         let domain = domains.get(&id).ok_or(IommuError::DomainNotFound)?;
         if Arc::strong_count(domain) != 1 || domain.active_dma_count() != 0 {
             return Err(IommuError::InUse);
-        }
-        // SECURITY: Check if any devices are still attached to this domain
-        {
-            let device_domains = self
-                .device_domains
-                .lock()
-                .map_err(|_| IommuError::HardwareError)?;
-            if device_domains.values().any(|&did| did == id) {
-                log::error!(
-                    "[IOMMU] Attempted to destroy domain {} while devices are still attached",
-                    id
-                );
-                return Err(IommuError::AlreadyMapped);
-            }
         }
 
         // Failure retains the registry's owner and every retirement cohort for
@@ -133,95 +121,63 @@ impl DomainManager for IommuController {
     }
 
     fn attach_device(&self, device: DeviceId, domain_id: u16) -> Result<(), IommuError> {
-        {
-            let device_domains = self
-                .device_domains
-                .lock()
-                .map_err(|_| IommuError::HardwareError)?;
-            if let Some(&existing_domain_id) = device_domains.get(&device) {
-                if existing_domain_id != domain_id {
-                    return Err(IommuError::AlreadyMapped);
-                }
+        if device.segment != self.segment || device.device >= 32 || device.function >= 8 {
+            return Err(IommuError::InvalidAddress);
+        }
+        let (domain, bus, devfn) = self.resolve_domain_for_attach(domain_id, device)?;
+        let mut bindings = self
+            .device_bindings
+            .lock()
+            .map_err(|_| IommuError::Poisoned)?;
+        match bindings.get(&device) {
+            Some(DeviceBinding::Attached(context)) if context.domain.id() == domain_id => {
                 return Ok(());
+            }
+            Some(DeviceBinding::Publishing(context)) if context.domain.id() == domain_id => {}
+            Some(_) => return Err(IommuError::AlreadyMapped),
+            None => {
+                bindings
+                    .try_reserve(1)
+                    .map_err(|_| IommuError::MetadataAllocation)?;
+                let mut hardware = self.hardware.lock().map_err(|_| IommuError::Poisoned)?;
+                let pasid = self
+                    .is_scalable_mode_enabled()
+                    .then(|| self.prepare_pasid(&domain))
+                    .transpose()?;
+                let context = PublishedContext::new(domain, pasid);
+                bindings.insert(device, DeviceBinding::Publishing(context));
+                let Some(DeviceBinding::Publishing(context)) = bindings.get(&device) else {
+                    unreachable!("freshly admitted context");
+                };
+                if let Err(error) = self.publish_context(&mut hardware, bus, devfn, context) {
+                    if let Some(DeviceBinding::Publishing(context)) = bindings.remove(&device) {
+                        // SAFETY: publication validates every table before writing a context.
+                        unsafe { context.retire() };
+                    }
+                    return Err(error);
+                }
             }
         }
 
-        let (domain, bus, devfn) = self.resolve_domain_for_attach(domain_id, device)?;
-        let domain_type = domain.domain_type();
-        let page_table_addr = domain.page_table_addr();
-        let mut hw_guard = self
-            .hardware
-            .lock()
-            .map_err(|_| IommuError::HardwareError)?;
-
-        if self.is_scalable_mode_enabled() {
-            self.attach_device_scalable(
-                &mut hw_guard,
-                bus,
-                devfn,
-                domain_type,
-                page_table_addr,
-                domain_id,
-                device,
-            )?;
-        } else {
-            Self::attach_device_legacy(
-                &mut hw_guard,
-                bus,
-                devfn,
-                domain_type,
-                page_table_addr,
-                domain_id,
-                self.selected_agaw_code(),
-            )?;
-        }
-
-        self.invalidate_context_global_sync()?;
-        self.invalidate_iotlb(domain_id, true)?;
-
-        self.device_domains
-            .lock()
-            .map_err(|_| IommuError::HardwareError)?
-            .insert(device, domain_id);
-        drop(domain);
+        let flush_domain = (self.cap & (1 << 7) == 0).then_some(domain_id);
+        self.invalidate_context_translations(flush_domain)?;
+        let Some(DeviceBinding::Publishing(context)) = bindings.remove(&device) else {
+            unreachable!("the binding lock protects publication");
+        };
+        bindings.insert(device, DeviceBinding::Attached(context));
         Ok(())
     }
 
     fn detach_device(&self, device: DeviceId) -> Result<(), IommuError> {
-        self.close_ats(
-            device,
-            crate::io::iommu::runtime::security::AtsChangeReason::DeviceDetach,
-        )?;
-        let bus = device.bus as usize;
-        let devfn = ((device.device as usize) << 3) | (device.function as usize);
-
-        let domain_id = self
-            .device_domains
-            .lock()
-            .map_err(|_| IommuError::HardwareError)?
-            .get(&device)
-            .copied();
-        self.clear_hw_context_entry(bus, devfn, device)?;
-
-        self.invalidate_context_global_sync()?;
-        if let Some(did) = domain_id {
-            self.invalidate_iotlb(did, true)?;
-        }
-
-        self.device_domains
-            .lock()
-            .map_err(|_| IommuError::HardwareError)?
-            .remove(&device);
-        Ok(())
+        self.revoke_device_context(device, ContextRevocation::Detach)
     }
 
     fn get_domain_for_device(&self, device: DeviceId) -> Result<Option<u16>, IommuError> {
-        Ok(self
-            .device_domains
+        let bindings = self
+            .device_bindings
             .lock()
-            .map_err(|_| IommuError::HardwareError)?
-            .get(&device)
-            .copied())
+            .map_err(|_| IommuError::Poisoned)?;
+        Ok(bindings.get(&device).and_then(DeviceBinding::domain_id))
     }
 
     fn handle_command_queue_entry(

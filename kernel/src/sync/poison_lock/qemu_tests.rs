@@ -1,5 +1,5 @@
 use crate::io::iommu::common::tables::HardwareTable;
-use crate::io::iommu::types::{IommuDomainType, IommuError};
+use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError};
 use crate::io::iommu::vendors::intel::controller::IommuController;
 use crate::io::iommu::vendors::intel::controller::dma::DomainManager;
 use crate::io::iommu::vendors::intel::tables::ContextEntry;
@@ -71,8 +71,7 @@ pub(crate) fn retained_iommu_ownership(dispose: impl FnOnce(IommuController, u16
     }
 
     controller.hardware.poisoned.store(true, Ordering::Release);
-    assert_eq!(controller.disable_device_context_entry(0, 0, 0), Some(id));
-    assert_eq!(controller.disable_device_context_entry(0, 0, 0), None);
+    controller.clear_context_present(DeviceId::new(0, 0, 0, 0));
     {
         let hardware = controller
             .hardware
@@ -87,13 +86,6 @@ pub(crate) fn retained_iommu_ownership(dispose: impl FnOnce(IommuController, u16
         assert!(hardware.root_table.is_none());
         assert!(hardware.scalable_context_tables.is_empty());
     }
-    assert!(
-        controller
-            .device_domains
-            .lock()
-            .expect("no device publication")
-            .is_empty()
-    );
     // Ownership crosses to the IOMMU test scope for its restricted physical
     // retirement operation. No fixture borrow survives this transfer.
     dispose(controller, id);

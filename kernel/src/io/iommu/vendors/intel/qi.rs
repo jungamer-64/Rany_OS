@@ -48,6 +48,11 @@ impl InvalidationQueueEntry {
         Self::context_cache_invalidate(1, 0, 0)
     }
 
+    /// Globally invalidate the scalable-mode PASID cache.
+    pub(crate) const fn pasid_cache_invalidate_global() -> Self {
+        Self { lo: 0x37, hi: 0 }
+    }
+
     /// Create an IOTLB Invalidation descriptor
     /// Granularity: 0=reserved, 1=global, 2=domain, 3=page
     pub fn iotlb_invalidate(
@@ -367,5 +372,17 @@ impl InvalidationQueue {
             InvalidationQueueEntry::wait(self.status_phys, seq, false, true),
             seq,
         )
+    }
+}
+
+#[cfg(test)]
+mod descriptor_tests {
+    use super::InvalidationQueueEntry;
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn global_pasid_cache_invalidation_has_no_domain_or_address_bits() {
+        let descriptor = InvalidationQueueEntry::pasid_cache_invalidate_global();
+        assert_eq!((descriptor.lo, descriptor.hi), (0x0037, 0));
     }
 }

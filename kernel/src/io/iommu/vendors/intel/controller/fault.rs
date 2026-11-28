@@ -14,13 +14,10 @@
 //! - **Push** raw fault records to a lock-free deferred queue
 //! - The service host drains each controller's queue outside interrupt context
 
-use super::dma::DomainManager;
-use super::qi_ops::InvalidationOps; // For qi_invalidate_context_global
-use super::{HardwareContext, IommuController};
+use super::IommuController;
 use crate::io::iommu::runtime::fault_log::FaultRecord;
 use crate::io::iommu::types::{DeviceId, IommuError};
-use crate::io::iommu::vendors::intel::registers::{ecap_bits, fsts_bits};
-use crate::io::iommu::vendors::intel::tables::{ContextEntry, ScalableContextEntry};
+use crate::io::iommu::vendors::intel::registers::fsts_bits;
 use crate::sync::MpscRingBuffer;
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
@@ -82,36 +79,6 @@ fn device_id_from_source_id(segment: u16, source_id: u16) -> DeviceId {
     let device = (devfn >> 3) & 0x1f;
     let function = devfn & 0x07;
     DeviceId::new(segment, bus, device, function)
-}
-
-fn domain_id_from_context_entry(ctrl: &IommuController, device: DeviceId) -> Option<u16> {
-    if ctrl.is_scalable_mode_enabled() {
-        return None;
-    }
-    let bus = device.bus as usize;
-    let devfn = ((device.device as usize) << 3) | (device.function as usize);
-
-    let hw = ctrl.hardware.lock().ok()?;
-    let context_table = hw.legacy_context_tables.get(bus)?;
-    let entry = context_table.get(devfn)?;
-    if !entry.is_present() {
-        return None;
-    }
-    Some(entry.domain_id())
-}
-
-fn domain_id_from_scalable_context_entry(
-    ctrl: &IommuController,
-    device: DeviceId,
-    pasid: Option<u32>,
-) -> Option<u16> {
-    if !ctrl.is_scalable_mode_enabled() {
-        return None;
-    }
-    let pasid = pasid.unwrap_or(0);
-    let tables = ctrl.device_pasid_tables.lock().ok()?;
-    let table = tables.get(&device)?;
-    table.domain_id(pasid)
 }
 
 /// Fixed-size MPSC lock-free ring buffer for deferred fault events
@@ -365,13 +332,12 @@ fn process_fault_with_controller(event: &RawFaultEvent, controller: &IommuContro
     }
 
     let device_id = device_id_from_source_id(controller.segment, event.source_id);
-    let domain_id = controller
-        .get_domain_for_device(device_id)
-        .ok()
-        .flatten()
-        .or_else(|| domain_id_from_context_entry(controller, device_id))
-        .or_else(|| domain_id_from_scalable_context_entry(controller, device_id, event.pasid))
-        .map(u32::from);
+    let domain_id = controller.device_bindings.lock().ok().and_then(|bindings| {
+        bindings
+            .get(&device_id)?
+            .fault_domain_id(event.pasid)
+            .map(u32::from)
+    });
 
     // SECURITY: Automatically isolate the faulting device if required by policy.
     // This provides active protection beyond just logging.
@@ -580,8 +546,9 @@ impl FaultHandler for IommuController {
             func
         );
 
-        // Disable context entry in hardware tables
-        let isolated_domain_id = self.disable_device_context_entry(bus, dev, func);
-        self.perform_isolation_invalidation(sid, isolated_domain_id, isolation_reason)
+        self.isolate_device(
+            device_id_from_source_id(self.segment, sid),
+            isolation_reason,
+        )
     }
 }

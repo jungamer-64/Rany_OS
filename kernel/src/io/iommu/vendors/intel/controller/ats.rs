@@ -66,7 +66,7 @@ impl IommuController {
                 resource,
             });
         }
-        let domains = match self.device_domains.lock() {
+        let domains = match self.device_bindings.lock() {
             Ok(domains) => domains,
             Err(_) => {
                 return Err(AtsEnableError::Rejected {
@@ -75,7 +75,11 @@ impl IommuController {
                 });
             }
         };
-        if !domains.contains_key(&device) {
+        if domains
+            .get(&device)
+            .and_then(super::dma::DeviceBinding::domain_id)
+            .is_none()
+        {
             return Err(AtsEnableError::Rejected {
                 cause: IommuError::DeviceNotFound,
                 resource,
@@ -137,14 +141,10 @@ impl IommuController {
     /// Poisoning leaves ownership unchanged. Configuration failure records unknown
     /// hardware state; invalidation failure retains confirmed PCI disablement so a
     /// retry repeats only the remaining invalidation step.
-    pub(crate) fn close_ats(
-        &self,
-        device: DeviceId,
-        reason: AtsChangeReason,
-    ) -> Result<(), IommuError> {
+    pub(super) fn close_ats(&self, device: DeviceId) -> Result<bool, IommuError> {
         let mut devices = self.ats_devices.lock().map_err(|_| IommuError::Poisoned)?;
         let Some(tracked) = devices.get_mut(&device) else {
-            return Ok(());
+            return Ok(false);
         };
         if !matches!(tracked.state, AtsState::DisabledAwaitingInvalidation) {
             tracked.state = AtsState::PossiblyEnabled;
@@ -157,13 +157,7 @@ impl IommuController {
         self.qi_invalidate_device_tlb_all(device.requester_id())?;
         self.qi_wait_sync()?;
         devices.remove(&device);
-        drop(devices);
-        self.notify_security(SecurityEvent::AtsStateChanged {
-            source_id: device.requester_id(),
-            enabled: false,
-            reason,
-        });
-        Ok(())
+        Ok(true)
     }
 }
 

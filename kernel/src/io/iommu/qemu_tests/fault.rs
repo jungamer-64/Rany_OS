@@ -2,11 +2,13 @@ use crate::io::iommu::common::tables::HardwareTable;
 use crate::io::iommu::runtime::security::{
     FaultSummary, IsolationDecision, SecurityEvent, SecurityNotifier,
 };
-use crate::io::iommu::types::{DeviceId, IommuDomainType};
+use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError};
 use crate::io::iommu::vendors::intel::controller::IommuController;
-use crate::io::iommu::vendors::intel::controller::dma::DomainManager;
+use crate::io::iommu::vendors::intel::controller::dma::{
+    DeviceBinding, DomainManager, PublishedContext,
+};
 use crate::io::iommu::vendors::intel::controller::fault::FaultHandler;
-use crate::io::iommu::vendors::intel::tables::{RootEntry, ScalableContextEntry};
+use crate::io::iommu::vendors::intel::tables::{ContextEntry, RootEntry, ScalableContextEntry};
 use crate::sync::PoisonLock;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -19,7 +21,7 @@ unsafe impl Sync for RegisterMemory {}
 fn unpublished_controller(fault_high: u64) -> IommuController {
     let mut words = [0; 512];
     // One FRCD at 0x300, four-level 48-bit translation and IOTLB at 0x200.
-    words[1] = (2 << 8) | (47 << 16) | (0x30 << 24);
+    words[1] = (2 << 8) | (47 << 16) | (0x30 << 24) | (1 << 7); // CAP.CM
     words[2] = 0x20 << 8;
     words[0x34 / 8] = 2 << 32; // FSTS.PPF
     words[0x300 / 8] = 0xdead_b000;
@@ -70,6 +72,16 @@ fn observe_fault(fault_high: u64, expected_domain_index: Option<usize>) {
             .page_table_addr()
     });
     let device = DeviceId::new(0, 0, 1, 0);
+    let domain = controller.domain(domains[0]).unwrap();
+    let mut pasid = controller.prepare_pasid(&domain).expect("PASID directory");
+    pasid
+        .setup_sl_entry(5, roots[1], controller.selected_agaw_code(), domains[1])
+        .expect("independent PASID association");
+    assert_eq!(pasid.domain_id(0), Some(domains[0]));
+    assert_eq!(pasid.domain_id(5), Some(domains[1]));
+    assert_eq!(pasid.domain_id(6), None);
+    assert_eq!(pasid.domain_id(64), None);
+    let context = PublishedContext::new(domain, Some(pasid));
     {
         let mut hardware = controller.hardware.lock().expect("local context owner");
         hardware.root_table = Some(HardwareTable::<RootEntry>::new(256, None).expect("root RAM"));
@@ -77,44 +89,20 @@ fn observe_fault(fault_high: u64, expected_domain_index: Option<usize>) {
             .scalable_context_tables
             .push(HardwareTable::<ScalableContextEntry>::new(256, None).expect("context RAM"));
         controller
-            .attach_device_scalable(
-                &mut hardware,
-                0,
-                8,
-                IommuDomainType::Translated,
-                roots[0],
-                domains[0],
-                device,
-            )
+            .publish_context(&mut hardware, 0, 8, &context)
             .expect("unpublished scalable context preparation");
         let root = hardware.root_table.as_ref().unwrap().get(0).unwrap();
         assert_eq!(root.lo & 1, 1);
         assert_eq!(root.hi & 1, 1);
-        let context = hardware.scalable_context_tables[0].get(8).unwrap();
-        assert!(context.is_present());
-        assert_eq!(context.qwords[1] & 0xfffff, 0);
+        let entry = hardware.scalable_context_tables[0].get(8).unwrap();
+        assert!(entry.is_present());
+        assert_eq!(entry.qwords[1] & 0xfffff, 0);
     }
-    {
-        let mut tables = controller
-            .device_pasid_tables
-            .lock()
-            .unwrap_or_else(|_| panic!("PASID owner registry poisoned"));
-        let table = tables.get_mut(&device).expect("prepared PASID directory");
-        table
-            .setup_sl_entry(5, roots[1], controller.selected_agaw_code(), domains[1])
-            .expect("independent PASID association");
-        assert_eq!(table.domain_id(0), Some(domains[0]));
-        assert_eq!(table.domain_id(5), Some(domains[1]));
-        assert_eq!(table.domain_id(6), None);
-        assert_eq!(table.domain_id(64), None);
-    }
-    assert!(
-        controller
-            .device_domains
-            .lock()
-            .expect("RID registry")
-            .is_empty()
-    );
+    controller
+        .device_bindings
+        .lock()
+        .expect("device registry")
+        .insert(device, DeviceBinding::Attached(context));
     let observation = Arc::new(Observation {
         event: PoisonLock::new(None),
         decisions: AtomicUsize::new(0),
@@ -160,12 +148,14 @@ fn observe_fault(fault_high: u64, expected_domain_index: Option<usize>) {
     // Remove all context/PASID references before releasing their domain roots.
     // This controller was never registered, enabled or attached to hardware.
     let hardware = core::mem::take(&mut *controller.hardware.lock().expect("take contexts"));
-    let pasid = controller
-        .device_pasid_tables
+    let Some(DeviceBinding::Attached(context)) = controller
+        .device_bindings
         .lock()
-        .unwrap_or_else(|_| panic!("PASID owner registry poisoned"))
+        .expect("device registry")
         .remove(&device)
-        .expect("retained PASID owner");
+    else {
+        panic!("retained context owner");
+    };
     // SAFETY: the unique local hierarchy never reached RTADDR or a device.
     // Deferred processing is complete and no CPU borrower remains.
     unsafe {
@@ -173,8 +163,7 @@ fn observe_fault(fault_high: u64, expected_domain_index: Option<usize>) {
         for table in hardware.scalable_context_tables {
             table.retire_after_invalidation();
         }
-        pasid.directory.retire_after_invalidation();
-        pasid.table.retire_after_invalidation();
+        context.retire();
     }
     for id in domains {
         let owner = controller
@@ -201,6 +190,56 @@ pub(crate) fn scalable_fault_domain_resolution() -> bool {
         (0x8000_4005_8000_0008, None),
     ] {
         observe_fault(high, expected);
+    }
+    true
+}
+
+pub(crate) fn context_publication_retains_owner() -> bool {
+    let controller = unpublished_controller(0);
+    let id = controller
+        .create_domain(None, IommuDomainType::Translated)
+        .unwrap();
+    assert_eq!(id, 1);
+    let device = DeviceId::new(0, 0, 1, 0);
+    {
+        let mut hw = controller.hardware.lock().unwrap();
+        hw.root_table = Some(HardwareTable::<RootEntry>::new(256, None).unwrap());
+        hw.legacy_context_tables
+            .push(HardwareTable::<ContextEntry>::new(256, None).unwrap());
+    }
+
+    // The register aperture retains the ICC command and never acknowledges it.
+    assert_eq!(
+        controller.attach_device(device, id),
+        Err(IommuError::Timeout)
+    );
+    assert_eq!(controller.get_domain_for_device(device), Ok(None));
+    assert_eq!(controller.destroy_domain(id), Err(IommuError::InUse));
+    assert!(
+        controller.hardware.lock().unwrap().legacy_context_tables[0]
+            .get(8)
+            .unwrap()
+            .is_present()
+    );
+    assert_eq!(controller.detach_device(device), Err(IommuError::Timeout));
+    assert_eq!(controller.destroy_domain(id), Err(IommuError::InUse));
+
+    // No register ever received RTADDR, so the fixture can release the RAM.
+    let hw = core::mem::take(&mut *controller.hardware.lock().unwrap());
+    let Some(DeviceBinding::Revoking(context)) =
+        controller.device_bindings.lock().unwrap().remove(&device)
+    else {
+        panic!("failed detach must retain the context owner");
+    };
+    let domain = controller.domains.lock().unwrap().remove(&id).unwrap();
+    // SAFETY: neither context was published to hardware in this fixture.
+    unsafe {
+        hw.root_table.unwrap().retire_after_invalidation();
+        for table in hw.legacy_context_tables {
+            table.retire_after_invalidation();
+        }
+        context.retire();
+        Arc::try_unwrap(domain).unwrap().retire_after_invalidation();
     }
     true
 }

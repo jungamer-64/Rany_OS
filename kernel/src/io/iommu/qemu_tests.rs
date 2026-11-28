@@ -8,6 +8,7 @@ use crate::mm::types::PAGE_SIZE_4K;
 mod fault;
 mod mapped_range;
 mod page_table_pool;
+pub(crate) use fault::context_publication_retains_owner;
 pub(crate) use fault::scalable_fault_domain_resolution;
 pub(crate) use mapped_range::masked_mapping_retirement;
 

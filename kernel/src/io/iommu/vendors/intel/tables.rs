@@ -113,8 +113,6 @@ impl ScalableContextEntry {
     pub const PRESENT: u64 = 1 << 0;
     /// Fault Processing Disable (QWORD 0, bit 1)
     pub const FAULT_DISABLE: u64 = 1 << 1;
-    /// Device-TLB Enable (QWORD 0, bit 2)
-    pub const DTE: u64 = 1 << 2;
     /// PASID Enable (QWORD 0, bit 3)
     pub const PASID_ENABLE: u64 = 1 << 3;
     /// PASID Directory Pointer (QWORD 0, bits 12-63)
@@ -164,11 +162,6 @@ impl ScalableContextEntry {
     /// Enable PASID translation
     pub fn set_pasid_enable(&mut self) {
         self.qwords[0] |= Self::PASID_ENABLE;
-    }
-
-    /// Enable Device-TLB (ATS)
-    pub fn set_dte(&mut self) {
-        self.qwords[0] |= Self::DTE;
     }
 }
 

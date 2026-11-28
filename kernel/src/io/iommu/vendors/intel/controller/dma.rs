@@ -12,7 +12,7 @@ use core::sync::atomic::Ordering;
 use crate::io::iommu::common::domain::IommuDomain;
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 use crate::io::iommu::vendors::intel::registry::get_iommu_registry;
-use crate::io::iommu::vendors::intel::tables::{ContextEntry, PasidTable, ScalableContextEntry};
+use crate::io::iommu::vendors::intel::tables::{PasidTable, ScalableContextEntry};
 
 use super::{HardwareContext, IommuController};
 
@@ -84,137 +84,258 @@ pub trait DomainManager {
     ) -> Result<i32, ()>;
 }
 
+/// A hardware context can outlive a failed command. Its domain and PASID
+/// backing remain owned from publication until confirmed revocation.
+pub(in crate::io::iommu) enum DeviceBinding {
+    Publishing(PublishedContext),
+    Attached(PublishedContext),
+    Revoking(PublishedContext),
+    Isolated,
+}
+
+pub(in crate::io::iommu) struct PublishedContext {
+    domain: Arc<IommuDomain>,
+    pasid: Option<PasidTable>,
+}
+
+impl DeviceBinding {
+    pub(super) fn domain_id(&self) -> Option<u16> {
+        match self {
+            Self::Attached(context) => Some(context.domain.id()),
+            _ => None,
+        }
+    }
+
+    pub(super) fn retained_domain_id(&self) -> Option<u16> {
+        match self {
+            Self::Publishing(context) | Self::Attached(context) | Self::Revoking(context) => {
+                Some(context.domain.id())
+            }
+            Self::Isolated => None,
+        }
+    }
+
+    pub(super) fn fault_domain_id(&self, pasid: Option<u32>) -> Option<u16> {
+        match self {
+            Self::Publishing(context) | Self::Attached(context) | Self::Revoking(context) => {
+                if let Some(table) = &context.pasid {
+                    table.domain_id(pasid.unwrap_or(0))
+                } else {
+                    Some(context.domain.id())
+                }
+            }
+            Self::Isolated => None,
+        }
+    }
+}
+
+impl PublishedContext {
+    pub(in crate::io::iommu) fn new(domain: Arc<IommuDomain>, pasid: Option<PasidTable>) -> Self {
+        Self { domain, pasid }
+    }
+
+    /// # Safety
+    /// The context never reached hardware, or its removal and cache
+    /// invalidations have completed.
+    pub(in crate::io::iommu) unsafe fn retire(self) {
+        if let Some(pasid) = self.pasid {
+            unsafe {
+                pasid.directory.retire_after_invalidation();
+                pasid.table.retire_after_invalidation();
+            }
+        }
+    }
+}
+
+pub(super) enum ContextRevocation {
+    Detach,
+    Isolate(crate::io::iommu::runtime::security::IsolationReason),
+}
+
 impl IommuController {
-    fn setup_scalable_pasid(
+    pub(in crate::io::iommu) fn domain_for_device(
         &self,
-        context_entry: &mut ScalableContextEntry,
-        domain_type: IommuDomainType,
-        page_table_addr: u64,
-        domain_id: u16,
         device: DeviceId,
-    ) -> Result<(), IommuError> {
-        let mut pasid_table = PasidTable::new(6)?;
-        if domain_type == IommuDomainType::Passthrough {
-            pasid_table.setup_passthrough_entry(0, domain_id)?;
-        } else {
-            pasid_table.setup_sl_entry(0, page_table_addr, self.selected_agaw_code(), domain_id)?;
-        }
-        context_entry.set_pasid_dir(pasid_table.phys_addr(), pasid_table.pds());
-        context_entry.set_rid2pasid(0);
-        context_entry.set_pasid_enable();
-        context_entry.set_fault_enable();
-        context_entry.set_present();
-
-        // Security: Enable Device-TLB (ATS) support in the context entry if enabled for this device.
-        if self.should_invalidate_device_tlb(&device)? {
-            context_entry.set_dte();
-        }
-
-        self.device_pasid_tables
+    ) -> Result<Option<Arc<IommuDomain>>, IommuError> {
+        let bindings = self
+            .device_bindings
             .lock()
-            .map_err(|_| IommuError::HardwareError)?
-            .insert(device, pasid_table);
-        Ok(())
+            .map_err(|_| IommuError::Poisoned)?;
+        Ok(match bindings.get(&device) {
+            Some(DeviceBinding::Attached(context)) => Some(Arc::clone(&context.domain)),
+            _ => None,
+        })
     }
 
-    pub(crate) fn attach_device_scalable(
+    pub(super) fn revoke_device_context(
         &self,
-        hw: &mut HardwareContext,
-        bus: usize,
-        devfn: usize,
-        domain_type: IommuDomainType,
-        page_table_addr: u64,
-        domain_id: u16,
         device: DeviceId,
+        operation: ContextRevocation,
     ) -> Result<(), IommuError> {
-        let root_table = hw.root_table.as_mut().ok_or(IommuError::HardwareError)?;
-        let context_table = hw
-            .scalable_context_tables
-            .get_mut(bus)
-            .ok_or(IommuError::InvalidAddress)?;
-        let ctx_phys = context_table.phys_addr();
-        root_table
-            .get_mut(bus)
-            .ok_or(IommuError::InvalidAddress)?
-            .set_context_table_pair(ctx_phys, ctx_phys + 0x1000);
-        let context_entry = context_table
-            .get_mut(devfn)
-            .ok_or(IommuError::InvalidAddress)?;
-        *context_entry = ScalableContextEntry::new();
-        self.setup_scalable_pasid(
-            context_entry,
-            domain_type,
-            page_table_addr,
-            domain_id,
-            device,
-        )?;
-        Ok(())
-    }
+        use crate::io::iommu::runtime::security::{AtsChangeReason, SecurityEvent};
 
-    pub(crate) fn attach_device_legacy(
-        hw: &mut HardwareContext,
-        bus: usize,
-        devfn: usize,
-        domain_type: IommuDomainType,
-        page_table_addr: u64,
-        domain_id: u16,
-        agaw: u8,
-    ) -> Result<(), IommuError> {
-        let root_table = hw.root_table.as_mut().ok_or(IommuError::HardwareError)?;
-        let context_table = hw
-            .legacy_context_tables
-            .get_mut(bus)
-            .ok_or(IommuError::InvalidAddress)?;
-        let ctx_phys = context_table.phys_addr();
-        let root_entry = root_table.get_mut(bus).ok_or(IommuError::InvalidAddress)?;
-        if !root_entry.is_present() {
-            root_entry.set_context_table(ctx_phys);
+        if device.segment != self.segment || device.device >= 32 || device.function >= 8 {
+            return Err(IommuError::InvalidAddress);
         }
-        let context_entry = context_table
-            .get_mut(devfn)
-            .ok_or(IommuError::InvalidAddress)?;
-        if domain_type == IommuDomainType::Passthrough {
-            context_entry.set_passthrough(domain_id, agaw);
-        } else {
-            context_entry.set_sl_pt(page_table_addr, domain_id, agaw);
-        }
-        Ok(())
-    }
-
-    fn should_invalidate_device_tlb(&self, device: &DeviceId) -> Result<bool, IommuError> {
-        let devices = self.ats_devices.lock().map_err(|_| IommuError::Poisoned)?;
-        Ok(devices.contains_key(device))
-    }
-
-    pub(crate) fn clear_hw_context_entry(
-        &self,
-        bus: usize,
-        devfn: usize,
-        device: DeviceId,
-    ) -> Result<(), IommuError> {
-        let mut hw = self
-            .hardware
+        let mut bindings = self
+            .device_bindings
             .lock()
-            .map_err(|_| IommuError::HardwareError)?;
+            .map_err(|_| IommuError::Poisoned)?;
+        if matches!(bindings.get(&device), Some(DeviceBinding::Isolated)) {
+            return Ok(());
+        }
+        if matches!(
+            bindings.get(&device),
+            Some(DeviceBinding::Attached(_) | DeviceBinding::Publishing(_))
+        ) {
+            let binding = core::mem::replace(
+                bindings.get_mut(&device).expect("binding lock held"),
+                DeviceBinding::Isolated,
+            );
+            let (DeviceBinding::Attached(context) | DeviceBinding::Publishing(context)) = binding
+            else {
+                unreachable!("binding lock held");
+            };
+            bindings.insert(device, DeviceBinding::Revoking(context));
+        }
+        if matches!(operation, ContextRevocation::Isolate(_)) && !bindings.contains_key(&device) {
+            bindings
+                .try_reserve(1)
+                .map_err(|_| IommuError::MetadataAllocation)?;
+        }
+        let domain_id = bindings
+            .get(&device)
+            .and_then(DeviceBinding::retained_domain_id);
+        self.clear_context_present(device);
+        let ats_closed = self.close_ats(device)?;
+        self.invalidate_context_translations(domain_id)?;
+        let retired = bindings.remove(&device);
+        if matches!(operation, ContextRevocation::Isolate(_)) {
+            bindings.insert(device, DeviceBinding::Isolated);
+        }
+        drop(bindings);
+        if let Some(DeviceBinding::Revoking(context)) = retired {
+            // SAFETY: Present was cleared and context/PASID/IOTLB/ATS
+            // invalidations completed while admitting no new device binding.
+            unsafe { context.retire() };
+        }
+        if ats_closed {
+            let reason = match operation {
+                ContextRevocation::Detach => AtsChangeReason::DeviceDetach,
+                ContextRevocation::Isolate(_) => AtsChangeReason::SecurityPolicy,
+            };
+            self.notify_security(SecurityEvent::AtsStateChanged {
+                source_id: device.requester_id(),
+                enabled: false,
+                reason,
+            });
+        }
+        if let ContextRevocation::Isolate(reason) = operation {
+            self.notify_security(SecurityEvent::DeviceIsolated {
+                source_id: device.requester_id(),
+                reason,
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn isolate_device(
+        &self,
+        device: DeviceId,
+        reason: crate::io::iommu::runtime::security::IsolationReason,
+    ) -> Result<(), IommuError> {
+        self.revoke_device_context(device, ContextRevocation::Isolate(reason))
+    }
+
+    pub(crate) fn clear_context_present(&self, device: DeviceId) {
+        let mut hardware = match self.hardware.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let bus = usize::from(device.bus);
+        let devfn = usize::from(device.requester_id() & 0xff);
         if self.is_scalable_mode_enabled() {
-            if let Some(entry) = hw
+            if let Some(entry) = hardware
                 .scalable_context_tables
                 .get_mut(bus)
                 .and_then(|t| t.get_mut(devfn))
             {
-                *entry = ScalableContextEntry::default();
+                entry.qwords[0] &= !1;
             }
-            self.device_pasid_tables
-                .lock()
-                .map_err(|_| IommuError::HardwareError)?
-                .remove(&device);
+        } else if let Some(entry) = hardware
+            .legacy_context_tables
+            .get_mut(bus)
+            .and_then(|t| t.get_mut(devfn))
+        {
+            entry.lo &= !1;
+        }
+    }
+
+    pub(in crate::io::iommu) fn prepare_pasid(
+        &self,
+        domain: &IommuDomain,
+    ) -> Result<PasidTable, IommuError> {
+        let mut table = PasidTable::new(6)?;
+        if domain.domain_type() == IommuDomainType::Passthrough {
+            table.setup_passthrough_entry(0, domain.id())?;
         } else {
-            if let Some(entry) = hw
+            table.setup_sl_entry(
+                0,
+                domain.page_table_addr(),
+                self.selected_agaw_code(),
+                domain.id(),
+            )?;
+        }
+        Ok(table)
+    }
+
+    pub(in crate::io::iommu) fn publish_context(
+        &self,
+        hw: &mut HardwareContext,
+        bus: usize,
+        devfn: usize,
+        binding: &PublishedContext,
+    ) -> Result<(), IommuError> {
+        let root_entry = hw
+            .root_table
+            .as_mut()
+            .and_then(|table| table.get_mut(bus))
+            .ok_or(IommuError::HardwareError)?;
+        if let Some(pasid) = &binding.pasid {
+            let table = hw
+                .scalable_context_tables
+                .get_mut(bus)
+                .ok_or(IommuError::InvalidAddress)?;
+            let table_phys = table.phys_addr();
+            let entry = table.get_mut(devfn).ok_or(IommuError::InvalidAddress)?;
+            let mut next = ScalableContextEntry::new();
+            next.set_pasid_dir(pasid.phys_addr(), pasid.pds());
+            next.set_rid2pasid(0);
+            next.set_pasid_enable();
+            next.set_fault_enable();
+            next.set_present();
+            entry.qwords[1..].copy_from_slice(&next.qwords[1..]);
+            core::sync::atomic::fence(Ordering::Release);
+            entry.qwords[0] = next.qwords[0];
+            if !root_entry.is_present() {
+                root_entry.set_context_table_pair(table_phys, table_phys + 0x1000);
+            }
+        } else {
+            let table = hw
                 .legacy_context_tables
                 .get_mut(bus)
-                .and_then(|t| t.get_mut(devfn))
-            {
-                *entry = ContextEntry::default();
+                .ok_or(IommuError::InvalidAddress)?;
+            let table_phys = table.phys_addr();
+            let entry = table.get_mut(devfn).ok_or(IommuError::InvalidAddress)?;
+            let did = binding.domain.id();
+            let agaw = self.selected_agaw_code();
+            if binding.domain.domain_type() == IommuDomainType::Passthrough {
+                entry.set_passthrough(did, agaw);
+            } else {
+                entry.set_sl_pt(binding.domain.page_table_addr(), did, agaw);
+            }
+            if !root_entry.is_present() {
+                root_entry.set_context_table(table_phys);
             }
         }
         Ok(())
