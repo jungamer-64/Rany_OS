@@ -11,17 +11,18 @@ use alloc::sync::Arc;
 
 const MASK: u64 = 0x2fff;
 
-async fn map_owned_page(
+async fn map_owned_range(
     controller: &Arc<IommuController>,
     domain: &Arc<IommuDomain>,
     allocator: &Arc<IovaAllocator>,
     physical: u64,
+    bytes: u64,
+    mask: u64,
 ) -> DeviceMappedRange {
-    let page = PAGE_SIZE_4K as u64;
     let iova = allocator
-        .allocate_with_limit(page, PageGranularity::Page4K, MASK)
+        .allocate_with_limit(bytes, PageGranularity::Page4K, mask)
         .expect("masked IOVA admission");
-    assert!(iova.checked_add(page - 1).expect("bounded endpoint") <= MASK);
+    assert!(iova.checked_add(bytes - 1).expect("bounded endpoint") <= mask);
     // The test retains the real data allocation until every mapping completes.
     // This fresh domain belongs to this hardware source and has no devices;
     // its private address space cannot overlap another device's mappings.
@@ -31,10 +32,10 @@ async fn map_owned_page(
         Arc::clone(allocator),
         iova,
         physical,
-        page,
+        bytes,
     );
     domain
-        .map(iova, physical, page, true, true)
+        .map(iova, physical, bytes, true, true)
         .expect("owned data leaf publication");
     mapping
         .synchronize_map_async()
@@ -74,7 +75,7 @@ pub(crate) async fn masked_mapping_retirement() -> bool {
     let domain = controller
         .domain(id)
         .expect("retained domain registry owner");
-    let data = crate::mm::phys::frame_allocator::alloc_contiguous_frames_aligned(2, PAGE_SIZE_4K)
+    let data = crate::mm::phys::frame_allocator::alloc_contiguous_frames_aligned(3, PAGE_SIZE_4K)
         .expect("owned DMA data pages");
     let physical = data.as_u64();
     let page = PAGE_SIZE_4K as u64;
@@ -82,7 +83,7 @@ pub(crate) async fn masked_mapping_retirement() -> bool {
     assert!(physical > MASK);
     let allocator =
         Arc::new(IovaAllocator::new(page, 3 * page).expect("private bounded IOVA space"));
-    let live = map_owned_page(&controller, &domain, &allocator, physical).await;
+    let live = map_owned_range(&controller, &domain, &allocator, physical, page, MASK).await;
     let live_iova = live.iova();
     assert_eq!(live_iova, page);
     check_live_page(&controller, &domain, live_iova, physical);
@@ -94,7 +95,15 @@ pub(crate) async fn masked_mapping_retirement() -> bool {
     );
 
     for _ in 0..64 {
-        let cycling = map_owned_page(&controller, &domain, &allocator, physical + page).await;
+        let cycling = map_owned_range(
+            &controller,
+            &domain,
+            &allocator,
+            physical + page,
+            page,
+            MASK,
+        )
+        .await;
         let cycling_iova = cycling.iova();
         assert_eq!(cycling_iova, 2 * page);
         assert_eq!(domain.mapped_size(), 2 * page);
@@ -139,6 +148,27 @@ pub(crate) async fn masked_mapping_retirement() -> bool {
             .free_immediate(iova, page)
             .expect("unpublished IOVA release");
     }
+
+    // Three pages at a four-page-aligned base require AM=2 when PSI is available.
+    let base = 4 * page;
+    let span = 3 * page;
+    let mask = base + span - 1;
+    let allocator = Arc::new(IovaAllocator::new(base, span).expect("aligned IOVA window"));
+    let range = map_owned_range(&controller, &domain, &allocator, physical, span, mask).await;
+    assert_eq!(range.iova(), base);
+    check_live_page(&controller, &domain, base + 2 * page, physical + 2 * page);
+    range
+        .unmap_async()
+        .await
+        .expect("multi-page IOTLB completion");
+    assert_eq!(domain.mapped_size(), 0);
+    let recycled = allocator
+        .allocate_with_limit(span, PageGranularity::Page4K, mask)
+        .expect("the entire retired range is reusable");
+    assert_eq!(recycled, base);
+    allocator
+        .free_immediate(recycled, span)
+        .expect("unpublished range release");
 
     // The QEMU PCI bus has no device in this segment. Publish a software
     // binding only, so no device can access the fixture RAM.

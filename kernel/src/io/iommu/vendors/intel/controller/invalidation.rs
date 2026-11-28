@@ -13,6 +13,7 @@ use crate::io::iommu::common::domain::{
     InvalidateFlags, InvalidateKind, InvalidateRequest, IommuInvalidator,
 };
 use crate::io::iommu::types::IommuError;
+use crate::io::iommu::vendors::intel::qi::{InvalidationQueueEntry, PageInvalidation};
 
 impl IommuController {
     pub(crate) fn process_single_invalidation_nosync(
@@ -41,40 +42,14 @@ impl IommuController {
         }
 
         if self.is_queued_invalidation_enabled() {
-            // Security: Use saturating addition to prevent overflow when calculating num_pages.
-            // A wrapped small size would cause partial invalidation and potential UAF.
-            let num_pages = size.saturating_add(4095) / 4096;
-            if num_pages == 0 {
-                return Ok(());
-            }
-
-            let am = if num_pages > 1 {
-                // Find log2 of next power of two
-                64 - (num_pages - 1).leading_zeros() as u8
-            } else {
-                0
+            let Some(pages) = PageInvalidation::covering(self.cap, start_iova, size) else {
+                return self.invalidate_domain_nosync(domain_id, any_ats);
             };
-
-            // Security: Fallback to domain-selective if the mask is not supported by hardware
-            // or if the range is not naturally aligned to the mask size.
-            let cap_am = self.cap_am();
-            let mask_val = if am < 64 { (1u64 << am) - 1 } else { !0u64 };
-            let alignment_mask = mask_val.saturating_mul(4096);
-            let fallback_to_domain = am > cap_am || am >= 60 || (start_iova & alignment_mask) != 0;
-
-            if fallback_to_domain {
-                self.qi_invalidate_iotlb_domain(domain_id)?;
-            } else {
-                self.qi_invalidate_iotlb_page(domain_id, start_iova, am)?;
-            }
-
+            self.submit_invalidation(InvalidationQueueEntry::iotlb_invalidate_pages(
+                domain_id, pages,
+            ))?;
             if any_ats {
-                if fallback_to_domain {
-                    // SECURITY: If we fell back for IOTLB, we MUST fall back for Device-TLB too
-                    self.invalidate_device_tlbs(domain_id, None, None)?;
-                } else {
-                    self.invalidate_device_tlbs(domain_id, Some(start_iova), Some(am))?;
-                }
+                self.invalidate_device_tlbs(domain_id, Some(pages))?;
             }
         } else {
             unsafe {
@@ -84,11 +59,10 @@ impl IommuController {
         Ok(())
     }
 
-    pub(crate) fn invalidate_device_tlbs(
+    fn invalidate_device_tlbs(
         &self,
         domain_id: u16,
-        iova: Option<u64>,
-        am: Option<u8>,
+        pages: Option<PageInvalidation>,
     ) -> Result<(), IommuError> {
         let device_domains = self
             .device_bindings
@@ -103,16 +77,12 @@ impl IommuController {
                 && did == domain_id
             {
                 let source_id = device.requester_id();
-                match (iova, am) {
-                    (Some(iova_val), Some(am_val)) => {
-                        self.qi_invalidate_device_tlb_range(source_id, iova_val, am_val)?;
-                    }
-                    (Some(iova_val), None) => {
-                        self.qi_invalidate_device_tlb_page(source_id, iova_val)?;
-                    }
-                    _ => {
-                        self.qi_invalidate_device_tlb_all(source_id)?;
-                    }
+                if let Some(pages) = pages {
+                    self.submit_invalidation(InvalidationQueueEntry::device_tlb_invalidate_pages(
+                        source_id, pages,
+                    ))?;
+                } else {
+                    self.qi_invalidate_device_tlb_all(source_id)?;
                 }
             }
         }
@@ -139,7 +109,7 @@ impl IommuController {
         if self.is_queued_invalidation_enabled() {
             self.qi_invalidate_iotlb_domain(domain_id)?;
             if any_ats {
-                self.invalidate_device_tlbs(domain_id, None, None)?;
+                self.invalidate_device_tlbs(domain_id, None)?;
             }
         } else {
             unsafe { self.invalidate_iotlb_direct(domain_id)? };

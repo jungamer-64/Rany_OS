@@ -92,18 +92,23 @@ fn run_required_profile(profile: &str) {
         }
         match run_fullboot(&cfg) {
             Ok(report) => {
-                if profile == "boot-smoke" {
-                    let serial = std::fs::read(&report.log_path)
-                        .expect("boot-smoke serial capture must be readable");
-                    for marker in [
+                let required_markers: &[&str] = match profile {
+                    "boot-smoke" => &[
                         "COM1 interrupt-driven output ready",
                         "[boot] BOOT COMPLETE!",
-                    ] {
+                    ],
+                    "iommu-scalable" => &["Scalable mode context tables enabled"],
+                    _ => &[],
+                };
+                if !required_markers.is_empty() {
+                    let serial = std::fs::read(&report.log_path)
+                        .expect("full-boot serial capture must be readable");
+                    for marker in required_markers {
                         assert!(
                             serial
                                 .windows(marker.len())
                                 .any(|bytes| bytes == marker.as_bytes()),
-                            "boot-smoke serial capture is missing {marker:?}: {}",
+                            "{profile} serial capture is missing {marker:?}: {}",
                             report.log_path.display()
                         );
                     }
@@ -158,6 +163,12 @@ fn fullboot_pr_required() {
 #[ignore = "nightly-only full-boot expansion profile"]
 fn fullboot_nightly_required() {
     run_required_profile("nightly-required");
+}
+
+#[test]
+#[ignore = "requires QEMU Intel IOMMU scalable-mode support"]
+fn fullboot_iommu_scalable() {
+    run_required_profile("iommu-scalable");
 }
 
 #[test]

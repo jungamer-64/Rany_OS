@@ -37,11 +37,7 @@ impl IommuController {
     /// Resource admission only; this does not establish hardware enablement.
     /// The publication operation rechecks admission before consuming a resource.
     pub(crate) fn check_ats_admission(&self, trust: DeviceTrustLevel) -> Result<(), IommuError> {
-        check_admission(
-            trust,
-            (self.ecap & ecap_bits::ECAP_DT) != 0,
-            self.is_queued_invalidation_enabled(),
-        )
+        check_admission(trust, self.ecap, self.is_queued_invalidation_enabled())
     }
 
     /// Consume a PCI resource before making hardware ATS visible. Every published
@@ -163,13 +159,17 @@ impl IommuController {
 
 fn check_admission(
     trust: DeviceTrustLevel,
-    device_tlb_supported: bool,
+    ecap: u64,
     queued_invalidation: bool,
 ) -> Result<(), IommuError> {
     if trust == DeviceTrustLevel::Untrusted {
         return Err(IommuError::AtsPolicyDenied);
     }
-    if !device_tlb_supported || !queued_invalidation {
+    // DIT requires a PF source identity, including for VF requests. The PCI
+    // resource currently establishes only the requesting function's identity.
+    if ecap & (ecap_bits::ECAP_DT | ecap_bits::ECAP_DIT) != ecap_bits::ECAP_DT
+        || !queued_invalidation
+    {
         return Err(IommuError::NotSupported);
     }
     Ok(())
@@ -183,19 +183,27 @@ mod tests {
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn ats_policy_requires_both_translation_and_completion_support() {
         assert_eq!(
-            check_admission(DeviceTrustLevel::Trusted, true, false),
+            check_admission(DeviceTrustLevel::Trusted, ecap_bits::ECAP_DT, false),
             Err(IommuError::NotSupported)
         );
         assert_eq!(
-            check_admission(DeviceTrustLevel::Trusted, false, true),
+            check_admission(DeviceTrustLevel::Trusted, 0, true),
             Err(IommuError::NotSupported)
         );
         assert_eq!(
-            check_admission(DeviceTrustLevel::Trusted, true, true),
+            check_admission(
+                DeviceTrustLevel::Trusted,
+                ecap_bits::ECAP_DT | ecap_bits::ECAP_DIT,
+                true
+            ),
+            Err(IommuError::NotSupported)
+        );
+        assert_eq!(
+            check_admission(DeviceTrustLevel::Trusted, ecap_bits::ECAP_DT, true),
             Ok(())
         );
         assert_eq!(
-            check_admission(DeviceTrustLevel::Partial, true, true),
+            check_admission(DeviceTrustLevel::Partial, ecap_bits::ECAP_DT, true),
             Ok(())
         );
     }
@@ -204,7 +212,7 @@ mod tests {
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn untrusted_device_is_not_admitted_even_with_hardware_support() {
         assert_eq!(
-            check_admission(DeviceTrustLevel::Untrusted, true, true),
+            check_admission(DeviceTrustLevel::Untrusted, ecap_bits::ECAP_DT, true),
             Err(IommuError::AtsPolicyDenied)
         );
     }

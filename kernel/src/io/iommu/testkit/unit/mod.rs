@@ -224,7 +224,7 @@ fn test_submit_invalidation_poisoned_returns_error() {
 
     // Enable queued invalidation support for testing
     ctrl.ecap = ecap_bits::ECAP_QI;
-    ctrl.init_queued_invalidation(8).expect("init_qi failed");
+    ctrl.init_queued_invalidation().expect("init_qi failed");
 
     // Poison the invalidation_queue lock by simulating a panic while holding it
     {
@@ -245,7 +245,7 @@ fn test_qi_wait_sync_poisoned_returns_error() {
 
     // Enable queued invalidation support for testing
     ctrl.ecap = ecap_bits::ECAP_QI;
-    ctrl.init_queued_invalidation(8).expect("init_qi failed");
+    ctrl.init_queued_invalidation().expect("init_qi failed");
 
     // Poison the invalidation_queue lock
     {
@@ -266,7 +266,7 @@ fn test_qi_wait_async_poisoned_returns_error() {
 
     // Enable queued invalidation support for testing
     ctrl.ecap = ecap_bits::ECAP_QI;
-    ctrl.init_queued_invalidation(8).expect("init_qi failed");
+    ctrl.init_queued_invalidation().expect("init_qi failed");
 
     // Poison the invalidation_queue lock
     {
@@ -276,7 +276,12 @@ fn test_qi_wait_async_poisoned_returns_error() {
     crate::sync::set_panicking(false);
 
     let waiter = ctrl.qi_wait_async();
-    assert_eq!(waiter.submit_result, Err(IommuError::HardwareError));
+    let mut waiter = core::pin::pin!(waiter);
+    let mut cx = core::task::Context::from_waker(core::task::Waker::noop());
+    assert_eq!(
+        core::future::Future::poll(waiter.as_mut(), &mut cx),
+        core::task::Poll::Ready(Err(IommuError::HardwareError))
+    );
 }
 
 #[cfg(feature = "qemu-test-export")]
@@ -286,7 +291,7 @@ fn test_qi_metrics_pressure() {
     let mut ctrl = controller();
 
     ctrl.ecap = ecap_bits::ECAP_QI;
-    ctrl.init_queued_invalidation(8).expect("init_qi failed");
+    ctrl.init_queued_invalidation().expect("init_qi failed");
 
     let stats = ctrl
         .qi_stats()

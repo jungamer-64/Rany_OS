@@ -39,7 +39,9 @@ fn cpu_hotplug_mode(profile: &str) -> Option<CpuHotplugMode> {
 }
 
 fn iommu_device_arg(profile: &str) -> &'static str {
-    if matches!(cpu_hotplug_mode(profile), Some(CpuHotplugMode::Sparse)) {
+    if profile == "iommu-scalable" {
+        "intel-iommu,intremap=on,caching-mode=on,device-iotlb=on,scalable-mode=on"
+    } else if matches!(cpu_hotplug_mode(profile), Some(CpuHotplugMode::Sparse)) {
         "intel-iommu,intremap=on,eim=on,caching-mode=on,device-iotlb=on"
     } else {
         "intel-iommu,intremap=on,caching-mode=on,device-iotlb=on"
@@ -467,11 +469,20 @@ fn fullboot_label(config: &RunConfig) -> String {
 }
 
 fn kernel_cmdline(config: &RunConfig) -> String {
+    let profile = config.profile.as_str();
+    let guest_profile = if profile == "iommu-scalable" {
+        "iommu"
+    } else {
+        profile
+    };
     let mut parts = vec![
-        format!("run_integration={}", config.profile),
+        format!("run_integration={guest_profile}"),
         String::from("shell=off"),
     ];
-    if config.profile == "step9-heavy" {
+    if profile == "iommu-scalable" {
+        parts.push(String::from("iommu_scalable=on"));
+    }
+    if profile == "step9-heavy" {
         parts.push(String::from("kgdb=on"));
         parts.push(String::from("kgdb_transport=both"));
         parts.push(String::from("kgdb_serial_exclusive=1"));

@@ -32,6 +32,8 @@ pub mod regs {
     pub const IQT: u64 = 0x88;
     /// Invalidation queue address register
     pub const IQA: u64 = 0x90;
+    /// Invalidation completion status register
+    pub const ICS: u64 = 0x9C;
     /// Invalidation event control register
     pub const IECTL: u64 = 0xA0;
     /// Invalidation event data register
@@ -99,8 +101,12 @@ pub mod cap_bits {
     pub const CAP_SLLPS_2M: u64 = 1 << 34;
     /// 1GB super-page supported
     pub const CAP_SLLPS_1G: u64 = 1 << 35;
-    /// Address Mask (AM) support (bits 48-53)
-    pub const CAP_AM_MASK: u64 = 0x3F << 48;
+    /// Page-selective IOTLB invalidation support.
+    pub const CAP_PSI: u64 = 1 << 39;
+
+    pub(in crate::io::iommu::vendors::intel) const fn max_address_mask(cap: u64) -> u8 {
+        ((cap >> 48) & 0x3f) as u8
+    }
 }
 
 /// Extended capability register bits
@@ -115,8 +121,14 @@ pub mod ecap_bits {
     pub const ECAP_EIM: u64 = 1 << 4;
     /// IOTLB register offset in 16-byte units (bits 8-17)
     pub const ECAP_IRO_MASK: u64 = 0x3FF << 8;
+    /// Device-TLB Invalidation Throttling support.
+    pub const ECAP_DIT: u64 = 1 << 41;
     /// Scalable Mode Translation Support
     pub const ECAP_SMTS: u64 = 1 << 43;
+}
+
+pub(super) mod ics_bits {
+    pub const IWC: u32 = 1;
 }
 
 /// Fault status register bits
@@ -231,6 +243,7 @@ fixed_registers! {
     queue_head: u64, ReadOnly, read_only, IQH;
     queue_tail: u64, WriteOnly, write_only, IQT;
     queue_address: u64, WriteOnly, write_only, IQA;
+    invalidation_completion_status: u32, ReadWrite, read_write, ICS;
     invalidation_control: u32, ReadWrite, read_write, IECTL;
     invalidation_data: u32, WriteOnly, write_only, IEDATA;
     invalidation_address: u32, WriteOnly, write_only, IEADDR;

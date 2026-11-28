@@ -12,12 +12,12 @@ use super::IommuController;
 use super::init::CapabilityManager;
 use super::utils::IommuUtils;
 use crate::io::iommu::types::IommuError;
-use crate::io::iommu::vendors::intel::qi::InvalidationQueue;
+use crate::io::iommu::vendors::intel::qi::{DescriptorWidth, InvalidationQueue};
 use crate::io::iommu::vendors::intel::registers::{gcmd_bits, gsts_bits};
 
 pub trait QIManager {
     /// Initialize the Invalidation Queue
-    fn init_queued_invalidation(&self, size_log2: u8) -> Result<(), IommuError>;
+    fn init_queued_invalidation(&self) -> Result<(), IommuError>;
     /// Enable Queued Invalidation
     unsafe fn enable_queued_invalidation(&self) -> Result<(), IommuError>;
     /// Enable Invalidation Completion Interrupts
@@ -25,7 +25,7 @@ pub trait QIManager {
 }
 
 impl QIManager for IommuController {
-    fn init_queued_invalidation(&self, size_log2: u8) -> Result<(), IommuError> {
+    fn init_queued_invalidation(&self) -> Result<(), IommuError> {
         if !self.supports_queued_invalidation() {
             return Err(IommuError::NotSupported);
         }
@@ -36,8 +36,13 @@ impl QIManager for IommuController {
         if queue.is_some() {
             return Err(IommuError::AlreadyInitialized);
         }
-        let iq = InvalidationQueue::new(size_log2)?;
-        let iqa_value = iq.base_address() | (iq.size_log2() as u64 & 7);
+        let width = if self.is_scalable_mode_enabled() {
+            DescriptorWidth::Bits256
+        } else {
+            DescriptorWidth::Bits128
+        };
+        let iq = InvalidationQueue::new(width, 0)?;
+        let iqa_value = iq.configuration_register();
         // Install the owner before publishing the pointer. The read-only IQH
         // register is never written by software.
         *queue = Some(iq);

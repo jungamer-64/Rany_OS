@@ -216,7 +216,7 @@ unsafe fn init_controller_iova(controller: &IommuController) -> Result<(), Iommu
 
 unsafe fn init_controller_qi(controller: &IommuController) -> Result<(), IommuError> {
     if controller.supports_queued_invalidation() {
-        controller.init_queued_invalidation(8)?;
+        controller.init_queued_invalidation()?;
         unsafe {
             controller.enable_queued_invalidation()?;
         }
