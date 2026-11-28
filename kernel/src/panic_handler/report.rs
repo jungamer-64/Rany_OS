@@ -2,12 +2,11 @@ use core::alloc::Layout;
 use core::cell::UnsafeCell;
 use core::fmt::Write;
 use core::panic::{Location, PanicInfo};
-use x86_64::structures::idt::InterruptStackFrame;
 
 use super::{FatalFault, bounded_message, fail_stop, record};
 use crate::drivers::serial::{self, FatalSerial};
 use crate::graphics::bsod::BsodInfo;
-use crate::unwind::Backtrace;
+use crate::unwind::{Backtrace, StackFrame, capture_from_context};
 
 const REPORT_STACK_SIZE: usize = 64 * 1024;
 #[repr(align(4096))]
@@ -24,8 +23,7 @@ enum Cause<'a> {
     OutOfMemory(Layout),
     Fault {
         kind: FatalFault,
-        rip: u64,
-        rsp: u64,
+        interrupted: StackFrame,
     },
 }
 
@@ -42,6 +40,11 @@ impl Cause<'_> {
             }
             Self::OutOfMemory(_) => "Kernel allocation failed",
             Self::Fault { kind, .. } => match kind {
+                FatalFault::DivideError => "Divide error (#DE)",
+                FatalFault::DeviceNotAvailable => "Device not available (#NM)",
+                FatalFault::GeneralProtection { .. } => "General protection fault (#GP)",
+                FatalFault::AlignmentCheck { .. } => "Alignment check (#AC)",
+                FatalFault::SimdFloatingPoint => "SIMD floating point exception (#XM)",
                 FatalFault::DoubleFault { .. } => "Double fault (#DF)",
                 FatalFault::InvalidOpcode => "Invalid opcode (#UD)",
                 FatalFault::PageFault { .. } => "Unresolved page fault (#PF)",
@@ -78,11 +81,21 @@ impl Cause<'_> {
                     layout.align()
                 )
             }
-            Self::Fault { kind, rip, rsp } => {
-                writeln!(serial, "[PANIC] Fault RIP={rip:#018x} RSP={rsp:#018x}")?;
+            Self::Fault { kind, interrupted } => {
+                writeln!(
+                    serial,
+                    "[PANIC] Fault RIP={:#018x} RSP={:#018x}",
+                    interrupted.instruction_pointer, interrupted.stack_pointer
+                )?;
                 match kind {
-                    FatalFault::InvalidOpcode | FatalFault::MachineCheck => Ok(()),
-                    FatalFault::DoubleFault { code } => {
+                    FatalFault::DivideError
+                    | FatalFault::InvalidOpcode
+                    | FatalFault::DeviceNotAvailable
+                    | FatalFault::SimdFloatingPoint
+                    | FatalFault::MachineCheck => Ok(()),
+                    FatalFault::DoubleFault { code }
+                    | FatalFault::GeneralProtection { code }
+                    | FatalFault::AlignmentCheck { code } => {
                         writeln!(serial, "[PANIC] Error code={code:#x}")
                     }
                     FatalFault::PageFault {
@@ -116,12 +129,8 @@ pub(crate) fn handle_oom(layout: Layout) -> ! {
     enter(Cause::OutOfMemory(layout))
 }
 
-pub(super) fn handle_fault(kind: FatalFault, frame: &InterruptStackFrame) -> ! {
-    enter(Cause::Fault {
-        kind,
-        rip: frame.instruction_pointer.as_u64(),
-        rsp: frame.stack_pointer.as_u64(),
-    })
+pub(crate) fn handle_fault(kind: FatalFault, interrupted: StackFrame) -> ! {
+    enter(Cause::Fault { kind, interrupted })
 }
 
 #[inline(never)]
@@ -193,7 +202,7 @@ unsafe extern "sysv64" fn report_on_stack(
         serial.finish();
     }
     if !cause.minimal() {
-        show_backtrace(info, output.as_mut(), rsp, rbp);
+        show_backtrace(&cause, info, output.as_mut(), rsp, rbp);
     }
     if let Some(serial) = &mut output {
         let _ = writeln!(serial, "[PANIC] Halting reporting CPU");
@@ -203,8 +212,21 @@ unsafe extern "sysv64" fn report_on_stack(
 }
 
 #[inline(never)]
-fn show_backtrace(info: BsodInfo<'_>, serial: Option<&mut FatalSerial>, rsp: usize, rbp: usize) {
-    let trace = Backtrace::from_stack_registers(rsp, rbp);
+fn show_backtrace(
+    cause: &Cause<'_>,
+    info: BsodInfo<'_>,
+    serial: Option<&mut FatalSerial>,
+    rsp: usize,
+    rbp: usize,
+) {
+    let trace = match cause {
+        Cause::Fault { interrupted, .. } => capture_from_context(
+            interrupted.instruction_pointer,
+            interrupted.stack_pointer,
+            interrupted.frame_pointer,
+        ),
+        Cause::Rust(_) | Cause::OutOfMemory(_) => Backtrace::from_stack_registers(rsp, rbp),
+    };
     let info = if trace.is_empty() {
         info
     } else {

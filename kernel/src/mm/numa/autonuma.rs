@@ -2,8 +2,6 @@
 // src/mm/autonuma.rs - Automatic NUMA Page Migration
 // ============================================================================
 use crate::sync::PoisonLock;
-use alloc::collections::BTreeMap;
-use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 use crate::mm::phys::frame_allocator::{self as pmm, FrameAllocError, PhysicalAllocation};
@@ -104,15 +102,50 @@ impl PageNumaStats {
     }
 }
 
-static PAGE_NUMA_STATS: PoisonLock<BTreeMap<FrameIndex, Arc<PageNumaStats>>> =
-    PoisonLock::new(BTreeMap::new());
+#[cfg(target_os = "none")]
+const MAX_TRACKED_HINT_FRAMES: usize = 256;
+#[cfg(target_os = "none")]
+static PAGE_NUMA_STATS: PoisonLock<FixedVec<(FrameIndex, PageNumaStats), MAX_TRACKED_HINT_FRAMES>> =
+    PoisonLock::new(FixedVec::new());
 
-pub fn get_page_numa_stats(frame: FrameIndex) -> Arc<PageNumaStats> {
-    let mut guard = PAGE_NUMA_STATS.lock().unwrap_or_else(|e| e.into_inner());
-    guard
-        .entry(frame)
-        .or_insert_with(|| Arc::new(PageNumaStats::new()))
-        .clone()
+/// The page mapping is already repaired. Accounting and migration advice
+/// may be dropped under contention or capacity pressure.
+#[cfg(target_os = "none")]
+pub(crate) fn record_hint_fault(address: VirtAddr, frame: FrameIndex) {
+    let Some(node) = super::topology::current_numa_node_fast() else {
+        return;
+    };
+    let now = crate::time::best_effort_time_nanos();
+    let action = {
+        let Ok(mut stats) = PAGE_NUMA_STATS.try_lock() else {
+            return;
+        };
+        let existing = stats.iter().position(|(tracked, _)| *tracked == frame);
+        let index = match existing {
+            Some(index) => index,
+            None => {
+                let index = stats.len();
+                if !stats.push((frame, PageNumaStats::new())) {
+                    return;
+                }
+                index
+            }
+        };
+        let Some((_, stats)) = stats.get(index) else {
+            return;
+        };
+        handle_numa_fault(stats, node, now)
+    };
+    if let NumaFaultAction::Migrate { to_node, .. } = action {
+        // Migration advice owns no RAM and may be discarded on rejection.
+        let _admitted = MIGRATION_ENGINE.queue_migration(MigrationRequest {
+            address: address.align_down(),
+            src_frame: frame,
+            dest_node: to_node,
+            priority: 5,
+            timestamp: now,
+        });
+    }
 }
 
 // ============================================================================
@@ -274,6 +307,7 @@ pub struct PageMigrationError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MigrationQueueRejection {
+    Busy,
     Full,
     Poisoned,
 }
@@ -304,8 +338,13 @@ impl MigrationEngine {
         &self,
         request: MigrationRequest,
     ) -> Result<(), (MigrationQueueRejection, MigrationRequest)> {
-        let Ok(mut pending) = self.pending_requests.lock() else {
-            return Err((MigrationQueueRejection::Poisoned, request));
+        use crate::sync::poison_lock::TryLockError;
+        let mut pending = match self.pending_requests.try_lock() {
+            Ok(pending) => pending,
+            Err(TryLockError::Poisoned(_)) => {
+                return Err((MigrationQueueRejection::Poisoned, request));
+            }
+            Err(TryLockError::WouldBlock) => return Err((MigrationQueueRejection::Busy, request)),
         };
         if pending.is_full() {
             return Err((MigrationQueueRejection::Full, request));

@@ -1,21 +1,18 @@
 use core::sync::atomic::{AtomicU64, Ordering};
-use x86_64::registers::control::Cr2;
+#[cfg(target_os = "none")]
+use x86_64::structures::idt::PageFaultErrorCode;
 
-use super::higher_half::{PageFlags, VirtAddr, with_current_pte_mut};
-use crate::mm::numa::autonuma::{
-    MIGRATION_ENGINE, MigrationRequest, NumaFaultAction, get_page_numa_stats, handle_numa_fault,
-};
-use crate::mm::types::FrameIndex;
+#[cfg(target_os = "none")]
+use super::higher_half::{FaultPageError, VirtAddr, try_restore_fault_page};
 
+#[cfg(target_os = "none")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FaultResult {
-    Resolved,
+pub(crate) enum PageFaultFailure {
     NoVma,
-    PermissionDenied,
-    OutOfMemory,
-    StackOverflow,
-    KernelBug,
-    IoError,
+    Protection,
+    PageTablesBusy,
+    PageTablesUnavailable,
+    InvalidContext,
 }
 
 pub struct FaultStatSnapshot {
@@ -44,76 +41,46 @@ pub fn fault_stats() -> FaultStatSnapshot {
     }
 }
 
-pub fn handle_page_fault(_error_code: u64, _current_rsp: VirtAddr) -> FaultResult {
+#[cfg(target_os = "none")]
+pub(crate) fn handle_page_fault(address: u64, code: u64) -> Result<(), PageFaultFailure> {
     FAULT_STATS.total.fetch_add(1, Ordering::Relaxed);
-
-    let Some(current_cpu) = crate::cpu::CurrentCpu::acquire() else {
-        return FaultResult::KernelBug;
-    };
-    let Ok(_fault_guard) = current_cpu.try_enter_page_fault() else {
-        return FaultResult::KernelBug;
-    };
-
-    let result = match Cr2::read() {
-        Ok(addr) => handle_fault_addr(VirtAddr::new(addr.as_u64())),
-        Err(_) => FaultResult::KernelBug,
-    };
-
-    match result {
-        FaultResult::Resolved => {
-            FAULT_STATS.resolved.fetch_add(1, Ordering::Relaxed);
-        }
-        _ => {
-            FAULT_STATS.rejected.fetch_add(1, Ordering::Relaxed);
-        }
+    let result = repair_page_fault(address, PageFaultErrorCode::from_bits_retain(code));
+    if result.is_ok() {
+        FAULT_STATS.resolved.fetch_add(1, Ordering::Relaxed);
+    } else {
+        FAULT_STATS.rejected.fetch_add(1, Ordering::Relaxed);
     }
     result
 }
 
-fn handle_fault_addr(fault_addr: VirtAddr) -> FaultResult {
-    if let Some(result) = handle_numa_hint_fault(fault_addr) {
-        return result;
+#[cfg(target_os = "none")]
+fn repair_page_fault(address: u64, code: PageFaultErrorCode) -> Result<(), PageFaultFailure> {
+    let current = crate::cpu::CurrentCpu::acquire().ok_or(PageFaultFailure::InvalidContext)?;
+    let _fault_guard = current
+        .try_enter_page_fault()
+        .map_err(|_| PageFaultFailure::InvalidContext)?;
+    // A hint fault has the non-present encoding of an ordinary data or
+    // instruction access. Protection and malformed-entry faults are terminal.
+    let ordinary_access = PageFaultErrorCode::CAUSED_BY_WRITE
+        | PageFaultErrorCode::USER_MODE
+        | PageFaultErrorCode::INSTRUCTION_FETCH;
+    if !(code - ordinary_access).is_empty() {
+        return Err(PageFaultFailure::Protection);
     }
+    let canonical =
+        x86_64::VirtAddr::try_new(address).map_err(|_| PageFaultFailure::InvalidContext)?;
+    let virt = VirtAddr::new(address);
+    let restored = try_restore_fault_page(virt).map_err(|cause| match cause {
+        FaultPageError::Busy => PageFaultFailure::PageTablesBusy,
+        FaultPageError::Unavailable => PageFaultFailure::PageTablesUnavailable,
+        FaultPageError::Unmapped => PageFaultFailure::NoVma,
+    })?;
 
-    FaultResult::NoVma
-}
-
-fn handle_numa_hint_fault(fault_addr: VirtAddr) -> Option<FaultResult> {
-    with_current_pte_mut(fault_addr, |pte| {
-        let flags = pte.flags();
-        if !flags.contains(PageFlags::NUMA_HINT) {
-            return None;
-        }
-
-        let new_flags = flags.clear(PageFlags::NUMA_HINT).set(PageFlags::PRESENT);
-        pte.set_flags(new_flags);
-        // with_current_pte_mut synchronizes after releasing the page-table lock.
-
-        let frame = FrameIndex::from_phys_addr(pte.phys_addr().as_u64());
-        let stats = get_page_numa_stats(frame);
-        let Some(node_id) = crate::mm::numa::topology::current_numa_node_fast() else {
-            return Some(FaultResult::Resolved);
-        };
-        let action = handle_numa_fault(&stats, node_id, crate::time::current_time_ns());
-        if let NumaFaultAction::Migrate {
-            from_node: _,
-            to_node,
-        } = action
-        {
-            let request = MigrationRequest {
-                address: fault_addr.align_down(),
-                src_frame: frame,
-                dest_node: to_node,
-                priority: 5,
-                timestamp: crate::time::current_time_ns(),
-            };
-            if let Err((_reason, _request)) = MIGRATION_ENGINE.queue_migration(request) {
-                // This is an advisory hint, not a RAM owner. The next NUMA hint
-                // fault may retry admission after bounded queue pressure clears.
-            }
-        }
-
-        Some(FaultResult::Resolved)
-    })
-    .flatten()
+    // Only presence changed. Each faulting CPU discards its own cached walk
+    // before retrying. No peer must acknowledge a revocation or mapping change.
+    x86_64::instructions::tlb::flush(canonical);
+    if let Some(frame) = restored {
+        crate::mm::numa::autonuma::record_hint_fault(virt, frame);
+    }
+    Ok(())
 }

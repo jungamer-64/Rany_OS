@@ -1309,6 +1309,42 @@ pub(crate) unsafe fn global_replace_owned_page(
     }
 }
 
+#[cfg(target_os = "none")]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum FaultPageError {
+    Busy,
+    Unavailable,
+    Unmapped,
+}
+
+/// Restores a NUMA hint or observes a leaf already restored by a peer.
+/// A synchronous fault may have interrupted the page-table lock owner.
+#[cfg(target_os = "none")]
+pub(crate) fn try_restore_fault_page(
+    virt: VirtAddr,
+) -> Result<Option<crate::mm::types::FrameIndex>, FaultPageError> {
+    use crate::sync::poison_lock::TryLockError;
+    let guard = PAGE_TABLE_MANAGER.try_lock().map_err(|cause| match cause {
+        TryLockError::WouldBlock => FaultPageError::Busy,
+        TryLockError::Poisoned(_) => FaultPageError::Unavailable,
+    })?;
+    let manager = guard.as_ref().ok_or(FaultPageError::Unavailable)?;
+    let walker = PageTableWalker::new(get_cr3(), &manager.mapper);
+    // SAFETY: the guard retains exclusive software mutation authority.
+    let entry = unsafe { walker.walk_mut(virt) }.ok_or(FaultPageError::Unmapped)?;
+    let flags = entry.flags();
+    if flags.contains(PageFlags::PRESENT) {
+        return Ok(None);
+    }
+    if !flags.contains(PageFlags::NUMA_HINT) {
+        return Err(FaultPageError::Unmapped);
+    }
+    entry.set_flags(flags.clear(PageFlags::NUMA_HINT).set(PageFlags::PRESENT));
+    Ok(Some(crate::mm::types::FrameIndex::from_phys_addr(
+        entry.phys_addr().as_u64(),
+    )))
+}
+
 /// 仮想アドレスのPTEを変更（現在のCR3を使用）
 pub fn with_current_pte_mut<F, R>(virt: VirtAddr, f: F) -> Option<R>
 where

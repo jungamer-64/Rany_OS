@@ -19,33 +19,31 @@ pub(crate) use record::reserve_record_page;
 #[cfg(all(not(test), target_os = "none"))]
 pub(crate) use report::{handle_oom, handle_panic};
 
+#[cfg(target_os = "none")]
 pub(crate) enum FatalFault {
+    DivideError,
     InvalidOpcode,
+    DeviceNotAvailable,
+    GeneralProtection {
+        code: u64,
+    },
+    AlignmentCheck {
+        code: u64,
+    },
+    SimdFloatingPoint,
     DoubleFault {
         code: u64,
     },
     PageFault {
         address: u64,
         code: u64,
-        reason: crate::mm::virt::fault_handler::FaultResult,
+        reason: crate::mm::virt::fault_handler::PageFaultFailure,
     },
     MachineCheck,
 }
 
-pub(crate) fn handle_fault(
-    fault: FatalFault,
-    frame: &x86_64::structures::idt::InterruptStackFrame,
-) -> ! {
-    #[cfg(target_os = "none")]
-    {
-        report::handle_fault(fault, frame)
-    }
-    #[cfg(not(target_os = "none"))]
-    {
-        let _ = (fault, frame);
-        panic!("fatal CPU exception")
-    }
-}
+#[cfg(target_os = "none")]
+pub(crate) use report::handle_fault;
 
 const MAX_PANIC_MSG: usize = 1024;
 
