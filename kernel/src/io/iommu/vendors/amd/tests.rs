@@ -319,7 +319,6 @@ fn test_cmdqueue_pressure() {
 // ---------------------------------------------------------------------------
 
 use super::cmd::AmdCommand;
-use super::irt::encode_remap_msi;
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
@@ -328,11 +327,4 @@ fn test_wave5_irt_invalidation_cmd_format() {
     let cmd = AmdCommand::invalidate_interrupt_table(devid);
     assert_eq!(cmd.data[0] & 0xFFFF, devid as u32);
     assert_eq!((cmd.data[1] >> 28) & 0x0F, 0x05);
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_wave5_get_remap_msi_message_format() {
-    assert_eq!(encode_remap_msi(0), (0xfee0_0000, 0));
-    assert_eq!(encode_remap_msi(0x1ff), (0xfee0_0000, 0x1ff));
 }

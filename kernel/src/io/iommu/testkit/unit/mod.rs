@@ -124,7 +124,7 @@ fn test_create_domain_poisoned_returns_hw_error() {
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_get_domain_for_device_poisoned_returns_hw_error() {
+fn test_get_domain_for_device_reports_poisoned_binding_registry() {
     use crate::sync::set_panicking;
     let ctrl = controller();
     let device = DeviceId::new(0, 0, 1, 0);
@@ -142,7 +142,7 @@ fn test_get_domain_for_device_poisoned_returns_hw_error() {
 
     assert_eq!(
         ctrl.get_domain_for_device(device).err(),
-        Some(IommuError::HardwareError)
+        Some(IommuError::Poisoned)
     );
 }
 

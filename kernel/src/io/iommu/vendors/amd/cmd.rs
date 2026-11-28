@@ -255,3 +255,18 @@ fn lower32(value: u64) -> u32 {
 fn upper32(value: u64) -> u32 {
     (value >> 32) as u32
 }
+
+#[cfg(test)]
+mod tests {
+    use super::AmdCommand;
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn completion_counter_requires_ordered_hardware_stores() {
+        let wait = AmdCommand::completion_wait(0x12_3456_7000, 0x1234_5678_9abc_def0, false);
+        assert_eq!(
+            wait.data,
+            [0x3456_7005, 0x1000_0012, 0x9abc_def0, 0x1234_5678]
+        );
+    }
+}

@@ -177,6 +177,13 @@ mod tests {
 
     #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
     #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn msi_message_carries_the_requester_table_index_in_data() {
+        assert_eq!(encode_remap_msi(0), (0xfee0_0000, 0));
+        assert_eq!(encode_remap_msi(0x1ff), (0xfee0_0000, 0x1ff));
+    }
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
     fn dte_uses_requester_table_pointer_length_and_remapping_mode() {
         assert_eq!(dte_route(0x0001_2345_6789_a000), 0x2001_2345_6789_a013);
     }
