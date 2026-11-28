@@ -282,36 +282,6 @@ impl Drop for InvalidationQueue {
 }
 
 impl InvalidationQueue {
-    /// Get the queue base address for IQA register
-    pub fn base_address(&self) -> u64 {
-        self.queue_phys
-    }
-
-    /// Get the status virtual address (for memory polling)
-    pub(crate) fn status_virtual_address(&self) -> usize {
-        self.status_virt
-    }
-
-    /// Get queue size in log2 form for IQA register (bits 2:0)
-    pub fn size_log2(&self) -> u8 {
-        (self.size.trailing_zeros() - 8) as u8
-    }
-
-    /// Get current tail index
-    pub fn tail(&self) -> usize {
-        self.tail
-    }
-
-    /// Get cached head index
-    pub fn cached_head(&self) -> usize {
-        self.cached_head
-    }
-
-    /// Update cached head (caller should pass IQH >> 4)
-    pub fn update_head(&mut self, head: usize) {
-        self.cached_head = head % self.size;
-    }
-
     #[inline]
     fn next_tail(&self) -> usize {
         (self.tail + 1) % self.size
