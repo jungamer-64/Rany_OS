@@ -107,10 +107,6 @@ pub struct IommuController {
     pub(crate) hardware: PoisonLock<HardwareContext>,
     /// Domains
     pub domains: PoisonLock<HashMap<u16, Arc<IommuDomain>>>,
-    /// Device to domain mapping
-    pub(crate) device_domains: PoisonLock<HashMap<DeviceId, u16>>,
-    /// Device to PASID table mapping (scalable mode)
-    pub(crate) device_pasid_tables: PoisonLock<HashMap<DeviceId, PasidTable>>,
     /// Next domain ID
     pub(crate) next_domain_id: AtomicU64,
     /// Translation enabled
@@ -185,8 +181,6 @@ impl IommuController {
             selected_levels,
             hardware: PoisonLock::new(HardwareContext::default()),
             domains: PoisonLock::new(HashMap::new()),
-            device_domains: PoisonLock::new(HashMap::new()),
-            device_pasid_tables: PoisonLock::new(HashMap::new()),
             next_domain_id: AtomicU64::new(0),
             enabled: AtomicBool::new(false),
             interrupt_remap_table: PoisonLock::new(None),
