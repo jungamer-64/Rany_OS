@@ -308,7 +308,7 @@ async fn dhcp_v6_drive_task(runtime: &'static DhcpInterfaceRuntime) {
         }
 
         let now = crate::task::current_tick();
-        if let Err(err) = runtime.v6.check_timeout(now, 1000) {
+        if let Err(err) = runtime.v6.check_timeout(now) {
             log::warn!(
                 "[NET] DHCPv6 interface check failed: if{} err={}",
                 runtime.if_id.0,
@@ -438,26 +438,18 @@ async fn dhcp_v6_dispatcher_task(runtime: NetRuntimeHandle) {
                     _ => continue,
                 };
 
-                let process = interface_runtime_in(runtime, if_id)
-                    .filter(|interface_runtime| {
-                        interface_runtime.active.load(Ordering::Acquire)
-                            && !interface_runtime.suspended.load(Ordering::Acquire)
-                            && interface_runtime.v6.matches_response_payload(&packet)
-                    })
-                    .map(|interface_runtime| {
-                        let handled = interface_runtime.v6.handle_packet_payload(packet, src_v6);
-                        (interface_runtime, handled)
-                    });
-                let Some((interface_runtime, handled)) = process else {
+                let Some(interface) = interface_runtime_in(runtime, if_id).filter(|interface| {
+                    interface.active.load(Ordering::Acquire)
+                        && !interface.suspended.load(Ordering::Acquire)
+                }) else {
                     continue;
                 };
-
-                if handled {
-                    log::info!(
-                        "[NET] DHCPv6 packet handled: if{} mac={}",
-                        interface_runtime.if_id.0,
-                        interface_runtime.mac()
-                    );
+                if let Err(error) =
+                    interface
+                        .v6
+                        .receive(packet, src_v6, crate::task::current_tick())
+                {
+                    log::debug!("[NET] DHCPv6 response ignored on if{}: {error}", if_id.0);
                 }
             }
             None => {

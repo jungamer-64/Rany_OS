@@ -451,7 +451,7 @@ pub(crate) fn publish_cpu_online(cpu_id: CpuId) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::net::runtime::command::RuntimeCommand;
     use crate::net::runtime::manager;
@@ -474,6 +474,13 @@ mod tests {
         )
         .expect("bootstrap CPU topology")
         .snapshot()
+    }
+
+    pub(crate) fn runtime_fixture() -> NetRuntimeHandle {
+        RuntimeRegistry::new()
+            .allocate_runtime(&cpu_snapshot())
+            .expect("isolated test network runtime")
+            .handle()
     }
 
     fn firmware_cpu(uid: u64, apic_id: u32) -> crate::cpu::LocatedCpu {

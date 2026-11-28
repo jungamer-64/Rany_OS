@@ -2,32 +2,171 @@
 // kernel/src/net/services/dhcp/v6/client.rs - サービス / DHCP / v6 / クライアント
 // ============================================================================
 
-use super::*;
+use super::response::{Response, ResponseError, ServerId};
+use super::types::*;
+use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv6::Ipv6Address;
 use crate::net::l4::udp::UdpPorts;
-use crate::net::payload::GeneratedPacketWriter;
-use crate::net::runtime::manager::NetIfId;
+use crate::net::payload::alloc_packet_with_headroom_in;
+use crate::net::runtime::NetRuntimeHandle;
+use crate::net::runtime::manager::{self, NetIfId};
 use crate::sync::PoisonLock;
-use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketPayload};
 
+pub struct DhcpV6Client {
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+    mac: MacAddress,
+    duid: [u8; 10],
+    iaid: u32,
+    phase: PoisonLock<Phase>,
+}
+
+struct Server {
+    id: ServerId,
+    address: Ipv6Address,
+}
+
+struct Binding {
+    server: Server,
+    lease: DhcpV6Lease,
+}
+
+struct Exchange {
+    xid: [u8; 3],
+    last_attempt: u64,
+    attempts: u32,
+}
+
+impl Exchange {
+    fn begin(now: u64) -> Result<Self, &'static str> {
+        let random = crate::net::security::tls::crypto::generate_random()
+            .map_err(|_| "Secure DHCPv6 XID entropy unavailable")?;
+        Ok(Self {
+            xid: [random[0], random[1], random[2]],
+            last_attempt: now,
+            attempts: 0,
+        })
+    }
+
+    fn due(&self, now: u64, jitter_seed: u8, initial: u64, maximum: u64) -> bool {
+        let base = (initial << self.attempts.min(7)).min(maximum);
+        let jitter = ((now ^ u64::from(jitter_seed)) % 21) as i64 - 10;
+        let interval = (base as i64 * (1000 + jitter * 10)) as u64;
+        now.saturating_sub(self.last_attempt) >= interval
+    }
+
+    fn attempted(&mut self, now: u64) {
+        self.last_attempt = now;
+        self.attempts = self.attempts.saturating_add(1);
+    }
+}
+
+enum Phase {
+    Init,
+    Soliciting(Exchange),
+    Requesting {
+        exchange: Exchange,
+        server: Server,
+        offered: Ipv6Address,
+    },
+    Bound(Binding),
+    Renewing(Exchange, Binding),
+    Rebinding(Exchange, Binding),
+}
+
+impl Phase {
+    fn binding(&self) -> Option<&Binding> {
+        match self {
+            Self::Bound(binding) | Self::Renewing(_, binding) | Self::Rebinding(_, binding) => {
+                Some(binding)
+            }
+            _ => None,
+        }
+    }
+
+    fn state(&self) -> DhcpV6State {
+        match self {
+            Self::Init => DhcpV6State::Init,
+            Self::Soliciting(_) => DhcpV6State::SolicitSent,
+            Self::Requesting { .. } => DhcpV6State::Requesting,
+            Self::Bound(_) => DhcpV6State::Bound,
+            Self::Renewing(..) => DhcpV6State::Renewing,
+            Self::Rebinding(..) => DhcpV6State::Rebinding,
+        }
+    }
+
+    fn accepts(&self, kind: DhcpV6MessageType, xid: [u8; 3], server: &ServerId) -> bool {
+        match (self, kind) {
+            (Self::Soliciting(exchange), DhcpV6MessageType::Advertise)
+            | (Self::Rebinding(exchange, _), DhcpV6MessageType::Reply) => exchange.xid == xid,
+            (
+                Self::Requesting {
+                    exchange,
+                    server: expected,
+                    ..
+                },
+                DhcpV6MessageType::Reply,
+            )
+            | (
+                Self::Renewing(
+                    exchange,
+                    Binding {
+                        server: expected, ..
+                    },
+                ),
+                DhcpV6MessageType::Reply,
+            ) => exchange.xid == xid && expected.id == *server,
+            _ => false,
+        }
+    }
+}
+
+enum Request<'a> {
+    Solicit,
+    Request(&'a Server, Ipv6Address),
+    Renew(&'a Binding),
+    Rebind(&'a Binding),
+    Release(&'a Binding),
+}
+
+impl Request<'_> {
+    fn kind(&self) -> DhcpV6MessageType {
+        match self {
+            Self::Solicit => DhcpV6MessageType::Solicit,
+            Self::Request(..) => DhcpV6MessageType::Request,
+            Self::Renew(_) => DhcpV6MessageType::Renew,
+            Self::Rebind(_) => DhcpV6MessageType::Rebind,
+            Self::Release(_) => DhcpV6MessageType::Release,
+        }
+    }
+
+    fn server(&self) -> Option<&Server> {
+        match self {
+            Self::Request(server, _) => Some(server),
+            Self::Renew(binding) | Self::Release(binding) => Some(&binding.server),
+            Self::Solicit | Self::Rebind(_) => None,
+        }
+    }
+
+    fn address(&self) -> Option<Ipv6Address> {
+        match self {
+            Self::Solicit => None,
+            Self::Request(_, offered) => Some(*offered),
+            Self::Renew(binding) | Self::Rebind(binding) | Self::Release(binding) => {
+                Some(binding.lease.addr)
+            }
+        }
+    }
+}
+
 impl DhcpV6Client {
-    pub const MAX_RETRIES: u32 = 4;
+    const MAX_RETRIES: u32 = 4;
 
     #[inline]
     fn all_dhcp_servers_multicast() -> Ipv6Address {
         // RFC 8415: All_DHCP_Relay_Agents_and_Servers = ff02::1:2
         Ipv6Address::new([0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 2])
-    }
-
-    fn generated_message_payload(bytes: &[u8]) -> Result<PacketPayload, &'static str> {
-        let mut writer = GeneratedPacketWriter::new(bytes.len(), DEFAULT_PACKET_HEADROOM)
-            .ok_or("Failed to allocate DHCPv6 payload")?;
-        writer
-            .write_generated_bytes(bytes)
-            .ok_or("Failed to write DHCPv6 payload")?;
-        writer.finish().ok_or("Incomplete DHCPv6 payload")
     }
 
     fn get_link_local(&self) -> Option<Ipv6Address> {
@@ -61,1396 +200,703 @@ impl DhcpV6Client {
         duid
     }
 
-    fn append_option_payload(
-        buf: &mut [u8],
-        offset: &mut usize,
-        code: u16,
-        payload: &kernel_api::resource::net::PacketPayload,
-    ) -> Result<(), &'static str> {
-        let view = crate::net::payload::PacketPayloadView::new(payload);
-        if *offset + 4 + view.total_len() > buf.len() {
-            return Err("Buffer overflow during option writing");
-        }
-        buf[*offset..*offset + 2].copy_from_slice(&code.to_be_bytes());
-        buf[*offset + 2..*offset + 4].copy_from_slice(&(view.total_len() as u16).to_be_bytes());
-        let mut written = 0usize;
-        view.for_each_chunk(|chunk| {
-            if written == view.total_len() {
-                return;
-            }
-            let take = chunk.len().min(view.total_len() - written);
-            let dst_start = *offset + 4 + written;
-            buf[dst_start..dst_start + take].copy_from_slice(&chunk[..take]);
-            written += take;
-        });
-        if written != view.total_len() {
-            return Err("Buffer overflow during option writing");
-        }
-        *offset += 4 + view.total_len();
-        Ok(())
-    }
-
-    pub fn new(
-        runtime: crate::net::runtime::NetRuntimeHandle,
-        if_id: NetIfId,
-        mac: crate::net::l2::ethernet::MacAddress,
-    ) -> Self {
+    pub(crate) fn new(runtime: NetRuntimeHandle, if_id: NetIfId, mac: MacAddress) -> Self {
         let duid = Self::make_duid_ll(&mac);
-        // MAC アドレスベースの IAID（一意だが予測困難性は不要）
-        let mac_bytes = mac.as_bytes();
-        let iaid = u32::from_be_bytes([mac_bytes[2], mac_bytes[3], mac_bytes[4], mac_bytes[5]]);
+        let bytes = mac.as_bytes();
         Self {
             runtime,
             if_id,
             mac,
             duid,
-            state: PoisonLock::new(DhcpV6State::Init),
-            xid: AtomicU32::new(0),
-            iaid,
-            lease: PoisonLock::new(None),
-            server_duid: PoisonLock::new(None),
-            server_addr: PoisonLock::new(None),
-            state_time: AtomicU64::new(0),
-            retry_count: AtomicU32::new(0),
+            iaid: u32::from_be_bytes([bytes[2], bytes[3], bytes[4], bytes[5]]),
+            phase: PoisonLock::new(Phase::Init),
         }
     }
 
-    pub fn state(&self) -> DhcpV6State {
-        match self.state.lock() {
-            Ok(g) => *g,
-            Err(_) => DhcpV6State::Init,
-        }
+    pub(crate) fn snapshot(&self) -> (DhcpV6State, Option<DhcpV6Lease>) {
+        self.phase
+            .lock()
+            .map_or((DhcpV6State::Init, None), |phase| {
+                (phase.state(), phase.binding().map(|binding| binding.lease))
+            })
     }
 
-    /// 暗号学的安全な24bitトランザクションIDを生成し保存する
-    fn generate_secure_xid(&self) -> bool {
-        let Ok(random_bytes) = crate::net::security::tls::crypto::generate_random() else {
-            log::warn!("[NET] DHCPv6: secure XID entropy unavailable");
-            return false;
-        };
-        let xid = u32::from_be_bytes([0, random_bytes[0], random_bytes[1], random_bytes[2]]);
-        self.xid.store(xid, Ordering::SeqCst);
-        true
-    }
-
-    pub fn lease(&self) -> Option<DhcpV6Lease> {
-        match self.lease.lock() {
-            Ok(g) => *g,
-            Err(_) => None,
-        }
-    }
-
-    pub fn with_lease<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(Option<&DhcpV6Lease>) -> R,
-    {
-        match self.lease.lock() {
-            Ok(g) => f(g.as_ref()),
-            Err(_) => f(None),
-        }
-    }
-
-    /// Build a DHCPv6 SOLICIT message (minimal: client-id + IA_NA option)
-    pub fn build_solicit(&self, buf: &mut [u8]) -> Result<usize, &'static str> {
-        if buf.len() < 128 {
-            return Err("buffer too small");
-        }
-
-        // Use current XID (should be generated once by the caller for the transaction)
-        let xid = self.xid.load(Ordering::SeqCst);
-
-        // Header
-        buf[0] = DhcpV6MessageType::Solicit as u8;
-        // XID - 3 bytes (big-endian)
-        buf[1..4].copy_from_slice(&xid.to_be_bytes()[1..4]);
-        let mut off = 4usize;
-
-        // Helper to safely append options
-        let append_opt = |buf: &mut [u8],
-                          offset: &mut usize,
-                          code: u16,
-                          data: &[u8]|
-         -> Result<(), &'static str> {
-            if *offset + 4 + data.len() > buf.len() {
-                return Err("Buffer overflow during option writing");
-            }
-            buf[*offset..*offset + 2].copy_from_slice(&code.to_be_bytes());
-            buf[*offset + 2..*offset + 4].copy_from_slice(&(data.len() as u16).to_be_bytes());
-            buf[*offset + 4..*offset + 4 + data.len()].copy_from_slice(data);
+    fn encode(&self, bytes: &mut [u8; 256], exchange: &Exchange, request: &Request<'_>) -> usize {
+        bytes[0] = request.kind() as u8;
+        bytes[1..4].copy_from_slice(&exchange.xid);
+        let mut offset = 4;
+        fn option(bytes: &mut [u8], offset: &mut usize, code: u16, data: &[u8]) {
+            let start = *offset;
+            bytes[start..start + 2].copy_from_slice(&code.to_be_bytes());
+            bytes[start + 2..start + 4].copy_from_slice(&(data.len() as u16).to_be_bytes());
             *offset += 4 + data.len();
-            Ok(())
-        };
-
-        // Client Identifier (option 1)
-        append_opt(buf, &mut off, 1, &self.duid)?;
-
-        // Option: IA_NA (3) with IAID(4) + T1(4) + T2(4) and no suboptions yet
-        if off + 16 > buf.len() {
-            return Err("Buffer overflow during IA_NA writing");
+            bytes[start + 4..*offset].copy_from_slice(data);
         }
-        buf[off..off + 2].copy_from_slice(&(3u16.to_be_bytes())); // IA_NA
-        buf[off + 2..off + 4].copy_from_slice(&(12u16.to_be_bytes())); // length
-        off += 4;
-        // IAID
-        buf[off..off + 4].copy_from_slice(&self.iaid.to_be_bytes());
-        off += 4;
-        // T1, T2 = 0
-        buf[off..off + 4].copy_from_slice(&0u32.to_be_bytes());
-        off += 4;
-        buf[off..off + 4].copy_from_slice(&0u32.to_be_bytes());
-        off += 4;
-
-        Ok(off)
+        option(bytes, &mut offset, 1, &self.duid);
+        if let Some(server) = request.server() {
+            option(bytes, &mut offset, 2, server.id.as_bytes());
+        }
+        let mut ia = [0; 40];
+        ia[..4].copy_from_slice(&self.iaid.to_be_bytes());
+        let ia_len = if let Some(address) = request.address() {
+            let mut ia_offset = 12;
+            let mut iaaddr = [0; 24];
+            iaaddr[..16].copy_from_slice(address.as_bytes());
+            option(&mut ia, &mut ia_offset, 5, &iaaddr);
+            ia_offset
+        } else {
+            12
+        };
+        option(bytes, &mut offset, 3, &ia[..ia_len]);
+        offset
     }
 
-    /// Build a DHCPv6 REQUEST to *select* a server after receiving ADVERTISE.
-    /// Includes ClientID + ServerID (if available) + IA_NA (no IAADDR suboption).
-    pub fn build_request_from_advertise(&self, buf: &mut [u8]) -> Result<usize, &'static str> {
-        if buf.len() < 128 {
-            return Err("buffer too small");
-        }
-
-        // Use current XID
-        let xid = self.xid.load(Ordering::SeqCst);
-
-        // Header
-        buf[0] = DhcpV6MessageType::Request as u8;
-        buf[1..4].copy_from_slice(&xid.to_be_bytes()[1..4]);
-        let mut off = 4usize;
-
-        // Helper to safely append options
-        let append_opt = |buf: &mut [u8],
-                          offset: &mut usize,
-                          code: u16,
-                          data: &[u8]|
-         -> Result<(), &'static str> {
-            if *offset + 4 + data.len() > buf.len() {
-                return Err("Buffer overflow during option writing");
-            }
-            buf[*offset..*offset + 2].copy_from_slice(&code.to_be_bytes());
-            buf[*offset + 2..*offset + 4].copy_from_slice(&(data.len() as u16).to_be_bytes());
-            buf[*offset + 4..*offset + 4 + data.len()].copy_from_slice(data);
-            *offset += 4 + data.len();
-            Ok(())
-        };
-
-        // Client Identifier (option 1)
-        append_opt(buf, &mut off, 1, &self.duid)?;
-
-        // Server Identifier (option 2) if we have a DUID
-        if let Ok(g) = self.server_duid.lock()
-            && let Some(ref duid) = *g
-        {
-            Self::append_option_payload(buf, &mut off, 2, duid)?;
-        }
-
-        // IA_NA (option 3) without IAADDR suboption
-        if off + 16 > buf.len() {
-            return Err("Buffer overflow during IA_NA writing");
-        }
-        buf[off..off + 2].copy_from_slice(&(3u16.to_be_bytes())); // IA_NA
-        buf[off + 2..off + 4].copy_from_slice(&(12u16.to_be_bytes()));
-        off += 4;
-        buf[off..off + 4].copy_from_slice(&self.iaid.to_be_bytes());
-        off += 4;
-        buf[off..off + 4].copy_from_slice(&0u32.to_be_bytes());
-        off += 4;
-        buf[off..off + 4].copy_from_slice(&0u32.to_be_bytes());
-        off += 4;
-
-        Ok(off)
+    fn send(&self, exchange: &Exchange, request: Request<'_>) -> Result<(), &'static str> {
+        let src = self
+            .get_link_local()
+            .ok_or("No assigned link-local address")?;
+        let dst = request
+            .server()
+            .map_or_else(Self::all_dhcp_servers_multicast, |server| server.address);
+        let mut bytes = [0; 256];
+        let len = self.encode(&mut bytes, exchange, &request);
+        let mut packet = alloc_packet_with_headroom_in(self.runtime, len, DEFAULT_PACKET_HEADROOM)
+            .ok_or("Failed to allocate DHCPv6 payload")?;
+        packet.data_mut().copy_from_slice(&bytes[..len]);
+        let payload = PacketPayload::try_single(packet).map_err(|_| "Invalid DHCPv6 payload")?;
+        self.enqueue_v6_send(src, dst, payload)
+            .then_some(())
+            .ok_or("DHCPv6 send queue rejected the message")
     }
 
-    /// Build a DHCPv6 RENEW message (RFC 8415 Section 18.2.3)
-    /// Sent to the server that originally assigned the lease (unicast).
-    /// Includes ClientID + ServerID + IA_NA with IAADDR suboption.
-    pub fn build_renew(&self, buf: &mut [u8], lease: &DhcpV6Lease) -> Result<usize, &'static str> {
-        if buf.len() < 256 {
-            return Err("buffer too small");
-        }
-
-        let xid = self.xid.load(Ordering::SeqCst);
-
-        buf[0] = DhcpV6MessageType::Renew as u8;
-        buf[1..4].copy_from_slice(&xid.to_be_bytes()[1..4]);
-        let mut off = 4usize;
-
-        let append_opt = |buf: &mut [u8],
-                          offset: &mut usize,
-                          code: u16,
-                          data: &[u8]|
-         -> Result<(), &'static str> {
-            if *offset + 4 + data.len() > buf.len() {
-                return Err("Buffer overflow during option writing");
-            }
-            buf[*offset..*offset + 2].copy_from_slice(&code.to_be_bytes());
-            buf[*offset + 2..*offset + 4].copy_from_slice(&(data.len() as u16).to_be_bytes());
-            buf[*offset + 4..*offset + 4 + data.len()].copy_from_slice(data);
-            *offset += 4 + data.len();
-            Ok(())
-        };
-
-        // Client Identifier (option 1)
-        append_opt(buf, &mut off, 1, &self.duid)?;
-
-        // Server Identifier (option 2) — RFC 8415 requires this for Renew
-        if let Ok(g) = self.server_duid.lock()
-            && let Some(ref duid) = *g
-        {
-            Self::append_option_payload(buf, &mut off, 2, duid)?;
-        }
-
-        // IA_NA (option 3) with IAADDR suboption
-        if off + 44 > buf.len() {
-            return Err("Buffer overflow during IA_NA writing");
-        }
-        buf[off..off + 2].copy_from_slice(&(3u16.to_be_bytes())); // IA_NA
-        buf[off + 2..off + 4].copy_from_slice(&(40u16.to_be_bytes())); // length
-        off += 4;
-        buf[off..off + 4].copy_from_slice(&self.iaid.to_be_bytes());
-        off += 4;
-        buf[off..off + 4].copy_from_slice(&0u32.to_be_bytes()); // T1
-        off += 4;
-        buf[off..off + 4].copy_from_slice(&0u32.to_be_bytes()); // T2
-        off += 4;
-        // IAADDR suboption
-        buf[off..off + 2].copy_from_slice(&(5u16.to_be_bytes()));
-        buf[off + 2..off + 4].copy_from_slice(&(24u16.to_be_bytes()));
-        off += 4;
-        buf[off..off + 16].copy_from_slice(lease.addr.as_bytes());
-        off += 16;
-        buf[off..off + 4].copy_from_slice(&lease.preferred_lifetime.to_be_bytes());
-        off += 4;
-        buf[off..off + 4].copy_from_slice(&lease.valid_lifetime.to_be_bytes());
-        off += 4;
-
-        Ok(off)
-    }
-
-    /// Build a DHCPv6 REBIND message (RFC 8415 Section 18.2.5)
-    /// Sent to All_DHCP_Relay_Agents_and_Servers (multicast).
-    /// Includes ClientID + IA_NA with IAADDR suboption (no ServerID — any server may respond).
-    pub fn build_rebind(&self, buf: &mut [u8], lease: &DhcpV6Lease) -> Result<usize, &'static str> {
-        if buf.len() < 256 {
-            return Err("buffer too small");
-        }
-
-        let xid = self.xid.load(Ordering::SeqCst);
-
-        buf[0] = DhcpV6MessageType::Rebind as u8;
-        buf[1..4].copy_from_slice(&xid.to_be_bytes()[1..4]);
-        let mut off = 4usize;
-
-        let append_opt = |buf: &mut [u8],
-                          offset: &mut usize,
-                          code: u16,
-                          data: &[u8]|
-         -> Result<(), &'static str> {
-            if *offset + 4 + data.len() > buf.len() {
-                return Err("Buffer overflow during option writing");
-            }
-            buf[*offset..*offset + 2].copy_from_slice(&code.to_be_bytes());
-            buf[*offset + 2..*offset + 4].copy_from_slice(&(data.len() as u16).to_be_bytes());
-            buf[*offset + 4..*offset + 4 + data.len()].copy_from_slice(data);
-            *offset += 4 + data.len();
-            Ok(())
-        };
-
-        // Client Identifier (option 1)
-        append_opt(buf, &mut off, 1, &self.duid)?;
-
-        // No Server Identifier for Rebind (RFC 8415 Section 18.2.5)
-
-        // IA_NA (option 3) with IAADDR suboption
-        if off + 44 > buf.len() {
-            return Err("Buffer overflow during IA_NA writing");
-        }
-        buf[off..off + 2].copy_from_slice(&(3u16.to_be_bytes())); // IA_NA
-        buf[off + 2..off + 4].copy_from_slice(&(40u16.to_be_bytes())); // length
-        off += 4;
-        buf[off..off + 4].copy_from_slice(&self.iaid.to_be_bytes());
-        off += 4;
-        buf[off..off + 4].copy_from_slice(&0u32.to_be_bytes()); // T1
-        off += 4;
-        buf[off..off + 4].copy_from_slice(&0u32.to_be_bytes()); // T2
-        off += 4;
-        // IAADDR suboption
-        buf[off..off + 2].copy_from_slice(&(5u16.to_be_bytes()));
-        buf[off + 2..off + 4].copy_from_slice(&(24u16.to_be_bytes()));
-        off += 4;
-        buf[off..off + 16].copy_from_slice(lease.addr.as_bytes());
-        off += 16;
-        buf[off..off + 4].copy_from_slice(&lease.preferred_lifetime.to_be_bytes());
-        off += 4;
-        buf[off..off + 4].copy_from_slice(&lease.valid_lifetime.to_be_bytes());
-        off += 4;
-
-        Ok(off)
-    }
-
-    /// Build a DHCPv6 RELEASE message (RFC 8415 Section 18.2.6)
-    /// Includes ClientID + ServerID + IA_NA with IAADDR suboption.
-    pub fn build_release(
+    pub(crate) fn receive(
         &self,
-        buf: &mut [u8],
-        lease: &DhcpV6Lease,
-    ) -> Result<usize, &'static str> {
-        if buf.len() < 256 {
-            return Err("buffer too small");
+        payload: PacketPayload,
+        src: Ipv6Address,
+        now: u64,
+    ) -> Result<(), ResponseError> {
+        let response = Response::parse(&payload, &self.duid, self.iaid, now)?;
+        let mut phase = self
+            .phase
+            .lock()
+            .map_err(|_| ResponseError::StateUnavailable)?;
+        if !phase.accepts(response.kind(), response.xid(), response.server()) {
+            return Err(ResponseError::Unrelated);
         }
-
-        let xid = self.xid.load(Ordering::SeqCst);
-
-        buf[0] = DhcpV6MessageType::Release as u8;
-        buf[1..4].copy_from_slice(&xid.to_be_bytes()[1..4]);
-        let mut off = 4usize;
-
-        let append_opt = |buf: &mut [u8],
-                          offset: &mut usize,
-                          code: u16,
-                          data: &[u8]|
-         -> Result<(), &'static str> {
-            if *offset + 4 + data.len() > buf.len() {
-                return Err("Buffer overflow during option writing");
-            }
-            buf[*offset..*offset + 2].copy_from_slice(&code.to_be_bytes());
-            buf[*offset + 2..*offset + 4].copy_from_slice(&(data.len() as u16).to_be_bytes());
-            buf[*offset + 4..*offset + 4 + data.len()].copy_from_slice(data);
-            *offset += 4 + data.len();
-            Ok(())
-        };
-
-        // Client Identifier (option 1)
-        append_opt(buf, &mut off, 1, &self.duid)?;
-
-        // Server Identifier (option 2) — RFC 8415 requires this for Release
-        if let Ok(g) = self.server_duid.lock()
-            && let Some(ref duid) = *g
-        {
-            Self::append_option_payload(buf, &mut off, 2, duid)?;
-        }
-
-        // IA_NA (option 3) with IAADDR suboption
-        if off + 44 > buf.len() {
-            return Err("Buffer overflow during IA_NA writing");
-        }
-        buf[off..off + 2].copy_from_slice(&(3u16.to_be_bytes())); // IA_NA
-        buf[off + 2..off + 4].copy_from_slice(&(40u16.to_be_bytes())); // length
-        off += 4;
-        buf[off..off + 4].copy_from_slice(&self.iaid.to_be_bytes());
-        off += 4;
-        buf[off..off + 4].copy_from_slice(&0u32.to_be_bytes()); // T1
-        off += 4;
-        buf[off..off + 4].copy_from_slice(&0u32.to_be_bytes()); // T2
-        off += 4;
-        // IAADDR suboption
-        buf[off..off + 2].copy_from_slice(&(5u16.to_be_bytes()));
-        buf[off + 2..off + 4].copy_from_slice(&(24u16.to_be_bytes()));
-        off += 4;
-        buf[off..off + 16].copy_from_slice(lease.addr.as_bytes());
-        off += 16;
-        buf[off..off + 4].copy_from_slice(&0u32.to_be_bytes()); // preferred=0 (releasing)
-        off += 4;
-        buf[off..off + 4].copy_from_slice(&0u32.to_be_bytes()); // valid=0 (releasing)
-        off += 4;
-
-        Ok(off)
-    }
-
-    /// DHCPv6 RELEASE を送信してリースをクリアする
-    pub fn release(&self) {
-        self.with_lease(|lease| {
-            if let Some(lease) = lease {
-                // Generate new XID for the Release transaction
-                if !self.generate_secure_xid() {
-                    return;
-                }
-
-                let mut buf = [0u8; 512];
-                match self.build_release(&mut buf, lease) {
-                    Ok(len) => {
-                        if let Some(src) = self.get_link_local() {
-                            // Send to server address if known, otherwise multicast
-                            let all_dhcp_servers = Self::all_dhcp_servers_multicast();
-                            let dst = match self.server_addr.lock() {
-                                Ok(ref a) => a.as_ref().copied().unwrap_or(all_dhcp_servers),
-                                Err(_) => all_dhcp_servers,
-                            };
-                            if let Ok(payload) = Self::generated_message_payload(&buf[..len]) {
-                                let _ = self.enqueue_v6_send(src, dst, payload);
-                            }
-                            log::info!("[NET] DHCPv6: RELEASE sent for {}", lease.addr);
-                        }
-                    }
-                    Err(e) => {
-                        log::error!("[NET] DHCPv6: Failed to build RELEASE: {}", e);
-                    }
-                }
-            }
-        });
-
-        // Clear lease and reset state
-        if let Ok(mut lg) = self.lease.lock() {
-            *lg = None;
-        }
-        if let Ok(mut st) = self.state.lock() {
-            *st = DhcpV6State::Init;
-        }
-        if let Ok(mut sg) = self.server_duid.lock() {
-            *sg = None;
-        }
-        if let Ok(mut ag) = self.server_addr.lock() {
-            *ag = None;
-        }
-        self.state_time.store(0, Ordering::SeqCst);
-        self.retry_count.store(0, Ordering::SeqCst);
-    }
-
-    /// Decodes the uncompressed wire names of a Domain Search List option
-    /// (RFC 3646 Section 4, RFC 8415 Section 10). A malformed name ends the
-    /// list; names decoded before it are kept.
-    fn parse_domain_search_list(
-        view: &crate::net::payload::PacketPayloadView<'_>,
-        start: usize,
-        len: usize,
-        out: &mut Vec<crate::net::services::dns::DnsNormalizedName>,
-    ) {
-        let end = start + len;
-        let mut off = start;
-        let mut text = alloc::string::String::new();
-        // LOOP_PROOF: mode=bounded; reason=Each label consumes its length byte and value within the checked option range, and a terminator, malformed label, or full list ends the name.;
-        while off < end && out.len() < crate::net::services::dns::DNS_MAX_SEARCH_DOMAINS {
-            let Some(label_len) = view.read_u8(off).map(usize::from) else {
-                return;
-            };
-            off += 1;
-            if label_len == 0 {
-                match crate::net::services::dns::DnsNormalizedName::parse_ascii(&text) {
-                    Some(name) => out.push(name),
-                    None => return,
-                }
-                text.clear();
-                continue;
-            }
-            if label_len > 63 || off + label_len > end {
-                return;
-            }
-            if !text.is_empty() {
-                text.push('.');
-            }
-            for index in off..off + label_len {
-                let Some(byte) = view.read_u8(index) else {
-                    return;
+        match response {
+            Response::Advertise {
+                server, address, ..
+            } => {
+                let server = Server {
+                    id: server,
+                    address: src,
                 };
-                text.push(char::from(byte));
+                let exchange = Exchange::begin(now).map_err(ResponseError::PrepareRequest)?;
+                self.send(&exchange, Request::Request(&server, address))
+                    .map_err(ResponseError::PrepareRequest)?;
+                *phase = Phase::Requesting {
+                    exchange,
+                    server,
+                    offered: address,
+                };
             }
-            off += label_len;
-        }
-    }
-
-    /// Periodic timeout handler (called from NetworkStack periodic)
-    /// tick_rate: how many milliseconds represent 1 second in current_time
-    ///
-    /// 非同期イベントキュー経由で送信（ロック競合回避）:
-    /// `get_link_local()` で短時間ロックのみ取得し、送信は `enqueue_v6_send()` を使用する。
-    pub fn check_timeout(&self, current_tick: u64, _tick_rate: u64) -> Result<(), &'static str> {
-        let all_dhcp_servers = Self::all_dhcp_servers_multicast();
-
-        match self.state.lock() {
-            Ok(mut s) => match *s {
-                DhcpV6State::Init => {
-                    let Some(src) = self.get_link_local() else {
-                        return Ok(());
-                    };
-                    // Start new transaction: Generate cryptographically secure SOLICIT XID
-                    if !self.generate_secure_xid() {
-                        return Err("Secure DHCPv6 XID entropy unavailable");
+            Response::Reply {
+                server,
+                lease,
+                lifetimes,
+                dns_servers,
+                domain_search,
+                ..
+            } => {
+                // The topology owner stages the address synchronously; DAD gates its later use.
+                manager::stage_dhcp_ipv6_in(self.runtime, self.if_id, lease.addr, lifetimes, now)
+                    .map_err(ResponseError::ApplyLease)?;
+                *phase = Phase::Bound(Binding {
+                    server: Server {
+                        id: server,
+                        address: src,
+                    },
+                    lease,
+                });
+                if manager::primary_interface_in(self.runtime) == Some(self.if_id) {
+                    if !dns_servers.is_empty() {
+                        crate::net::services::dns::set_ipv6_servers_in(self.runtime, &dns_servers);
                     }
-
-                    // Send SOLICIT
-                    let mut buf = [0u8; 256];
-                    let len = self.build_solicit(&mut buf)?;
-
-                    // Use link-local as source for SOLICIT (async event queue)
-                    if Self::generated_message_payload(&buf[..len])
-                        .is_ok_and(|payload| self.enqueue_v6_send(src, all_dhcp_servers, payload))
-                    {
-                        *s = DhcpV6State::SolicitSent;
-                        self.state_time.store(current_tick, Ordering::SeqCst);
-                        self.retry_count.store(0, Ordering::SeqCst);
+                    if !domain_search.is_empty() {
+                        crate::net::services::dns::set_search_domains_in(
+                            self.runtime,
+                            &domain_search,
+                        );
                     }
                 }
-                DhcpV6State::SolicitSent => {
-                    // Retransmit logic (RFC 8415 Section 15: Exponential backoff with 10% jitter)
-                    let retry = self.retry_count.load(Ordering::SeqCst);
-                    // IRT = 1s, MRT = 120s
-                    let base_t = (1u64 << core::cmp::min(retry, 7)).min(120);
-
-                    // RFC 8415: RT = (1 + RAND) * T, where RAND is [-0.1, 0.1]
-                    let rnd = (current_tick ^ (self.mac.as_bytes()[5] as u64)) % 21; // 0..20
-                    let jitter_percent = (rnd as i64) - 10; // -10% .. +10%
-                    let base_ms = (base_t * 1000) as i64;
-                    let jitter_ms = (base_t as i64 * jitter_percent) / 10;
-                    let interval_ms = (base_ms + jitter_ms).max(100) as u64;
-                    let interval_ticks = interval_ms; // already >= 100ms
-
-                    let elapsed_ms =
-                        current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
-                    if elapsed_ms >= interval_ticks {
-                        let retries = self.retry_count.fetch_add(1, Ordering::SeqCst);
-                        if retries >= Self::MAX_RETRIES {
-                            // Give up, go back to Init (will retry later)
-                            *s = DhcpV6State::Init;
-                        } else {
-                            // retransmit SOLICIT using SAME XID
-                            let mut buf = [0u8; 256];
-                            let len = self.build_solicit(&mut buf)?;
-                            if let Some(src) = self.get_link_local()
-                                && let Ok(payload) = Self::generated_message_payload(&buf[..len])
-                            {
-                                let _ = self.enqueue_v6_send(src, all_dhcp_servers, payload);
-                            }
-                            self.state_time.store(current_tick, Ordering::SeqCst);
-                        }
-                    }
-                }
-                DhcpV6State::Requesting => {
-                    // Retransmit REQUEST (RFC 8415 Section 15: IRT = 1s, MRT = 30s)
-                    let retry = self.retry_count.load(Ordering::SeqCst);
-                    let base_t = (1u64 << core::cmp::min(retry, 5)).min(30);
-
-                    let rnd = (current_tick ^ (self.mac.as_bytes()[5] as u64)) % 21;
-                    let jitter_percent = (rnd as i64) - 10;
-                    let base_ms = (base_t * 1000) as i64;
-                    let jitter_ms = (base_t as i64 * jitter_percent) / 10;
-                    let interval_ms = (base_ms + jitter_ms).max(100) as u64;
-                    let interval_ticks = interval_ms;
-
-                    let elapsed_ms =
-                        current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
-                    if elapsed_ms >= interval_ticks {
-                        let retries = self.retry_count.fetch_add(1, Ordering::SeqCst);
-                        if retries >= Self::MAX_RETRIES {
-                            // Give up and return to Init
-                            *s = DhcpV6State::Init;
-                        } else {
-                            // resend Request using SAME XID
-                            let mut buf = [0u8; 256];
-                            let len = self.build_request_from_advertise(&mut buf)?;
-                            if let Some(src) = self.get_link_local() {
-                                let dst = match self.server_addr.lock() {
-                                    Ok(ref a) => a.as_ref().copied().unwrap_or(all_dhcp_servers),
-                                    Err(_) => all_dhcp_servers,
-                                };
-                                if let Ok(payload) = Self::generated_message_payload(&buf[..len]) {
-                                    let _ = self.enqueue_v6_send(src, dst, payload);
-                                }
-                            }
-                            self.state_time.store(current_tick, Ordering::SeqCst);
-                        }
-                    }
-                }
-                DhcpV6State::Bound => {
-                    // Check lease lifetimes and transition to Renewing if needed
-                    self.with_lease(|lease| {
-                        if let Some(lease) = lease {
-                            let elapsed_ms = current_tick.saturating_sub(lease.obtained_at);
-                            if elapsed_ms >= (lease.t1 as u64 * 1000) {
-                                // start renewal: Generate secure XID for Renew transaction
-                                if !self.generate_secure_xid() {
-                                    return;
-                                }
-
-                                *s = DhcpV6State::Renewing;
-                                self.state_time.store(current_tick, Ordering::SeqCst);
-                                self.retry_count.store(0, Ordering::SeqCst);
-
-                                // Send first RENEW immediately
-                                let mut buf = [0u8; 512];
-                                if let Ok(len) = self.build_renew(&mut buf, lease)
-                                    && let Some(src) = self.get_link_local()
-                                {
-                                    let dst = match self.server_addr.lock() {
-                                        Ok(ref a) => {
-                                            a.as_ref().copied().unwrap_or(all_dhcp_servers)
-                                        }
-                                        Err(_) => all_dhcp_servers,
-                                    };
-                                    if let Ok(payload) =
-                                        Self::generated_message_payload(&buf[..len])
-                                    {
-                                        let _ = self.enqueue_v6_send(src, dst, payload);
-                                    }
-                                }
-                            }
-                        }
-                    });
-                }
-                DhcpV6State::Renewing => {
-                    // Attempt to renew (RFC 8415 Section 18.2.3: IRT = 10s, MRT = 600s)
-                    let retry = self.retry_count.load(Ordering::SeqCst);
-                    let base_t = (10u64 << core::cmp::min(retry, 6)).min(600);
-
-                    let rnd = (current_tick ^ (self.mac.as_bytes()[5] as u64)) % 21;
-                    let jitter_percent = (rnd as i64) - 10;
-                    let base_ms = (base_t * 1000) as i64;
-                    let jitter_ms = (base_t as i64 * jitter_percent) / 10;
-                    let interval_ms = (base_ms + jitter_ms).max(100) as u64;
-                    let interval_ticks = interval_ms;
-
-                    let mut renewed = false;
-                    self.with_lease(|lease| {
-                        if let Some(lease) = lease {
-                            renewed = true;
-                            let elapsed_ms = current_tick.saturating_sub(lease.obtained_at);
-                            if elapsed_ms >= (lease.t2 as u64 * 1000) {
-                                // Escalate to rebinding (multicast) if T2 expires
-                                *s = DhcpV6State::Rebinding;
-                                self.retry_count.store(0, Ordering::SeqCst);
-                                self.state_time.store(current_tick, Ordering::SeqCst);
-
-                                // Send first REBIND immediately
-                                let mut buf = [0u8; 512];
-                                if let Ok(len) = self.build_rebind(&mut buf, lease)
-                                    && let Some(src) = self.get_link_local()
-                                    && let Ok(payload) =
-                                        Self::generated_message_payload(&buf[..len])
-                                {
-                                    let _ = self.enqueue_v6_send(src, all_dhcp_servers, payload);
-                                }
-                                return;
-                            }
-
-                            let elapsed_state_ms =
-                                current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
-                            if elapsed_state_ms >= interval_ticks {
-                                self.retry_count.fetch_add(1, Ordering::SeqCst);
-                                // Send RENEW (msg type 5) to the original server using SAME XID
-                                let mut buf = [0u8; 512];
-                                if let Ok(len) = self.build_renew(&mut buf, lease)
-                                    && let Some(src) = self.get_link_local()
-                                {
-                                    let dst = match self.server_addr.lock() {
-                                        Ok(ref a) => {
-                                            a.as_ref().copied().unwrap_or(all_dhcp_servers)
-                                        }
-                                        Err(_) => all_dhcp_servers,
-                                    };
-                                    if let Ok(payload) =
-                                        Self::generated_message_payload(&buf[..len])
-                                    {
-                                        let _ = self.enqueue_v6_send(src, dst, payload);
-                                    }
-                                }
-                                self.state_time.store(current_tick, Ordering::SeqCst);
-                            }
-                        }
-                    });
-
-                    if !renewed {
-                        // No lease known — reset to Init
-                        *s = DhcpV6State::Init;
-                    }
-                }
-                DhcpV6State::Rebinding => {
-                    // Rebinding (RFC 8415 Section 18.2.5: IRT = 10s, MRT = 600s)
-                    let retry = self.retry_count.load(Ordering::SeqCst);
-                    let base_t = (10u64 << core::cmp::min(retry, 6)).min(600);
-
-                    let rnd = (current_tick ^ (self.mac.as_bytes()[5] as u64)) % 21;
-                    let jitter_percent = (rnd as i64) - 10;
-                    let base_ms = (base_t * 1000) as i64;
-                    let jitter_ms = (base_t as i64 * jitter_percent) / 10;
-                    let interval_ms = (base_ms + jitter_ms).max(100) as u64;
-                    let interval_ticks = interval_ms;
-
-                    let mut rebind_active = false;
-                    let mut expired = false;
-
-                    self.with_lease(|lease| {
-                        if let Some(lease) = lease {
-                            rebind_active = true;
-                            let elapsed_ms = current_tick.saturating_sub(lease.obtained_at);
-                            if elapsed_ms >= (lease.valid_lifetime as u64 * 1000) {
-                                expired = true;
-                                return;
-                            }
-
-                            let elapsed_state_ms =
-                                current_tick.saturating_sub(self.state_time.load(Ordering::SeqCst));
-                            if elapsed_state_ms >= interval_ticks {
-                                self.retry_count.fetch_add(1, Ordering::SeqCst);
-                                // Send REBIND (msg type 6) to multicast using SAME XID
-                                let mut buf = [0u8; 512];
-                                if let Ok(len) = self.build_rebind(&mut buf, lease)
-                                    && let Some(src) = self.get_link_local()
-                                    && let Ok(payload) =
-                                        Self::generated_message_payload(&buf[..len])
-                                {
-                                    let _ = self.enqueue_v6_send(src, all_dhcp_servers, payload);
-                                }
-                                self.state_time.store(current_tick, Ordering::SeqCst);
-                            }
-                        }
-                    });
-
-                    if expired {
-                        // Give up and return to Init (clear lease)
-                        *s = DhcpV6State::Init;
-                        if let Ok(mut lg) = self.lease.lock() {
-                            *lg = None;
-                        }
-                    } else if !rebind_active {
-                        *s = DhcpV6State::Init;
-                    }
-                }
-            },
-            Err(_) => return Err("state lock poisoned"),
+            }
         }
         Ok(())
     }
 
-    /// Force immediate renew when lease is active, otherwise restart from INIT.
-    pub fn force_renew_or_restart(&self, current_tick: u64) -> Result<(), &'static str> {
-        let restart = match self.state.lock() {
-            Ok(mut state) => match *state {
-                DhcpV6State::Bound | DhcpV6State::Renewing | DhcpV6State::Rebinding => {
-                    *state = DhcpV6State::Renewing;
-                    false
-                }
-                _ => {
-                    *state = DhcpV6State::Init;
-                    true
-                }
-            },
-            Err(_) => return Err("state lock poisoned"),
-        };
-
-        if restart {
-            match self.lease.lock() {
-                Ok(mut lg) => *lg = None,
-                Err(_) => return Err("lease lock poisoned"),
-            }
-            match self.server_duid.lock() {
-                Ok(mut sg) => *sg = None,
-                Err(_) => return Err("server_duid lock poisoned"),
-            }
-            match self.server_addr.lock() {
-                Ok(mut ag) => *ag = None,
-                Err(_) => return Err("server_addr lock poisoned"),
-            }
+    pub(crate) fn check_timeout(&self, now: u64) -> Result<(), &'static str> {
+        let mut phase = self.phase.lock().map_err(|_| "DHCPv6 state unavailable")?;
+        if phase
+            .binding()
+            .is_some_and(|binding| elapsed(now, &binding.lease, binding.lease.valid_lifetime))
+        {
+            *phase = Phase::Init;
+            return Ok(());
         }
+        let jitter = self.mac.as_bytes()[5];
+        match &mut *phase {
+            Phase::Init if self.get_link_local().is_some() => {
+                let exchange = Exchange::begin(now)?;
+                self.send(&exchange, Request::Solicit)?;
+                *phase = Phase::Soliciting(exchange);
+            }
+            Phase::Soliciting(exchange) if exchange.due(now, jitter, 1, 120) => {
+                if exchange.attempts >= Self::MAX_RETRIES {
+                    *phase = Phase::Init;
+                } else {
+                    exchange.attempted(now);
+                    self.send(exchange, Request::Solicit)?;
+                }
+            }
+            Phase::Requesting {
+                exchange,
+                server,
+                offered,
+            } if exchange.due(now, jitter, 1, 30) => {
+                if exchange.attempts >= Self::MAX_RETRIES {
+                    *phase = Phase::Init;
+                } else {
+                    exchange.attempted(now);
+                    self.send(exchange, Request::Request(server, *offered))?;
+                }
+            }
+            Phase::Bound(binding) | Phase::Renewing(_, binding)
+                if elapsed(now, &binding.lease, binding.lease.t2) =>
+            {
+                let exchange = Exchange::begin(now)?;
+                self.send(&exchange, Request::Rebind(binding))?;
+                if let Phase::Bound(binding) | Phase::Renewing(_, binding) =
+                    core::mem::replace(&mut *phase, Phase::Init)
+                {
+                    *phase = Phase::Rebinding(exchange, binding);
+                }
+            }
+            Phase::Bound(binding) if elapsed(now, &binding.lease, binding.lease.t1) => {
+                let exchange = Exchange::begin(now)?;
+                self.send(&exchange, Request::Renew(binding))?;
+                if let Phase::Bound(binding) = core::mem::replace(&mut *phase, Phase::Init) {
+                    *phase = Phase::Renewing(exchange, binding);
+                }
+            }
+            Phase::Renewing(exchange, binding) if exchange.due(now, jitter, 10, 600) => {
+                exchange.attempted(now);
+                self.send(exchange, Request::Renew(binding))?;
+            }
+            Phase::Rebinding(exchange, binding) if exchange.due(now, jitter, 10, 600) => {
+                exchange.attempted(now);
+                self.send(exchange, Request::Rebind(binding))?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
 
-        self.state_time.store(current_tick, Ordering::SeqCst);
-        self.retry_count.store(0, Ordering::SeqCst);
+    pub(crate) fn release(&self) {
+        if let Ok(mut phase) = self.phase.lock() {
+            if let Some(binding) = phase.binding()
+                && let Err(error) = Exchange::begin(crate::task::current_tick())
+                    .and_then(|exchange| self.send(&exchange, Request::Release(binding)))
+            {
+                log::warn!("[NET] DHCPv6 RELEASE admission failed: {error}");
+            }
+            *phase = Phase::Init;
+        }
+    }
+
+    pub(crate) fn force_renew_or_restart(&self, now: u64) -> Result<(), &'static str> {
+        let mut phase = self.phase.lock().map_err(|_| "DHCPv6 state unavailable")?;
+        let Some(binding) = phase.binding() else {
+            *phase = Phase::Init;
+            return Ok(());
+        };
+        let exchange = Exchange::begin(now)?;
+        self.send(&exchange, Request::Renew(binding))?;
+        match core::mem::replace(&mut *phase, Phase::Init) {
+            Phase::Bound(binding) | Phase::Renewing(_, binding) | Phase::Rebinding(_, binding) => {
+                *phase = Phase::Renewing(exchange, binding);
+            }
+            _ => {}
+        }
         Ok(())
     }
 }
 
-#[cfg(feature = "qemu-test-export")]
+fn elapsed(now: u64, lease: &DhcpV6Lease, seconds: u32) -> bool {
+    seconds != u32::MAX && now.saturating_sub(lease.obtained_at) >= u64::from(seconds) * 1000
+}
+
+#[cfg(any(
+    all(test, any(feature = "std", target_os = "linux")),
+    feature = "qemu-test-export"
+))]
 pub(crate) mod tests {
     use super::*;
-    use crate::net::l3::ipv6::Ipv6Address;
+    use crate::net::l3::ipv6::Ipv6Config;
+    use crate::net::runtime::manager::{LinkState, PrimaryPreference};
+    use crate::net::runtime::stack::NetworkConfig;
+    use alloc::vec::Vec;
 
-    #[cfg(feature = "qemu-test-export")]
+    const MAC: MacAddress = MacAddress::new([2, 0, 0, 0, 0, 1]);
+    const SERVER: Ipv6Address =
+        Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+    const ADDRESS: Ipv6Address =
+        Ipv6Address::new([0x20, 1, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]);
+    const SERVER_ID: [u8; 6] = [0, 3, 0, 1, 2, 3];
+    const OTHER_ID: [u8; 6] = [0, 3, 0, 1, 2, 4];
+    const XID: [u8; 3] = [1, 2, 3];
+
+    fn payload(bytes: &[u8]) -> PacketPayload {
+        #[cfg(all(test, any(feature = "std", target_os = "linux")))]
+        let packet = crate::net::l4::test_support::packet_fixture_with_data(bytes);
+        #[cfg(not(all(test, any(feature = "std", target_os = "linux"))))]
+        let packet = {
+            let mut packet = crate::net::payload::alloc_packet_with_headroom(bytes.len(), 0)
+                .expect("DHCPv6 fixture");
+            packet.data_mut().copy_from_slice(bytes);
+            packet
+        };
+        PacketPayload::try_single(packet).expect("DHCPv6 packet")
+    }
+
+    fn exchange() -> Exchange {
+        Exchange {
+            xid: XID,
+            last_attempt: 0,
+            attempts: 0,
+        }
+    }
+
+    fn interface() -> DhcpV6Client {
+        #[cfg(all(test, any(feature = "std", target_os = "linux")))]
+        let runtime = crate::net::runtime::context::tests::runtime_fixture();
+        #[cfg(not(all(test, any(feature = "std", target_os = "linux"))))]
+        let runtime = crate::net::runtime::create_runtime().expect("isolated DHCPv6 runtime");
+        manager::init_network_manager_in(runtime);
+        let if_id = manager::register_interface_in(runtime, "dhcp-v6", PrimaryPreference::Auto)
+            .expect("interface");
+        let config = NetworkConfig {
+            mac: MAC,
+            ipv6: Some(Ipv6Config::default()),
+            ..NetworkConfig::default()
+        };
+        manager::set_interface_config_in(runtime, if_id, config).expect("IPv6 config");
+        DhcpV6Client::new(runtime, if_id, MAC)
+    }
+
+    fn option(bytes: &mut Vec<u8>, kind: u16, value: &[u8]) {
+        bytes.extend(kind.to_be_bytes());
+        bytes.extend((value.len() as u16).to_be_bytes());
+        bytes.extend(value);
+    }
+
+    fn response(
+        client: &DhcpV6Client,
+        kind: DhcpV6MessageType,
+        xid: [u8; 3],
+        id: &[u8],
+        iaid: u32,
+        preferred: u32,
+        valid: u32,
+    ) -> Vec<u8> {
+        let mut bytes = alloc::vec![kind as u8, xid[0], xid[1], xid[2]];
+        option(&mut bytes, 1, &client.duid);
+        if !id.is_empty() {
+            option(&mut bytes, 2, id);
+        }
+        let mut ia = iaid.to_be_bytes().to_vec();
+        ia.extend([0; 8]);
+        let mut addr = ADDRESS.octets().to_vec();
+        addr.extend(preferred.to_be_bytes());
+        addr.extend(valid.to_be_bytes());
+        option(&mut ia, 5, &addr);
+        option(&mut bytes, 3, &ia);
+        bytes
+    }
+
+    fn server(id: &[u8; 6]) -> Server {
+        Server {
+            id: ServerId::parse(crate::net::payload::PayloadSpanRef::from_payload(&payload(
+                id,
+            )))
+            .unwrap(),
+            address: SERVER,
+        }
+    }
+
+    fn phase(client: &DhcpV6Client) -> crate::sync::poison_lock::PoisonLockGuard<'_, Phase> {
+        client
+            .phase
+            .lock()
+            .unwrap_or_else(|_| panic!("DHCPv6 phase lock"))
+    }
+
+    fn requesting() -> Phase {
+        Phase::Requesting {
+            exchange: exchange(),
+            server: server(&SERVER_ID),
+            offered: ADDRESS,
+        }
+    }
+
+    fn set_up(client: &DhcpV6Client) {
+        manager::set_interface_link_state_in(client.runtime, client.if_id, LinkState::Up)
+            .expect("operational link");
+    }
+
+    #[cfg(all(feature = "qemu-test-export", target_os = "none"))]
+    fn assign_link_local(client: &DhcpV6Client) {
+        use crate::net::runtime::device::tx::TxReceipt;
+        use crate::net::runtime::manager::DadEvent;
+        use kernel_api::service::netdev::TxDeviceOutcome;
+
+        set_up(client);
+        let (receipt, reporter) = TxReceipt::reserve().expect("DAD completion");
+        let address = Ipv6Address::from_eui64(MAC.as_bytes());
+        let now = crate::task::current_tick();
+        assert_eq!(
+            manager::update_ipv6_dad_in(
+                client.runtime,
+                client.if_id,
+                address,
+                DadEvent::Reserve {
+                    nonce: [0; 6],
+                    receipt
+                }
+            ),
+            Ok(true)
+        );
+        reporter.finish(TxDeviceOutcome::Transmitted, now);
+        manager::maintain_ipv6_in(client.runtime, now + 1000).unwrap();
+        assert_eq!(client.get_link_local(), Some(address));
+    }
+
+    fn addresses(client: &DhcpV6Client) -> crate::net::l3::ipv6::address_state::Ipv6AddressSet {
+        manager::try_interface_topology_in(client.runtime)
+            .unwrap()
+            .into_entries()
+            .find(|entry| entry.if_id == client.if_id)
+            .unwrap()
+            .config
+            .ipv6
+            .unwrap()
+            .addresses
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     pub fn test_build_solicit_min_size() {
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
-        let mut buf = [0u8; 256];
-        let now = 1000u64;
-
-        // Setup XID
-        client
-            .xid
-            .store(((now as u32) ^ 0xDEADBEEF) & 0x00FF_FFFF, Ordering::SeqCst);
-
-        let len = client.build_solicit(&mut buf).unwrap();
-        assert!(len > 0);
-        assert_eq!(buf[0], DhcpV6MessageType::Solicit as u8);
+        let client = interface();
+        let mut bytes = [0; 256];
+        let len = client.encode(&mut bytes, &exchange(), &Request::Solicit);
+        assert_eq!(&bytes[..4], &[1, 1, 2, 3]);
+        assert_eq!(len, 34);
+        assert_eq!(&bytes[22..26], &client.iaid.to_be_bytes());
     }
 
-    #[cfg(feature = "qemu-test-export")]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     pub fn test_parse_reply_with_iaaddr() {
-        assert_parse_reply_with_dns_servers();
-        assert_parse_reply_with_status_code_error();
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
-        // construct a fake REPLY that contains IA_NA with IAADDR
-        let mut pkt = alloc::vec![0u8; 4 + 4 + 12 + 4 + 24];
-        pkt[0] = DhcpV6MessageType::Reply as u8;
-        // xid (3 bytes)
-        pkt[1..4].copy_from_slice(&0u32.to_be_bytes()[1..4]);
-        let mut off = 4;
-        // IA_NA option
-        pkt[off..off + 2].copy_from_slice(&(3u16.to_be_bytes())); // code
-        pkt[off + 2..off + 4].copy_from_slice(&(40u16.to_be_bytes())); // len
-        off += 4;
-        // IAID + T1 + T2
-        pkt[off..off + 12].copy_from_slice(&[0u8; 12]);
-        off += 12;
-        // IAADDR as suboption under IA_NA (we'll append directly after)
-        // For simplicity append IAADDR as a top-level option in this test
-        pkt[off..off + 2].copy_from_slice(&(5u16.to_be_bytes()));
-        pkt[off + 2..off + 4].copy_from_slice(&(24u16.to_be_bytes()));
-        off += 4;
-        let addr = Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
-        pkt[off..off + 16].copy_from_slice(addr.as_bytes());
-        off += 16;
-        pkt[off..off + 4].copy_from_slice(&3600u32.to_be_bytes());
-        off += 4;
-        pkt[off..off + 4].copy_from_slice(&7200u32.to_be_bytes());
-
-        let parsed = client
-            .parse_reply_payload(DhcpV6Client::generated_message_payload(&pkt).unwrap(), 100)
-            .unwrap();
-        assert!(parsed.is_some());
-        let lease = parsed.unwrap();
-        assert_eq!(lease.lease.addr, addr);
+        let client = interface();
+        let bytes = response(
+            &client,
+            DhcpV6MessageType::Reply,
+            XID,
+            &SERVER_ID,
+            client.iaid,
+            60,
+            120,
+        );
+        let parsed = Response::parse(&payload(&bytes), &client.duid, client.iaid, 1000);
+        match parsed {
+            Ok(Response::Reply { lease, .. }) => {
+                assert_eq!(lease.addr, ADDRESS);
+                assert_eq!(
+                    (
+                        lease.preferred_lifetime,
+                        lease.valid_lifetime,
+                        lease.t1,
+                        lease.t2
+                    ),
+                    (60, 120, 30, 48)
+                );
+            }
+            _ => panic!("a usable IA Address"),
+        }
     }
 
-    #[cfg(feature = "qemu-test-export")]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     pub fn test_build_request_min_size() {
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
-        let mut buf = [0u8; 512];
-        let now = 200u64;
-
-        // Setup XID
-        client
-            .xid
-            .store(((now as u32) ^ 0xBEEFBEEF) & 0x00FF_FFFF, Ordering::SeqCst);
-
-        let len = client.build_request_from_advertise(&mut buf).unwrap();
-        assert!(len > 0);
-        assert_eq!(buf[0], DhcpV6MessageType::Request as u8);
-        // IA_NA option (code 3) follows the Client Identifier
-        let mut found = false;
-        let mut off = 4usize;
-        // LOOP_PROOF: mode=condition; reason=Each option advances by its header and declared length within the test buffer.;
-        while off + 4 <= len {
-            let code = u16::from_be_bytes([buf[off], buf[off + 1]]);
-            let opt_len = u16::from_be_bytes([buf[off + 2], buf[off + 3]]) as usize;
-            if code == 3 {
-                found = true;
-                break;
-            }
-            off += 4 + opt_len;
-        }
-        assert!(found);
+        let client = interface();
+        let mut bytes = [0; 256];
+        let server = server(&SERVER_ID);
+        let len = client.encode(&mut bytes, &exchange(), &Request::Request(&server, ADDRESS));
+        assert_eq!(&bytes[..4], &[3, 1, 2, 3]);
+        assert_eq!(&bytes[18..28], &[0, 2, 0, 6, 0, 3, 0, 1, 2, 3]);
+        assert_eq!(&bytes[48..64], ADDRESS.as_bytes());
+        assert_eq!(len, 72);
     }
 
-    #[cfg(feature = "qemu-test-export")]
-    pub fn test_bound_to_renewing_and_rebinding_transitions() {
-        assert_force_renew_or_restart_paths();
-        assert_build_renew_uses_correct_msg_type();
-        assert_build_rebind_uses_correct_msg_type();
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
-        // set lease with T1 = 1 second, T2 = 2 seconds, valid = 10 seconds
-        let lease = DhcpV6Lease {
-            addr: crate::net::l3::ipv6::Ipv6Address::new([
-                0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3,
-            ]),
-            preferred_lifetime: 5,
-            valid_lifetime: 10,
-            t1: 1,
-            t2: 2,
-            obtained_at: 0,
-        };
-        if let Ok(mut lg) = client.lease.lock() {
-            *lg = Some(lease);
-        }
-        if let Ok(mut st) = client.state.lock() {
-            *st = DhcpV6State::Bound;
-        }
-        // tick_rate = 1000 (ms per sec), current_tick beyond T1
-        let tick_rate = 1000u64;
-        let now = (lease.obtained_at as u64) + lease.t1 as u64 * tick_rate + 10;
-        client.check_timeout(now, tick_rate).unwrap();
-        assert_eq!(client.state(), DhcpV6State::Renewing);
-
-        // move time beyond T2
-        let now_t2 = (lease.obtained_at as u64) + lease.t2 as u64 * tick_rate + 10;
-        client.check_timeout(now_t2, tick_rate).unwrap();
-        assert_eq!(client.state(), DhcpV6State::Rebinding);
-
-        // move time beyond valid_lifetime
-        let now_valid = (lease.obtained_at as u64) + lease.valid_lifetime as u64 * tick_rate + 10;
-        client.check_timeout(now_valid, tick_rate).unwrap();
-        assert_eq!(client.state(), DhcpV6State::Init);
-        assert!(client.lease().is_none());
-    }
-
-    #[cfg(feature = "qemu-test-export")]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     pub fn test_handle_packet_stores_server_addr_and_duid() {
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
-
-        // Build a REPLY that contains Server Identifier (option 2) + IA_NA with IAADDR
-        let server_duid: [u8; 4] = [0xAA, 0xBB, 0xCC, 0xDD];
-        let addr = Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4]);
-
-        // layout: header(4) + srv_id(opt2) + IA_NA(opt3)+IAADDR(subopt5)
-        let mut pkt = alloc::vec![0u8; 4 + 4 + server_duid.len() + 4 + 12 + 4 + 24];
-        pkt[0] = DhcpV6MessageType::Reply as u8;
-        pkt[1..4].copy_from_slice(&0u32.to_be_bytes()[1..4]);
-        let mut off = 4;
-        // Server Identifier (option 2)
-        pkt[off..off + 2].copy_from_slice(&(2u16.to_be_bytes()));
-        pkt[off + 2..off + 4].copy_from_slice(&(server_duid.len() as u16).to_be_bytes());
-        off += 4;
-        pkt[off..off + server_duid.len()].copy_from_slice(&server_duid);
-        off += server_duid.len();
-
-        // IA_NA option (top-level)
-        pkt[off..off + 2].copy_from_slice(&(3u16.to_be_bytes())); // code
-        pkt[off + 2..off + 4].copy_from_slice(&(40u16.to_be_bytes())); // len
-        off += 4;
-        // IAID + T1 + T2
-        pkt[off..off + 12].copy_from_slice(&[0u8; 12]);
-        off += 12;
-
-        // IAADDR as a top-level option for this test (simpler)
-        pkt[off..off + 2].copy_from_slice(&(5u16.to_be_bytes()));
-        pkt[off + 2..off + 4].copy_from_slice(&(24u16.to_be_bytes()));
-        off += 4;
-        pkt[off..off + 16].copy_from_slice(addr.as_bytes());
-        off += 16;
-        pkt[off..off + 4].copy_from_slice(&3600u32.to_be_bytes());
-        off += 4;
-        pkt[off..off + 4].copy_from_slice(&7200u32.to_be_bytes());
-
-        let src_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
-        let handled = client.handle_packet_payload(
-            DhcpV6Client::generated_message_payload(&pkt).unwrap(),
-            src_ip,
+        let client = interface();
+        set_up(&client);
+        *phase(&client) = requesting();
+        let reply = |xid, id: &[u8], iaid, preferred, valid| {
+            response(
+                &client,
+                DhcpV6MessageType::Reply,
+                xid,
+                id,
+                iaid,
+                preferred,
+                valid,
+            )
+        };
+        for bytes in [
+            reply([3, 2, 1], &SERVER_ID, client.iaid, 60, 120),
+            reply(XID, &OTHER_ID, client.iaid, 60, 120),
+            reply(XID, &[], client.iaid, 60, 120),
+            reply(XID, &SERVER_ID, client.iaid + 1, 60, 120),
+            reply(XID, &SERVER_ID, client.iaid, 121, 120),
+        ] {
+            assert!(client.receive(payload(&bytes), SERVER, 1000).is_err());
+            assert_eq!(client.snapshot().0, DhcpV6State::Requesting);
+            assert!(client.snapshot().1.is_none());
+            assert!(
+                !addresses(&client)
+                    .entries
+                    .iter()
+                    .flatten()
+                    .any(|entry| entry.address == ADDRESS)
+            );
+        }
+        let mut failed = reply(XID, &SERVER_ID, client.iaid, 60, 120);
+        option(&mut failed, 13, &[0, 2]);
+        assert!(matches!(
+            client.receive(payload(&failed), SERVER, 1000),
+            Err(ResponseError::Status(2))
+        ));
+        let valid = reply(XID, &SERVER_ID, client.iaid, 60, 120);
+        client.receive(payload(&valid), SERVER, 1000).unwrap();
+        assert_eq!(client.snapshot().0, DhcpV6State::Bound);
+        assert_eq!(client.snapshot().1.unwrap().addr, ADDRESS);
+        assert!(
+            addresses(&client)
+                .entries
+                .iter()
+                .flatten()
+                .any(|entry| entry.address == ADDRESS && !entry.assigned())
         );
-        assert!(handled);
-        // lease stored
-        let l = client.lease();
-        assert!(l.is_some());
-        // server_addr recorded
-        if let Ok(g) = client.server_addr.lock() {
-            assert_eq!(g.as_ref().unwrap(), &src_ip);
-        } else {
-            panic!("server_addr lock poisoned");
-        }
-        // server_duid recorded
-        if let Ok(g) = client.server_duid.lock() {
-            let stored = g.as_ref().unwrap();
-            let view = crate::net::payload::PacketPayloadView::new(stored);
-            let mut actual = alloc::vec![0u8; view.total_len()];
-            let mut copied = 0usize;
-            view.for_each_chunk(|chunk| {
-                let take = chunk.len().min(actual.len().saturating_sub(copied));
-                actual[copied..copied + take].copy_from_slice(&chunk[..take]);
-                copied += take;
-            });
-            assert_eq!(copied, server_duid.len());
-            assert_eq!(actual.as_slice(), &server_duid);
-        } else {
-            panic!("server_duid lock poisoned");
-        }
+        assert!(matches!(
+            client.receive(payload(&valid), SERVER, 1001),
+            Err(ResponseError::Unrelated)
+        ));
     }
 
-    #[cfg(feature = "qemu-test-export")]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     pub fn test_advertise_triggers_request_and_requesting_state() {
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
-
-        // Put client into SolicitSent
-        if let Ok(mut st) = client.state.lock() {
-            *st = DhcpV6State::SolicitSent;
-        }
-
-        // Build an ADVERTISE that contains Server Identifier (option 2) but no IAADDR
-        let server_duid: [u8; 4] = [0x01, 0x02, 0x03, 0x04];
-        let mut pkt = alloc::vec![0u8; 4 + 4 + server_duid.len()];
-        pkt[0] = DhcpV6MessageType::Advertise as u8;
-        pkt[1..4].copy_from_slice(&0u32.to_be_bytes()[1..4]);
-        let mut off = 4;
-        pkt[off..off + 2].copy_from_slice(&(2u16.to_be_bytes()));
-        pkt[off + 2..off + 4].copy_from_slice(&(server_duid.len() as u16).to_be_bytes());
-        off += 4;
-        pkt[off..off + server_duid.len()].copy_from_slice(&server_duid);
-
-        let src_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9]);
-        let handled = client.handle_packet_payload(
-            DhcpV6Client::generated_message_payload(&pkt).unwrap(),
-            src_ip,
+        let client = interface();
+        *phase(&client) = Phase::Soliciting(exchange());
+        let unsolicited_reply = response(
+            &client,
+            DhcpV6MessageType::Reply,
+            XID,
+            &SERVER_ID,
+            client.iaid,
+            60,
+            120,
         );
-        assert!(handled);
-        assert_eq!(client.state(), DhcpV6State::Requesting);
-        // server_addr and server_duid should be set
-        if let Ok(g) = client.server_addr.lock() {
-            assert_eq!(g.as_ref().unwrap(), &src_ip);
-        }
-        if let Ok(g) = client.server_duid.lock() {
-            let stored = g.as_ref().unwrap();
-            let view = crate::net::payload::PacketPayloadView::new(stored);
-            let mut actual = alloc::vec![0u8; view.total_len()];
-            let mut copied = 0usize;
-            view.for_each_chunk(|chunk| {
-                let take = chunk.len().min(actual.len().saturating_sub(copied));
-                actual[copied..copied + take].copy_from_slice(&chunk[..take]);
-                copied += take;
-            });
-            assert_eq!(copied, server_duid.len());
-            assert_eq!(actual.as_slice(), &server_duid);
-        }
+        assert!(matches!(
+            client.receive(payload(&unsolicited_reply), SERVER, 1000),
+            Err(ResponseError::Unrelated)
+        ));
+        let mut offer = response(
+            &client,
+            DhcpV6MessageType::Advertise,
+            [3, 2, 1],
+            &SERVER_ID,
+            client.iaid,
+            60,
+            120,
+        );
+        assert!(matches!(
+            client.receive(payload(&offer), SERVER, 1000),
+            Err(ResponseError::Unrelated)
+        ));
+        offer[1..4].copy_from_slice(&XID);
+        assert!(matches!(
+            client.receive(payload(&offer), SERVER, 1000),
+            Err(ResponseError::PrepareRequest(_))
+        ));
+        offer.push(0);
+        assert!(matches!(
+            client.receive(payload(&offer), SERVER, 1000),
+            Err(ResponseError::Malformed)
+        ));
+        assert_eq!(client.snapshot().0, DhcpV6State::SolicitSent);
     }
 
-    #[cfg(feature = "qemu-test-export")]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     pub fn test_requesting_retransmit_exhaustion_goes_to_init() {
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
-        if let Ok(mut st) = client.state.lock() {
-            *st = DhcpV6State::Requesting;
+        let client = interface();
+        let mut request = requesting();
+        if let Phase::Requesting { exchange, .. } = &mut request {
+            exchange.attempts = DhcpV6Client::MAX_RETRIES;
         }
-        // simulate having already retried up to MAX_RETRIES
-        client
-            .retry_count
-            .store(DhcpV6Client::MAX_RETRIES, Ordering::SeqCst);
-        let tick_rate = 1000u64;
-        let now = 120 * tick_rate;
-        client.check_timeout(now, tick_rate).unwrap();
-        assert_eq!(client.state(), DhcpV6State::Init);
+        *phase(&client) = request;
+        client.check_timeout(60_000).unwrap();
+        assert_eq!(client.snapshot().0, DhcpV6State::Init);
     }
 
-    #[cfg(feature = "qemu-test-export")]
-    fn assert_force_renew_or_restart_paths() {
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
-        let lease = DhcpV6Lease {
-            addr: Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 8]),
-            preferred_lifetime: 3600,
-            valid_lifetime: 7200,
-            t1: 0,
-            t2: 0,
-            obtained_at: 0,
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    pub fn test_bound_to_renewing_and_rebinding_transitions() {
+        let client = interface();
+        set_up(&client);
+        *phase(&client) = requesting();
+        let reply = response(
+            &client,
+            DhcpV6MessageType::Reply,
+            XID,
+            &SERVER_ID,
+            client.iaid,
+            60,
+            120,
+        );
+        client.receive(payload(&reply), SERVER, 1000).unwrap();
+        let Phase::Bound(binding) = core::mem::replace(&mut *phase(&client), Phase::Init) else {
+            panic!("applied lease");
         };
-
-        if let Ok(mut lg) = client.lease.lock() {
-            *lg = Some(lease);
-        }
-        if let Ok(mut st) = client.state.lock() {
-            *st = DhcpV6State::Bound;
-        }
-        client.force_renew_or_restart(100).unwrap();
-        assert_eq!(client.state(), DhcpV6State::Renewing);
-        assert!(client.lease().is_some());
-
-        if let Ok(mut st) = client.state.lock() {
-            *st = DhcpV6State::Requesting;
-        }
-        client.force_renew_or_restart(200).unwrap();
-        assert_eq!(client.state(), DhcpV6State::Init);
-        assert!(client.lease().is_none());
+        *phase(&client) = Phase::Renewing(exchange(), binding);
+        let other = response(
+            &client,
+            DhcpV6MessageType::Reply,
+            XID,
+            &OTHER_ID,
+            client.iaid,
+            60,
+            120,
+        );
+        assert!(matches!(
+            client.receive(payload(&other), SERVER, 1001),
+            Err(ResponseError::Unrelated)
+        ));
+        let Phase::Renewing(_, binding) = core::mem::replace(&mut *phase(&client), Phase::Init)
+        else {
+            panic!("pending renewal");
+        };
+        *phase(&client) = Phase::Rebinding(exchange(), binding);
+        client.receive(payload(&other), SERVER, 1002).unwrap();
+        let phase = phase(&client);
+        assert_eq!(phase.binding().unwrap().server.id.as_bytes(), OTHER_ID);
     }
 
-    #[cfg(feature = "qemu-test-export")]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    fn failed_lease_application_preserves_the_exchange() {
+        let client = interface();
+        *phase(&client) = requesting();
+        let bytes = response(
+            &client,
+            DhcpV6MessageType::Reply,
+            XID,
+            &SERVER_ID,
+            client.iaid,
+            60,
+            120,
+        );
+
+        assert!(matches!(
+            client.receive(payload(&bytes), SERVER, 1000),
+            Err(ResponseError::ApplyLease(_))
+        ));
+        assert_eq!(client.snapshot().0, DhcpV6State::Requesting);
+        assert!(client.snapshot().1.is_none());
+
+        set_up(&client);
+        client.receive(payload(&bytes), SERVER, 1001).unwrap();
+        assert_eq!(client.snapshot().0, DhcpV6State::Bound);
+        assert_eq!(client.snapshot().1.unwrap().obtained_at, 1001);
+    }
+
+    #[cfg(all(feature = "qemu-test-export", target_os = "none"))]
     pub fn test_solicit_advertise_request_reply_complete_flow() {
-        assert_build_release_uses_correct_msg_type();
-        assert_release_clears_lease_and_state();
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
-
-        // Start from Init -> send SOLICIT (simulate periodic trigger)
-        if let Ok(mut st) = client.state.lock() {
-            *st = DhcpV6State::SolicitSent;
-        }
-
-        // Build ADVERTISE (server-id only)
-        let server_duid: [u8; 4] = [0x11, 0x22, 0x33, 0x44];
-        let mut adv = alloc::vec![0u8; 4 + 4 + server_duid.len()];
-        adv[0] = DhcpV6MessageType::Advertise as u8;
-        adv[1..4].copy_from_slice(&0u32.to_be_bytes()[1..4]);
-        let mut off = 4;
-        adv[off..off + 2].copy_from_slice(&(2u16.to_be_bytes()));
-        adv[off + 2..off + 4].copy_from_slice(&(server_duid.len() as u16).to_be_bytes());
-        off += 4;
-        adv[off..off + server_duid.len()].copy_from_slice(&server_duid);
-
-        let server_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7]);
-        assert!(client.handle_packet_payload(
-            DhcpV6Client::generated_message_payload(&adv).unwrap(),
-            server_ip
-        ));
-        assert_eq!(client.state(), DhcpV6State::Requesting);
-
-        // Now build a REPLY that contains IAADDR for the requested IA
-        let reply_xid = client.xid.load(Ordering::SeqCst);
-        let addr = Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6]);
-        let mut reply = alloc::vec![0u8; 4 + 4 + 12 + 4 + 24];
-        reply[0] = DhcpV6MessageType::Reply as u8;
-        reply[1..4].copy_from_slice(&reply_xid.to_be_bytes()[1..4]);
-        let mut roff = 4;
-        // IA_NA option (top-level)
-        reply[roff..roff + 2].copy_from_slice(&(3u16.to_be_bytes())); // code
-        reply[roff + 2..roff + 4].copy_from_slice(&(40u16.to_be_bytes())); // len
-        roff += 4;
-        // IAID + T1 + T2
-        reply[roff..roff + 12].copy_from_slice(&[0u8; 12]);
-        roff += 12;
-        // IAADDR (as top-level for test simplicity)
-        reply[roff..roff + 2].copy_from_slice(&(5u16.to_be_bytes()));
-        reply[roff + 2..roff + 4].copy_from_slice(&(24u16.to_be_bytes()));
-        roff += 4;
-        reply[roff..roff + 16].copy_from_slice(addr.as_bytes());
-        roff += 16;
-        reply[roff..roff + 4].copy_from_slice(&3600u32.to_be_bytes());
-        roff += 4;
-        reply[roff..roff + 4].copy_from_slice(&7200u32.to_be_bytes());
-
-        assert!(client.handle_packet_payload(
-            DhcpV6Client::generated_message_payload(&reply).unwrap(),
-            server_ip
-        ));
-        assert_eq!(client.state(), DhcpV6State::Bound);
-        let l = client.lease();
-        assert!(l.is_some());
-        assert_eq!(l.unwrap().addr, addr);
+        failed_lease_application_preserves_the_exchange();
+        let client = interface();
+        assign_link_local(&client);
+        let now = crate::task::current_tick() + 1000;
+        client.check_timeout(now).expect("SOLICIT admission");
+        let solicit_xid = match &*phase(&client) {
+            Phase::Soliciting(exchange) => exchange.xid,
+            _ => panic!("SOLICIT exchange"),
+        };
+        let offer = response(
+            &client,
+            DhcpV6MessageType::Advertise,
+            solicit_xid,
+            &SERVER_ID,
+            client.iaid,
+            60,
+            120,
+        );
+        client
+            .receive(payload(&offer), SERVER, now + 1)
+            .expect("REQUEST admission");
+        let request_xid = match &*phase(&client) {
+            Phase::Requesting { exchange, .. } => exchange.xid,
+            _ => panic!("REQUEST exchange"),
+        };
+        let reply = response(
+            &client,
+            DhcpV6MessageType::Reply,
+            request_xid,
+            &SERVER_ID,
+            client.iaid,
+            60,
+            120,
+        );
+        client
+            .receive(payload(&reply), SERVER, now + 2)
+            .expect("apply REPLY");
+        assert_eq!(client.snapshot().0, DhcpV6State::Bound);
     }
 
-    #[cfg(feature = "qemu-test-export")]
+    #[cfg(all(feature = "qemu-test-export", not(target_os = "none")))]
+    pub fn test_solicit_advertise_request_reply_complete_flow() {
+        failed_lease_application_preserves_the_exchange();
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     pub fn test_renew_uses_known_server_address_for_dst() {
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
-        let lease = DhcpV6Lease {
-            addr: crate::net::l3::ipv6::Ipv6Address::new([
-                0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5,
-            ]),
-            preferred_lifetime: 60,
-            valid_lifetime: 120,
-            t1: 0,
-            t2: 60,
-            obtained_at: 0,
+        let client = interface();
+        let server = server(&SERVER_ID);
+        let binding = Binding {
+            server,
+            lease: DhcpV6Lease {
+                addr: ADDRESS,
+                preferred_lifetime: 60,
+                valid_lifetime: 120,
+                t1: 30,
+                t2: 48,
+                obtained_at: 1000,
+            },
         };
-        if let Ok(mut lg) = client.lease.lock() {
-            *lg = Some(lease);
-        }
-        if let Ok(mut st) = client.state.lock() {
-            *st = DhcpV6State::Renewing;
-        }
-        // set known server address
-        let server_ip = crate::net::l3::ipv6::Ipv6Address::new([
-            0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2,
-        ]);
-        if let Ok(mut g) = client.server_addr.lock() {
-            *g = Some(server_ip);
-        }
-        if let Ok(mut g) = client.server_duid.lock() {
-            *g = DhcpV6Client::generated_message_payload(&[0x01, 0x02, 0x03, 0x04]).ok();
-        }
-
-        let tick_rate = 1000u64;
-        // force a retransmit interval to elapse
-        let now = 20 * tick_rate;
-        client.check_timeout(now, tick_rate).unwrap();
-        // should still be Renewing (not immediately escalate to Rebinding)
-        assert_eq!(client.state(), DhcpV6State::Renewing);
-    }
-
-    #[cfg(feature = "qemu-test-export")]
-    fn assert_build_renew_uses_correct_msg_type() {
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
-        let lease = DhcpV6Lease {
-            addr: Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xa]),
-            preferred_lifetime: 3600,
-            valid_lifetime: 7200,
-            t1: 0,
-            t2: 0,
-            obtained_at: 0,
-        };
-        // Set server DUID
-        if let Ok(mut g) = client.server_duid.lock() {
-            *g = DhcpV6Client::generated_message_payload(&[0x01, 0x02, 0x03, 0x04]).ok();
-        }
-        client.xid.store(0x123456, Ordering::SeqCst);
-        let mut buf = [0u8; 512];
-        let len = client.build_renew(&mut buf, &lease).unwrap();
-        assert!(len > 0);
-        assert_eq!(buf[0], DhcpV6MessageType::Renew as u8); // msg type 5
-        // Verify IAADDR suboption exists
-        let mut found_iaaddr = false;
-        for i in 4..len.saturating_sub(1) {
-            if buf[i] == 0 && buf[i + 1] == 5 {
-                found_iaaddr = true;
-                break;
-            }
-        }
-        assert!(found_iaaddr, "IAADDR suboption not found in Renew");
-    }
-
-    #[cfg(feature = "qemu-test-export")]
-    fn assert_build_rebind_uses_correct_msg_type() {
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
-        let lease = DhcpV6Lease {
-            addr: Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xb]),
-            preferred_lifetime: 3600,
-            valid_lifetime: 7200,
-            t1: 0,
-            t2: 0,
-            obtained_at: 0,
-        };
-        client.xid.store(0xABCDEF, Ordering::SeqCst);
-        let mut buf = [0u8; 512];
-        let len = client.build_rebind(&mut buf, &lease).unwrap();
-        assert!(len > 0);
-        assert_eq!(buf[0], DhcpV6MessageType::Rebind as u8); // msg type 6
-        // Rebind should NOT contain Server Identifier (option 2)
-        let mut found_server_id = false;
-        let mut off = 4usize;
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while off + 4 <= len {
-            let code = u16::from_be_bytes([buf[off], buf[off + 1]]);
-            let opt_len = u16::from_be_bytes([buf[off + 2], buf[off + 3]]) as usize;
-            off += 4;
-            if code == 2 {
-                found_server_id = true;
-            }
-            off += opt_len;
-        }
-        assert!(!found_server_id, "Rebind must not contain Server ID");
-    }
-
-    #[cfg(feature = "qemu-test-export")]
-    fn assert_build_release_uses_correct_msg_type() {
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
-        let lease = DhcpV6Lease {
-            addr: Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xc]),
-            preferred_lifetime: 3600,
-            valid_lifetime: 7200,
-            t1: 0,
-            t2: 0,
-            obtained_at: 0,
-        };
-        if let Ok(mut g) = client.server_duid.lock() {
-            *g = DhcpV6Client::generated_message_payload(&[0xAA, 0xBB]).ok();
-        }
-        client.xid.store(0x654321, Ordering::SeqCst);
-        let mut buf = [0u8; 512];
-        let len = client.build_release(&mut buf, &lease).unwrap();
-        assert!(len > 0);
-        assert_eq!(buf[0], DhcpV6MessageType::Release as u8); // msg type 8
-    }
-
-    #[cfg(feature = "qemu-test-export")]
-    fn assert_release_clears_lease_and_state() {
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
-        let lease = DhcpV6Lease {
-            addr: Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xd]),
-            preferred_lifetime: 3600,
-            valid_lifetime: 7200,
-            t1: 0,
-            t2: 0,
-            obtained_at: 0,
-        };
-        if let Ok(mut lg) = client.lease.lock() {
-            *lg = Some(lease);
-        }
-        if let Ok(mut st) = client.state.lock() {
-            *st = DhcpV6State::Bound;
-        }
-        if let Ok(mut sg) = client.server_duid.lock() {
-            *sg = DhcpV6Client::generated_message_payload(&[0x01]).ok();
-        }
-        if let Ok(mut ag) = client.server_addr.lock() {
-            *ag = Some(Ipv6Address::new([
-                0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
-            ]));
-        }
-
-        client.release();
-
-        assert_eq!(client.state(), DhcpV6State::Init);
-        assert!(client.lease().is_none());
-        if let Ok(g) = client.server_duid.lock() {
-            assert!(g.is_none());
-        }
-        if let Ok(g) = client.server_addr.lock() {
-            assert!(g.is_none());
-        }
-    }
-
-    #[cfg(feature = "qemu-test-export")]
-    fn assert_parse_reply_with_dns_servers() {
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
-
-        // Build a REPLY with IA_NA/IAADDR + DNS Recursive Name Server (option 23)
-        let dns1 = Ipv6Address::new([
-            0x20, 0x01, 0x48, 0x60, 0x48, 0x60, 0, 0, 0, 0, 0, 0, 0, 0, 0x88, 0x88,
-        ]);
-        let dns2 = Ipv6Address::new([
-            0x20, 0x01, 0x48, 0x60, 0x48, 0x60, 0, 0, 0, 0, 0, 0, 0, 0, 0x88, 0x44,
-        ]);
-        let addr = Ipv6Address::new([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xe]);
-
-        // header(4) + IA_NA(4+12 + subopt IAADDR 4+24) + DNS(4+32)
-        let mut pkt = alloc::vec![0u8; 4 + 4 + 12 + 4 + 24 + 4 + 32];
-        pkt[0] = DhcpV6MessageType::Reply as u8;
-        let mut off = 4usize;
-
-        // IA_NA option (code=3, len=40)
-        pkt[off..off + 2].copy_from_slice(&3u16.to_be_bytes());
-        pkt[off + 2..off + 4].copy_from_slice(&40u16.to_be_bytes());
-        off += 4;
-        // IAID + T1 + T2 = 0
-        pkt[off..off + 12].copy_from_slice(&[0u8; 12]);
-        off += 12;
-        // IAADDR suboption (code=5, len=24)
-        pkt[off..off + 2].copy_from_slice(&5u16.to_be_bytes());
-        pkt[off + 2..off + 4].copy_from_slice(&24u16.to_be_bytes());
-        off += 4;
-        pkt[off..off + 16].copy_from_slice(addr.as_bytes());
-        off += 16;
-        pkt[off..off + 4].copy_from_slice(&3600u32.to_be_bytes()); // preferred
-        off += 4;
-        pkt[off..off + 4].copy_from_slice(&7200u32.to_be_bytes()); // valid
-        off += 4;
-
-        // DNS Recursive Name Server (option 23, len=32: 2 addresses)
-        pkt[off..off + 2].copy_from_slice(&23u16.to_be_bytes());
-        pkt[off + 2..off + 4].copy_from_slice(&32u16.to_be_bytes());
-        off += 4;
-        pkt[off..off + 16].copy_from_slice(dns1.as_bytes());
-        off += 16;
-        pkt[off..off + 16].copy_from_slice(dns2.as_bytes());
-
-        let parsed = client
-            .parse_reply_payload(DhcpV6Client::generated_message_payload(&pkt).unwrap(), 500)
-            .unwrap();
-        assert!(parsed.is_some());
-        let lease = parsed.unwrap();
-        assert_eq!(lease.lease.addr, addr);
-        assert_eq!(lease.dns_servers.len(), 2);
-        assert_eq!(lease.dns_servers[0], dns1);
-        assert_eq!(lease.dns_servers[1], dns2);
-    }
-
-    #[cfg(feature = "qemu-test-export")]
-    fn assert_parse_reply_with_status_code_error() {
-        let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
-        let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
-
-        // Build a REPLY with Status Code = 2 (NoBinding)
-        let mut pkt = alloc::vec![0u8; 4 + 4 + 2];
-        pkt[0] = DhcpV6MessageType::Reply as u8;
-        let mut off = 4usize;
-        // Status Code option (code=13, len=2)
-        pkt[off..off + 2].copy_from_slice(&13u16.to_be_bytes());
-        pkt[off + 2..off + 4].copy_from_slice(&2u16.to_be_bytes());
-        off += 4;
-        pkt[off..off + 2].copy_from_slice(&2u16.to_be_bytes()); // NoBinding
-
-        let parsed = client
-            .parse_reply_payload(DhcpV6Client::generated_message_payload(&pkt).unwrap(), 100)
-            .unwrap();
-        assert!(parsed.is_none(), "Non-zero status code should return None");
+        let renew = Request::Renew(&binding);
+        let rebind = Request::Rebind(&binding);
+        assert_eq!(renew.server().unwrap().address, SERVER);
+        assert!(rebind.server().is_none());
+        let mut bytes = [0; 256];
+        client.encode(&mut bytes, &exchange(), &renew);
+        assert_eq!(bytes[0], 5);
+        assert_eq!(&bytes[22..28], &SERVER_ID);
+        client.encode(&mut bytes, &exchange(), &rebind);
+        assert_eq!(bytes[0], 6);
+        assert_eq!(&bytes[18..22], &[0, 3, 0, 40]);
     }
 }

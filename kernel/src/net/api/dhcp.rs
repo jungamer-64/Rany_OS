@@ -277,8 +277,9 @@ fn snapshot_for_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> DhcpR
     if manager::primary_interface_in(runtime) == Some(if_id)
         && let Some(client6) = dhcp::primary_v6_client_in(runtime)
     {
-        out.v6_state = String::from(dhcp_v6_state_name(client6.state()));
-        if let Some(lease6) = client6.lease() {
+        let (state, lease) = client6.snapshot();
+        out.v6_state = String::from(dhcp_v6_state_name(state));
+        if let Some(lease6) = lease {
             out.v6_assigned_ip = Some(*lease6.addr.as_bytes());
             out.v6_preferred_remaining = Some(lease_remaining_secs(
                 lease6.preferred_lifetime,
@@ -350,8 +351,9 @@ pub(crate) fn dhcp_state_snapshot_in(runtime: NetRuntimeHandle) -> DhcpRuntimeSt
     }
 
     if let Some(client6) = dhcp::primary_v6_client_in(runtime) {
-        out.v6_state = String::from(dhcp_v6_state_name(client6.state()));
-        if let Some(lease6) = client6.lease() {
+        let (state, lease) = client6.snapshot();
+        out.v6_state = String::from(dhcp_v6_state_name(state));
+        if let Some(lease6) = lease {
             out.v6_assigned_ip = Some(*lease6.addr.as_bytes());
             out.v6_preferred_remaining = Some(lease_remaining_secs(
                 lease6.preferred_lifetime,

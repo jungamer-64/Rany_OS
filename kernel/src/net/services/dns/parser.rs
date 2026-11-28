@@ -387,7 +387,7 @@ mod tests {
 
     #[test]
     fn dns_reply_requires_complete_declared_sections_before_cache_admission() {
-        let client = DnsClient::new(crate::net::runtime::default_runtime(), 1000);
+        let client = DnsClient::new(crate::net::runtime::context::tests::runtime_fixture(), 1000);
         let name_data = payload(b"host");
         let name = DnsNameOwned {
             labels: alloc::vec![PayloadRange::checked(&name_data, 0, 4).expect("label")],

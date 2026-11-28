@@ -519,6 +519,9 @@ pub(crate) fn stage_dhcp_ipv6_in(
     mutate_topology_in(runtime, |manager| {
         let (config, mut state) = manager.discovery_config(if_id)?;
         state.advance(now);
+        if lifetimes.valid_until <= state.now {
+            return Err(NetworkError::Timeout);
+        }
         state.stage_address(address, Ipv6AddressOrigin::Dhcp, lifetimes)?;
         Ok(((), manager.publish_discovery(if_id, config, state)?))
     })
