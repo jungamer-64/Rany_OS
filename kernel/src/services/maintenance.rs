@@ -158,9 +158,11 @@ impl KernelServiceHost {
     }
 
     async fn maintain_runtime(&self) -> Result<(), TimerError> {
+        let mut dma_retirement = crate::resource_registry::dma::DmaRetirementSweep::new();
         // LOOP_PROOF: mode=event; reason=The service host owns this worker, each iteration waits for an admitted timer and reports timer failure to that owner.;
         loop {
             crate::integration::progress_device_retirement();
+            dma_retirement.service_turn();
             crate::driver_domain::fault::progress_cell_panics();
             crate::driver_domain::lifecycle::progress_startups();
             crate::driver_domain::fault::progress_restarts();

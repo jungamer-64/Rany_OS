@@ -214,3 +214,55 @@ pub(crate) async fn masked_mapping_retirement() -> bool {
     data.release();
     true
 }
+
+pub(crate) async fn abandoned_leases_retire_with_owner() -> Result<(), alloc::string::String> {
+    use crate::domain::{DomainLifecycleError, create_domain, terminate_domain};
+    use crate::resource_registry::dma::{allocate, owner_lease_count};
+    use kernel_api::abi::driver::PackedPciLocation;
+    use kernel_api::dma::{DmaAllocationRequest, DmaDirection, DmaQueueIdentity};
+    use kernel_api::error::KapiError;
+
+    let owner = create_domain("unpublished_dma".into())
+        .map_err(|error| alloc::format!("lease owner admission: {error:?}"))?;
+    // Q35's AHCI function is bound at boot. This test publishes no IOVAs to it.
+    let device = DeviceId::new(0, 0, 31, 2);
+    let bdf = PackedPciLocation::new(0, 0, 31, 2);
+    let queue = DmaQueueIdentity::new(bdf, 0, 1).unwrap();
+    let request = DmaAllocationRequest::new(PAGE_SIZE_4K, DmaDirection::Bidirectional).unwrap();
+    let alloc = || {
+        allocate(owner, bdf, device, request)
+            .map_err(|error| alloc::format!("lease admission: {error:?}"))
+    };
+    let cpu = alloc()?;
+    let prepared = alloc()?
+        .prepare(queue)
+        .map_err(|error| alloc::format!("{error:?}"))?;
+    let shared = alloc()?
+        .prepare_shared(queue)
+        .map_err(|error| alloc::format!("{error:?}"))?;
+    assert_eq!(owner_lease_count(owner), 3);
+    drop((cpu, prepared, shared));
+
+    // LOOP_PROOF: mode=bounded; reason=The fixture retries only while another CPU may own the in-progress retirement, for at most 16 attempts.;
+    for _ in 0..16 {
+        match terminate_domain(owner) {
+            Ok(()) => {
+                assert_eq!(owner_lease_count(owner), 0);
+                return Ok(());
+            }
+            Err(DomainLifecycleError::ResourceCleanupIncomplete {
+                cause: KapiError::Busy,
+                ..
+            }) => {
+                kernel_api::service::time::sleep_ms(10)
+                    .await
+                    .map_err(|error| alloc::format!("retirement retry delay: {error:?}"))?;
+            }
+            Err(error) => return Err(alloc::format!("lease owner termination: {error:?}")),
+        }
+    }
+    Err(alloc::format!(
+        "termination retained {} unpublished leases",
+        owner_lease_count(owner)
+    ))
+}

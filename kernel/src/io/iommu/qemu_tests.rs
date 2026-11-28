@@ -10,7 +10,7 @@ mod mapped_range;
 mod page_table_pool;
 pub(crate) use fault::context_publication_retains_owner;
 pub(crate) use fault::scalable_fault_domain_resolution;
-pub(crate) use mapped_range::masked_mapping_retirement;
+pub(crate) use mapped_range::{abandoned_leases_retire_with_owner, masked_mapping_retirement};
 
 pub fn page_table_recycling_retains_ownership_smoke() -> bool {
     page_table_pool::cached_table_is_zeroed();

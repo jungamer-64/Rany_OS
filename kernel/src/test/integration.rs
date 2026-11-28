@@ -571,6 +571,17 @@ pub async fn test_iommu() -> IntegrationTestSuite {
     );
 
     #[cfg(feature = "qemu-test-export")]
+    suite.add_result(
+        run_async_case("iommu_abandoned_dma_lease_retirement", async {
+            crate::io::iommu::qemu_tests::abandoned_leases_retire_with_owner().await?;
+            Ok(String::from(
+                "Dropped unpublished leases allow owner termination",
+            ))
+        })
+        .await,
+    );
+
+    #[cfg(feature = "qemu-test-export")]
     suite.add_result(run_test("iommu_scalable_fault_domain", || {
         if crate::io::iommu::qemu_tests::scalable_fault_domain_resolution() {
             Ok(String::from(
