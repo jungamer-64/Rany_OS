@@ -125,57 +125,14 @@ fn build_idt() -> InterruptDescriptorTable {
             ))
             .set_stack_index(gdt::NMI_IST_INDEX);
     }
-    idt.divide_error.set_handler_fn(handler_to_x86!(
-        exceptions::divide_error_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-    ));
+    #[cfg(target_os = "none")]
+    exceptions::install_fatal_handlers(&mut idt);
+
     idt.debug.set_handler_fn(handler_to_x86!(
         exceptions::debug_handler as extern "x86-interrupt" fn(InterruptStackFrame)
     ));
     idt.breakpoint.set_handler_fn(handler_to_x86!(
         exceptions::breakpoint_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-    ));
-    idt.invalid_opcode.set_handler_fn(handler_to_x86!(
-        exceptions::invalid_opcode_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-    ));
-    idt.device_not_available.set_handler_fn(handler_to_x86!(
-        exceptions::device_not_available_handler as extern "x86-interrupt" fn(InterruptStackFrame)
-    ));
-
-    // 【設計書 8.5.2】Double Fault ハンドラには IST を使用し、専用スタックを確保
-    let double_fault_handler = handler_to_x86!(
-        exceptions::double_fault_handler
-            as extern "x86-interrupt" fn(InterruptStackFrame, u64) -> !
-    );
-    unsafe {
-        idt.double_fault
-            .set_handler_fn(double_fault_handler)
-            .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
-    }
-
-    idt.general_protection_fault.set_handler_fn(handler_to_x86!(
-        exceptions::general_protection_fault_handler
-            as extern "x86-interrupt" fn(InterruptStackFrame, u64)
-    ));
-    let page_fault_handler = handler_to_x86!(
-        exceptions::page_fault_handler
-            as extern "x86-interrupt" fn(
-                InterruptStackFrame,
-                x86_64::structures::idt::PageFaultErrorCode,
-            )
-    );
-    unsafe {
-        idt.page_fault
-            .set_handler_fn(page_fault_handler)
-            .set_stack_index(gdt::PAGE_FAULT_IST_INDEX);
-    }
-    idt.alignment_check.set_handler_fn(handler_to_x86!(
-        exceptions::alignment_check_handler as extern "x86-interrupt" fn(InterruptStackFrame, u64)
-    ));
-    idt.machine_check.set_handler_fn(handler_to_x86!(
-        exceptions::machine_check_handler as extern "x86-interrupt" fn(InterruptStackFrame) -> !
-    ));
-    idt.simd_floating_point.set_handler_fn(handler_to_x86!(
-        exceptions::simd_floating_point_handler as extern "x86-interrupt" fn(InterruptStackFrame)
     ));
 
     // ハードウェア割り込みハンド設定
