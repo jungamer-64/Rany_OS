@@ -177,12 +177,14 @@ impl RuntimeCommandHandler {
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::NeighborResolvedV6 { if_id, ip, mac },
+                crate::net::runtime::command::ControlCommand::NeighborCacheV6 {
+                    if_id,
+                    ip,
+                    update,
+                    observed_at,
+                },
             ) => {
-                let now = crate::time::get_uptime_ms();
-                let ipv6 = crate::net::l3::ipv6::Ipv6Address::new(ip);
-                stack.ndp_cache_insert_on(if_id, &ipv6, mac, now);
-                stack.drain_ndp_pending_on(if_id, &ipv6);
+                stack.apply_ndp_peer_update(if_id, ip, update, observed_at);
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(

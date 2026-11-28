@@ -220,10 +220,11 @@ pub(crate) enum ControlCommand {
         ip: [u8; 4],
         mac: [u8; 6],
     },
-    NeighborResolvedV6 {
+    NeighborCacheV6 {
         if_id: NetIfId,
-        ip: [u8; 16],
-        mac: [u8; 6],
+        ip: crate::net::l3::ipv6::Ipv6Address,
+        update: crate::net::l3::ndp::NeighborUpdate,
+        observed_at: u64,
     },
     GetPrimaryInterfaceConfig {
         reply: CommandReplyTicket<Option<crate::net::api::config::InterfaceConfigSnapshot>>,

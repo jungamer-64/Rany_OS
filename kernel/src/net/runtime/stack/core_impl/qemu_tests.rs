@@ -103,7 +103,15 @@ fn identical_topology_snapshot_preserves_interface_protocol_state() {
     let neighbor = crate::net::l3::ipv6::Ipv6Address::new([
         0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9,
     ]);
-    stack.ndp_cache_insert_on(if_id, &neighbor, [1, 2, 3, 4, 5, 6], 42);
+    stack
+        .interfaces
+        .get_mut(&if_id)
+        .unwrap()
+        .ndp
+        .as_mut()
+        .unwrap()
+        .cache_mut()
+        .update_reachable(&neighbor, [1, 2, 3, 4, 5, 6], 42);
     assert!(
         stack.interfaces[&if_id]
             .ndp
@@ -483,7 +491,15 @@ fn ipv6_udp_waits_for_the_gateway_and_preserves_the_ip_destination() {
     stack.update_time(now + 2000);
     stack.process_timeouts();
     assert_eq!(SOLICITATIONS.load(Ordering::Relaxed), 2);
-    stack.ndp_cache_insert_on(if_id, &ROUTER, ROUTER_MAC, now + 2000);
+    stack
+        .interfaces
+        .get_mut(&if_id)
+        .unwrap()
+        .ndp
+        .as_mut()
+        .unwrap()
+        .cache_mut()
+        .update_reachable(&ROUTER, ROUTER_MAC, now + 2000);
     stack.drain_ndp_pending_on(if_id, &ROUTER);
     stack.drain_ndp_pending_on(if_id, &ROUTER);
     assert_eq!(DATAGRAMS.load(Ordering::Relaxed), 1);

@@ -107,7 +107,8 @@ pub fn test_parse_slla_option() {
     // Source Link-Layer Address: type=1, len=1 (8 bytes), mac=52:54:00:12:34:56
     let data = [1, 1, 0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
     let payload = fixture_payload(&data);
-    let options = parse_ndp_options_view(&PacketPayloadView::new(&payload), 0);
+    let options =
+        validation::router_options(&PacketPayloadView::new(&payload), 0).expect("complete options");
     assert_eq!(options.len(), 1);
     match &options[0] {
         NdpOption::LinkLayerAddress { option_type, mac } => {
@@ -144,7 +145,8 @@ pub fn test_parse_prefix_info_option() {
     data[19] = 0xb8;
 
     let payload = fixture_payload(&data);
-    let options = parse_ndp_options_view(&PacketPayloadView::new(&payload), 0);
+    let options =
+        validation::router_options(&PacketPayloadView::new(&payload), 0).expect("complete options");
     assert_eq!(options.len(), 1);
     match &options[0] {
         NdpOption::PrefixInfo {
@@ -269,14 +271,15 @@ pub fn test_ns_processing() {
     let sender_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
     let dst = our_ip.solicited_node();
 
-    let result = processor.process_payload(
+    let message = ValidatedNdp::parse(
         Icmpv6Type::NeighborSolicitation,
         &fixture_payload(&RECEIVED_NS),
         sender_ip,
         dst,
         sender_mac,
-        1000,
+        255,
     );
+    let result = processor.process(message.expect("valid ND message"), 1000);
 
     match result {
         NdpResult::SendNeighborAdvertisement {
@@ -307,7 +310,7 @@ pub fn test_ndp_spoofing_detection() {
     let our_ip = Ipv6Address::new([
         0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x50, 0x54, 0, 0xff, 0xfe, 0x12, 0x34, 0x56,
     ]);
-    let mut processor = NdpProcessor::new(our_mac, local_addresses(our_ip));
+    let processor = NdpProcessor::new(our_mac, local_addresses(our_ip));
 
     let sender_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
     let dst = our_ip.solicited_node();
@@ -316,17 +319,17 @@ pub fn test_ndp_spoofing_detection() {
     // but the actual Ethernet source MAC is different (spoofed).
     let actual_eth_mac = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE];
 
-    let result = processor.process_payload(
+    let message = ValidatedNdp::parse(
         Icmpv6Type::NeighborSolicitation,
         &fixture_payload(&RECEIVED_NS),
         sender_ip,
         dst,
         actual_eth_mac,
-        1000,
+        255,
     );
 
     // Should return Error due to spoofing detection
-    assert!(matches!(result, NdpResult::Error));
+    assert!(message.is_none());
 
     // Cache should NOT be updated
     assert!(processor.cache().lookup(&sender_ip).is_none());
@@ -340,7 +343,7 @@ pub fn test_na_multicast_target_rejection() {
     let our_ip = Ipv6Address::new([
         0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x50, 0x54, 0, 0xff, 0xfe, 0x12, 0x34, 0x56,
     ]);
-    let mut processor = NdpProcessor::new(our_mac, local_addresses(our_ip));
+    let processor = NdpProcessor::new(our_mac, local_addresses(our_ip));
 
     let sender_mac = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
     let sender_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
@@ -353,17 +356,17 @@ pub fn test_na_multicast_target_rejection() {
         0xee, 0xff,
     ];
 
-    let result = processor.process_payload(
+    let message = ValidatedNdp::parse(
         Icmpv6Type::NeighborAdvertisement,
         &fixture_payload(&na),
         sender_ip,
         our_ip,
         sender_mac,
-        1000,
+        255,
     );
 
     // Should return Error
-    assert!(matches!(result, NdpResult::Error));
+    assert!(message.is_none());
 
     // Cache should NOT be updated with multicast address
     assert!(processor.cache().lookup(&mcast_target).is_none());
@@ -390,14 +393,15 @@ pub fn test_na_discard_unknown_target() {
         0xee, 0xff,
     ];
 
-    let result = processor.process_payload(
+    let message = ValidatedNdp::parse(
         Icmpv6Type::NeighborAdvertisement,
         &fixture_payload(&na),
         sender_ip,
         our_ip,
         sender_mac,
-        1000,
+        255,
     );
+    let result = processor.process(message.expect("valid ND message"), 1000);
 
     // Should return None because it was discarded
     assert!(matches!(result, NdpResult::None));
@@ -428,14 +432,15 @@ pub fn test_ra_processing() {
     ra.push(1); // len=1
     ra.extend_from_slice(&router_mac);
 
-    let result = processor.process_payload(
+    let message = ValidatedNdp::parse(
         Icmpv6Type::RouterAdvertisement,
         &fixture_payload(&ra),
         router_ip,
         our_ip,
         router_mac,
-        1000,
+        255,
     );
+    let result = processor.process(message.expect("valid ND message"), 1000);
 
     match result {
         NdpResult::RouterAdvertisement {
@@ -468,4 +473,131 @@ fn local_addresses(address: Ipv6Address) -> crate::net::l3::ipv6::address_state:
         state: LocalAddressState::Preferred,
     });
     set
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+#[cfg(test)]
+fn invalid_nd_does_not_produce_an_observation() {
+    let local = Ipv6Address::from_eui64(&[2, 0, 0, 0, 0, 1]);
+    let mac = [2, 0, 0, 0, 0, 2];
+    let peer = Ipv6Address::from_eui64(&mac);
+    let parse = |kind, bytes: &[u8], source, destination| {
+        ValidatedNdp::parse(kind, &fixture_payload(bytes), source, destination, mac, 255)
+    };
+    let mut ns = [0; 32];
+    ns[0] = Icmpv6Type::NeighborSolicitation.into();
+    ns[8..24].copy_from_slice(local.as_bytes());
+    assert!(
+        parse(
+            Icmpv6Type::NeighborSolicitation,
+            &ns[..24],
+            Ipv6Address::UNSPECIFIED,
+            local.solicited_node()
+        )
+        .is_some()
+    );
+    assert!(
+        parse(
+            Icmpv6Type::NeighborSolicitation,
+            &ns[..24],
+            Ipv6Address::UNSPECIFIED,
+            local
+        )
+        .is_none()
+    );
+    ns[24..32].copy_from_slice(&[1, 1, 2, 0, 0, 0, 0, 2]);
+    assert!(
+        parse(
+            Icmpv6Type::NeighborSolicitation,
+            &ns,
+            Ipv6Address::UNSPECIFIED,
+            local.solicited_node()
+        )
+        .is_none()
+    );
+    ns[1] = 1;
+    assert!(parse(Icmpv6Type::NeighborSolicitation, &ns, peer, local).is_none());
+
+    let mut na = [0; 24];
+    na[0] = Icmpv6Type::NeighborAdvertisement.into();
+    na[4] = 0x40;
+    na[8..24].copy_from_slice(peer.as_bytes());
+    assert!(
+        parse(
+            Icmpv6Type::NeighborAdvertisement,
+            &na,
+            peer,
+            Ipv6Address::ALL_NODES_LINK_LOCAL
+        )
+        .is_none()
+    );
+
+    let mut ra = [0; 32];
+    ra[0] = Icmpv6Type::RouterAdvertisement.into();
+    ra[16..24].copy_from_slice(&[1, 1, 2, 0, 0, 0, 0, 2]);
+    let all_nodes = Ipv6Address::ALL_NODES_LINK_LOCAL;
+    assert!(parse(Icmpv6Type::RouterAdvertisement, &ra[..24], peer, all_nodes).is_some());
+    assert!(parse(Icmpv6Type::RouterAdvertisement, &ra[..25], peer, all_nodes).is_none());
+    assert!(parse(Icmpv6Type::RouterAdvertisement, &ra, peer, all_nodes).is_none());
+    ra[24..26].copy_from_slice(&[99, 2]);
+    assert!(parse(Icmpv6Type::RouterAdvertisement, &ra, peer, all_nodes).is_none());
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+#[cfg(test)]
+fn ndp_peer_updates_respect_accepted_mapping_and_reachability() {
+    let mac = [2, 0, 0, 0, 0, 1];
+    let next_mac = [2, 0, 0, 0, 0, 2];
+    let ip = Ipv6Address::from_eui64(&mac);
+    let mut ingress = NeighborCache::new();
+    let mut peer = NeighborCache::new();
+    ingress.update_reachable(&ip, mac, 0);
+    peer.update_reachable(&ip, mac, 0);
+
+    let demotion = ingress
+        .observe_advertisement(&ip, Some(next_mac), true, false, 10)
+        .expect("reachability change");
+    assert!(demotion.learned_mac().is_none());
+    assert!(!peer.apply_peer_update(&ip, demotion, 10));
+    for cache in [&ingress, &peer] {
+        let entry = cache.lookup(&ip).expect("retained entry");
+        assert_eq!(entry.mac, mac);
+        assert_eq!(entry.state, NeighborState::Stale);
+    }
+    assert!(
+        ingress
+            .observe_advertisement(&ip, Some(next_mac), false, false, 11)
+            .is_none()
+    );
+
+    let change = ingress
+        .observe_advertisement(&ip, Some(next_mac), false, true, 20)
+        .expect("accepted replacement");
+    assert_eq!(change.learned_mac(), Some(next_mac));
+    assert!(peer.apply_peer_update(&ip, change, 20));
+    assert_eq!(peer.lookup(&ip).unwrap().state, NeighborState::Stale);
+
+    let confirmed = ingress
+        .observe_advertisement(&ip, None, true, false, 30)
+        .expect("confirmation without a new address");
+    assert_eq!(confirmed.learned_mac(), Some(next_mac));
+    assert!(peer.apply_peer_update(&ip, confirmed, 30));
+    assert_eq!(peer.lookup(&ip).unwrap().state, NeighborState::Reachable);
+
+    ingress.insert(NeighborEntry::new_incomplete(ip, 40));
+    assert!(
+        ingress
+            .observe_advertisement(&ip, None, true, true, 41)
+            .is_none()
+    );
+    let resolved = ingress
+        .observe_advertisement(&ip, Some(mac), false, false, 42)
+        .expect("incomplete entry accepts the address irrespective of Override");
+    assert_eq!(resolved.learned_mac(), Some(mac));
+    assert_eq!(ingress.lookup(&ip).unwrap().state, NeighborState::Stale);
+    assert!(!peer.apply_peer_update(&ip, resolved, 42));
+    assert_eq!(peer.lookup(&ip).unwrap().mac, next_mac);
+    assert_eq!(peer.lookup(&ip).unwrap().state, NeighborState::Stale);
 }

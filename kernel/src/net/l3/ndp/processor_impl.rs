@@ -3,8 +3,7 @@
 // ============================================================================
 
 use super::*;
-use crate::net::l2::ethernet::MacAddress;
-use crate::net::payload::{PacketPayloadView, alloc_packet_with_headroom};
+use crate::net::payload::alloc_packet_with_headroom;
 use kernel_api::resource::net::PacketPayload;
 
 impl NdpProcessor {
@@ -47,6 +46,74 @@ impl NdpProcessor {
     #[inline]
     pub fn cache_mut(&mut self) -> &mut NeighborCache {
         &mut self.cache
+    }
+
+    pub(crate) fn process(&mut self, message: ValidatedNdp, now: u64) -> NdpResult {
+        use super::validation::Message;
+
+        match message.0 {
+            Message::Solicitation {
+                target,
+                source,
+                mac,
+                ..
+            } => {
+                self.stats.ns_received.fetch_add(1, Ordering::Relaxed);
+                if !self.is_our_address(&target) {
+                    return NdpResult::None;
+                }
+                if source.is_unspecified() {
+                    NdpResult::SendNeighborAdvertisementMulticast {
+                        target,
+                        our_mac: self.our_mac,
+                    }
+                } else {
+                    if let Some(mac) = mac {
+                        self.cache.update_stale(&source, mac, now);
+                    }
+                    NdpResult::SendNeighborAdvertisement {
+                        dst: source,
+                        target,
+                        our_mac: self.our_mac,
+                        solicited: true,
+                    }
+                }
+            }
+            Message::Advertisement {
+                target,
+                mac,
+                solicited,
+                override_mac,
+            } => {
+                self.stats.na_received.fetch_add(1, Ordering::Relaxed);
+                self.cache
+                    .observe_advertisement(&target, mac, solicited, override_mac, now)
+                    .map_or(NdpResult::None, |update| NdpResult::NeighborUpdated {
+                        ip: target,
+                        update,
+                    })
+            }
+            Message::Router {
+                source,
+                lifetime,
+                mut options,
+            } => {
+                self.stats.ra_received.fetch_add(1, Ordering::Relaxed);
+                options.retain(|option| {
+                    if let NdpOption::LinkLayerAddress { mac, .. } = option {
+                        self.cache.update_stale(&source, *mac, now);
+                        false
+                    } else {
+                        true
+                    }
+                });
+                NdpResult::RouterAdvertisement {
+                    router: source,
+                    router_lifetime_secs: lifetime,
+                    prefixes: options,
+                }
+            }
+        }
     }
 
     /// Build a Neighbor Solicitation message

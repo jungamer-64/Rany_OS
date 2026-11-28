@@ -825,19 +825,20 @@ impl NetworkStack {
         self.drain_ndp_pending_queue(if_id, resolved_ip, pending);
     }
 
-    /// Insert an entry into a specific interface's NDP neighbor cache.
-    /// Used by NeighborResolvedV6 broadcast handler for cross-core NDP cache synchronization.
-    pub(crate) fn ndp_cache_insert_on(
+    pub(crate) fn apply_ndp_peer_update(
         &mut self,
         if_id: super::NetIfId,
-        ip: &Ipv6Address,
-        mac: [u8; 6],
-        current_time: u64,
+        ip: Ipv6Address,
+        update: crate::net::l3::ndp::NeighborUpdate,
+        observed_at: u64,
     ) {
-        if let Some(state) = self.interfaces.get_mut(&if_id)
-            && let Some(ref mut ndp) = state.ndp
+        if let Some(ndp) = self
+            .interfaces
+            .get_mut(&if_id)
+            .and_then(|state| state.ndp.as_mut())
+            && ndp.cache_mut().apply_peer_update(&ip, update, observed_at)
         {
-            ndp.cache_mut().update_reachable(ip, mac, current_time);
+            self.drain_ndp_pending_on(if_id, &ip);
         }
     }
 

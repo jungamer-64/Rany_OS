@@ -485,14 +485,39 @@ impl NetworkStack {
         hop_limit: u8,
         current_time: u64,
     ) {
-        // SECURITY: RFC 4861 Section 6.1.1 に従い、IP Hop Limit は 255 でなければならない。
-        // This ensures the packet was not forwarded by a router.
-        if hop_limit != 255 {
-            log::warn!("NDP: Dropping packet with invalid hop limit {}", hop_limit);
-            return;
-        }
+        use crate::net::l3::ndp::{TentativeObservation, ValidatedNdp};
+        use crate::net::runtime::manager::{self, DadEvent};
 
-        if self.process_tentative_neighbor_message(if_id, msg_type, &payload, src, dst) {
+        let Some(message) =
+            ValidatedNdp::parse(msg_type, &payload, src, dst, *src_mac.as_bytes(), hop_limit)
+        else {
+            return;
+        };
+        if let Some((target, observation)) = message.tentative_observation()
+            && self
+                .interface_config(if_id)
+                .and_then(|config| config.ipv6)
+                .is_some_and(|ipv6| {
+                    ipv6.addresses
+                        .entries
+                        .iter()
+                        .flatten()
+                        .any(|entry| entry.address == target && !entry.assigned())
+                })
+        {
+            if let TentativeObservation::Conflict { nonce } = observation
+                && manager::update_ipv6_dad_in(
+                    runtime,
+                    if_id,
+                    target,
+                    DadEvent::Conflict {
+                        received_nonce: nonce,
+                    },
+                )
+                .is_ok_and(|changed| changed)
+            {
+                self.refresh_interface_topology();
+            }
             return;
         }
         let ingress_if_id = if_id;
@@ -503,14 +528,7 @@ impl NetworkStack {
             let Some(ref mut ndp) = state.ndp else {
                 return;
             };
-            ndp.process_payload(
-                msg_type,
-                &payload,
-                src,
-                dst,
-                *src_mac.as_bytes(),
-                current_time,
-            )
+            ndp.process(message, current_time)
         };
 
         match result {
@@ -558,38 +576,23 @@ impl NetworkStack {
                     );
                 }
             }
-            NdpResult::NeighborUpdated { ip, mac } => {
-                log::info!(
-                    "NDP: Neighbor {} -> {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                    ip,
-                    mac[0],
-                    mac[1],
-                    mac[2],
-                    mac[3],
-                    mac[4],
-                    mac[5]
-                );
-
-                // NDP解決完了をウェイターレジストリへ通知（非同期NdpResolveFuture向け）
-                crate::net::l3::ndp::notify_ndp_resolved_in(
-                    runtime,
-                    ingress_if_id,
-                    ip.octets(),
-                    mac,
-                );
-
-                // Drain any pending packets for this now-resolved neighbor (local core)
-                self.drain_ndp_pending_on(ingress_if_id, &ip);
-
-                // Broadcast NeighborResolvedV6 to all Per-Core queues for cross-core NDP cache update + pending drain
-                let ip_bytes = ip.octets();
-                let mac_bytes = mac;
-                crate::net::runtime::command::broadcast_command_in(runtime, move || {
+            NdpResult::NeighborUpdated { ip, update } => {
+                if let Some(mac) = update.learned_mac() {
+                    crate::net::l3::ndp::notify_ndp_resolved_in(
+                        runtime,
+                        ingress_if_id,
+                        ip.octets(),
+                        mac,
+                    );
+                    self.drain_ndp_pending_on(ingress_if_id, &ip);
+                }
+                crate::net::runtime::command::broadcast_command_in(runtime, || {
                     crate::net::runtime::command::RuntimeCommand::Control(
-                        crate::net::runtime::command::ControlCommand::NeighborResolvedV6 {
+                        crate::net::runtime::command::ControlCommand::NeighborCacheV6 {
                             if_id: ingress_if_id,
-                            ip: ip_bytes,
-                            mac: mac_bytes,
+                            ip,
+                            update,
+                            observed_at: current_time,
                         },
                     )
                 });
@@ -618,32 +621,7 @@ impl NetworkStack {
                     }
                 }
             }
-            NdpResult::Redirect {
-                target,
-                destination,
-            } => {
-                // SECURITY: check 0: Redirect handling が global に有効か確認する。
-                let redirects_enabled = self
-                    .interface_config(if_id)
-                    .is_some_and(|config| config.icmpv6_redirect_enabled);
-                if !redirects_enabled {
-                    log::warn!(
-                        "NDP: Ignoring Redirect for {} to target router {} (Security: disabled by default)",
-                        destination,
-                        target
-                    );
-                } else {
-                    log::info!(
-                        "NDP: Applying Redirect for {} to target router {}",
-                        destination,
-                        target
-                    );
-                    // Update IPv6 Path MTU or routing table with redirect info
-                    // Currently we don't have a separate IPv6 redirect cache like IPv4,
-                    // but we could theoretically update the neighbor cache (already done in process_redirect).
-                }
-            }
-            NdpResult::None | NdpResult::Error => {}
+            NdpResult::None => {}
         }
     }
 
@@ -763,7 +741,7 @@ mod tests {
 
     #[test]
     fn ipv6_pmtu_requires_transport_evidence_on_the_ingress_interface() {
-        let runtime = crate::net::runtime::create_runtime().expect("isolated runtime");
+        let runtime = crate::net::runtime::context::tests::runtime_fixture();
         let if_id = NetIfId(1);
         let local = Ipv6Address::from_eui64(&[2, 0, 0, 0, 0, 1]);
         let remote = Ipv6Address::from_eui64(&[2, 0, 0, 0, 0, 2]);

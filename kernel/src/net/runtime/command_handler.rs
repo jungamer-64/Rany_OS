@@ -421,7 +421,7 @@ impl RuntimeCommandHandler {
                 crate::net::runtime::command::ControlCommand::NeighborResolvedV4 { .. },
             ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
             utility_event @ RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::NeighborResolvedV6 { .. },
+                crate::net::runtime::command::ControlCommand::NeighborCacheV6 { .. },
             ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
             lifecycle_event @ RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::ProcessGlobalTimeouts,

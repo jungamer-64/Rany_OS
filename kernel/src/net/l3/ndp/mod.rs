@@ -28,7 +28,9 @@ use kernel_api::resource::net::PacketPayload;
 /// Minimum Neighbor Solicitation size: ICMPv6 header (4) + reserved (4) + target (16) = 24
 pub(crate) mod processor_impl;
 mod resolve_future;
+mod validation;
 pub use resolve_future::*;
+pub(crate) use validation::{TentativeObservation, ValidatedNdp};
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests;
 pub const NS_MIN_SIZE: usize = 24;
@@ -165,6 +167,28 @@ pub enum NeighborState {
     Probe,
 }
 
+/// An accepted link-layer mapping or a reachability-only change.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum NeighborUpdate {
+    Learned {
+        mac: [u8; 6],
+        solicited: bool,
+        override_mac: bool,
+    },
+    Stale {
+        retained_mac: [u8; 6],
+    },
+}
+
+impl NeighborUpdate {
+    pub(crate) fn learned_mac(self) -> Option<[u8; 6]> {
+        match self {
+            Self::Learned { mac, .. } => Some(mac),
+            Self::Stale { .. } => None,
+        }
+    }
+}
+
 /// Neighbor Cache entry
 #[derive(Debug)]
 pub struct NeighborEntry {
@@ -289,6 +313,95 @@ impl NeighborCache {
             }
         } else {
             self.insert(NeighborEntry::new_stale(*ip, mac, timestamp));
+        }
+    }
+
+    fn observe_advertisement(
+        &mut self,
+        target: &Ipv6Address,
+        mac: Option<[u8; 6]>,
+        solicited: bool,
+        override_mac: bool,
+        now: u64,
+    ) -> Option<NeighborUpdate> {
+        let entry = self.lookup_mut(target)?;
+        if entry.timestamp > now {
+            return None;
+        }
+        if entry.state == NeighborState::Incomplete {
+            entry.mac = mac?;
+        } else if let Some(mac) = mac.filter(|mac| *mac != entry.mac) {
+            if !override_mac {
+                if entry.state != NeighborState::Reachable {
+                    return None;
+                }
+                entry.state = NeighborState::Stale;
+                entry.timestamp = now;
+                return Some(NeighborUpdate::Stale {
+                    retained_mac: entry.mac,
+                });
+            }
+            entry.mac = mac;
+        } else if !solicited {
+            return None;
+        }
+        entry.state = if solicited {
+            NeighborState::Reachable
+        } else {
+            NeighborState::Stale
+        };
+        entry.timestamp = now;
+        entry.probes_sent = 0;
+        Some(NeighborUpdate::Learned {
+            mac: entry.mac,
+            solicited,
+            override_mac,
+        })
+    }
+
+    pub(crate) fn apply_peer_update(
+        &mut self,
+        target: &Ipv6Address,
+        update: NeighborUpdate,
+        observed_at: u64,
+    ) -> bool {
+        match update {
+            NeighborUpdate::Learned {
+                mac,
+                solicited,
+                override_mac,
+            } => {
+                if self.lookup(target).is_none() {
+                    let entry = if solicited {
+                        NeighborEntry::new_reachable(*target, mac, observed_at)
+                    } else {
+                        NeighborEntry::new_stale(*target, mac, observed_at)
+                    };
+                    self.insert(entry);
+                    true
+                } else {
+                    self.observe_advertisement(
+                        target,
+                        Some(mac),
+                        solicited,
+                        override_mac,
+                        observed_at,
+                    )
+                    .and_then(NeighborUpdate::learned_mac)
+                    .is_some()
+                }
+            }
+            NeighborUpdate::Stale { retained_mac } => {
+                if let Some(entry) = self.lookup_mut(target)
+                    && entry.state == NeighborState::Reachable
+                    && entry.mac == retained_mac
+                    && entry.timestamp <= observed_at
+                {
+                    entry.state = NeighborState::Stale;
+                    entry.timestamp = observed_at;
+                }
+                false
+            }
         }
     }
 
@@ -433,7 +546,7 @@ impl Default for NeighborCache {
 
 /// NDP processing result
 #[derive(Debug)]
-pub enum NdpResult {
+pub(crate) enum NdpResult {
     /// Send a Neighbor Advertisement in reply to NS
     SendNeighborAdvertisement {
         dst: Ipv6Address,
@@ -446,23 +559,18 @@ pub enum NdpResult {
         target: Ipv6Address,
         our_mac: [u8; 6],
     },
-    /// Neighbor info learned (from NA or NS source)
-    NeighborUpdated { ip: Ipv6Address, mac: [u8; 6] },
+    NeighborUpdated {
+        ip: Ipv6Address,
+        update: NeighborUpdate,
+    },
     /// Router Advertisement received (prefix/gateway info)
     RouterAdvertisement {
         router: Ipv6Address,
         router_lifetime_secs: u16,
         prefixes: Vec<NdpOption>,
     },
-    /// Redirect received (RFC 4861)
-    Redirect {
-        target: Ipv6Address,
-        destination: Ipv6Address,
-    },
     /// Nothing to do
     None,
-    /// Processing error
-    Error,
 }
 
 /// NDP message processor
