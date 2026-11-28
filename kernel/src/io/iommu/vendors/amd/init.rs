@@ -18,7 +18,7 @@ use crate::mm::phys::frame_allocator::alloc_contiguous_frames;
 use crate::mm::types::PAGE_SIZE_4K;
 use crate::mm::virt::mapping::phys_to_virt;
 use crate::sync::PoisonLock;
-use acpi_driver::ivrs::IvhdDeviceEntry;
+use acpi_driver::ivrs::{IvhdDeviceEntry, IvhdInfo};
 
 use super::cmd;
 use super::device_table::AmdDeviceTable;
@@ -199,15 +199,44 @@ pub(super) fn init_device_tables(
     Ok(tables)
 }
 
+/// One firmware-described PCI function owns each register aperture. Some
+/// firmware publishes a more expressive IVHD alongside its fallback block.
+fn select_ivhd_units(ivhds: &[IvhdInfo]) -> Result<Vec<&IvhdInfo>, IommuError> {
+    let mut selected: Vec<&IvhdInfo> = Vec::new();
+    selected
+        .try_reserve_exact(ivhds.len())
+        .map_err(|_| IommuError::OutOfMemory)?;
+    for candidate in ivhds {
+        let existing = selected.iter_mut().find(|unit| {
+            unit.pci_segment == candidate.pci_segment && unit.device_id == candidate.device_id
+        });
+        if let Some(unit) = existing {
+            if unit.iommu_base != candidate.iommu_base
+                || unit.capability_offset != candidate.capability_offset
+                || (unit.block_type == candidate.block_type && *unit != candidate)
+            {
+                return Err(IommuError::FirmwareScope);
+            }
+            if candidate.block_type > unit.block_type {
+                *unit = candidate;
+            }
+        } else {
+            selected.push(candidate);
+        }
+    }
+    Ok(selected)
+}
+
 /// Collect AmdIommuUnit entries from parsed IVRS IVHD structures.
 fn collect_ivhd_units(
     ivrs_info: &acpi_driver::ivrs::IvrsInfo,
 ) -> Result<Vec<AmdIommuUnit>, IommuError> {
+    let descriptions = select_ivhd_units(&ivrs_info.ivhds)?;
     let mut units = Vec::new();
     units
-        .try_reserve_exact(ivrs_info.ivhds.len())
+        .try_reserve_exact(descriptions.len())
         .map_err(|_| IommuError::OutOfMemory)?;
-    for ivhd in &ivrs_info.ivhds {
+    for ivhd in descriptions {
         let (mapping, pci) = crate::resource_registry::mmio::acquire_amd_iommu(ivhd)
             .map_err(IommuError::RegisterMapping)?;
         let registers = super::registers::AmdRegisters::new(mapping)?;
@@ -288,4 +317,46 @@ pub fn init_iommu_from_ivrs(ivrs: &[u8], _config: IommuConfig) -> Result<(), Iom
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ivhd(block_type: u8, device_id: u16, iommu_base: u64) -> IvhdInfo {
+        IvhdInfo {
+            block_type,
+            flags: 0,
+            length: if block_type == 0x10 { 28 } else { 44 },
+            device_id,
+            capability_offset: 0x40,
+            iommu_base,
+            pci_segment: 0,
+            iommu_info: 0,
+            iommu_feature: 0,
+            device_entries: alloc::vec![IvhdDeviceEntry::All { flags: 0 }],
+        }
+    }
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn ivhd_alternatives_share_one_hardware_owner() {
+        let fallback = ivhd(0x10, 2, 0xfed8_0000);
+        let extended = ivhd(0x11, 2, 0xfed8_0000);
+        let other_unit = ivhd(0x10, 3, 0xfed9_0000);
+        for entries in [
+            [fallback.clone(), extended.clone(), other_unit.clone()],
+            [extended.clone(), fallback.clone(), other_unit.clone()],
+        ] {
+            assert_eq!(
+                select_ivhd_units(&entries),
+                Ok(alloc::vec![&extended, &other_unit])
+            );
+        }
+        let conflicting = ivhd(0x40, 2, 0xfeda_0000);
+        assert_eq!(
+            select_ivhd_units(&[fallback, conflicting]),
+            Err(IommuError::FirmwareScope)
+        );
+    }
 }
