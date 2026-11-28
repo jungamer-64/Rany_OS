@@ -101,7 +101,7 @@ fn observe_fault(fault_high: u64, expected_domain_index: Option<usize>) {
     controller
         .device_bindings
         .lock()
-        .expect("device registry")
+        .unwrap_or_else(|_| panic!("device registry"))
         .insert(device, DeviceBinding::Attached(context));
     let observation = Arc::new(Observation {
         event: PoisonLock::new(None),
@@ -151,7 +151,7 @@ fn observe_fault(fault_high: u64, expected_domain_index: Option<usize>) {
     let Some(DeviceBinding::Attached(context)) = controller
         .device_bindings
         .lock()
-        .expect("device registry")
+        .unwrap_or_else(|_| panic!("device registry"))
         .remove(&device)
     else {
         panic!("retained context owner");
@@ -226,8 +226,11 @@ pub(crate) fn context_publication_retains_owner() -> bool {
 
     // No register ever received RTADDR, so the fixture can release the RAM.
     let hw = core::mem::take(&mut *controller.hardware.lock().unwrap());
-    let Some(DeviceBinding::Revoking(context)) =
-        controller.device_bindings.lock().unwrap().remove(&device)
+    let Some(DeviceBinding::Revoking(context)) = controller
+        .device_bindings
+        .lock()
+        .unwrap_or_else(|_| panic!("device registry poisoned"))
+        .remove(&device)
     else {
         panic!("failed detach must retain the context owner");
     };

@@ -134,7 +134,7 @@ fn test_get_domain_for_device_poisoned_returns_hw_error() {
     let held = ctrl
         .device_bindings
         .lock()
-        .expect("unpoisoned fixture lock");
+        .unwrap_or_else(|_| panic!("unpoisoned fixture lock"));
     set_panicking(true);
     drop(held);
     set_panicking(false);

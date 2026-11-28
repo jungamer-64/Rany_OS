@@ -144,7 +144,10 @@ pub(crate) async fn masked_mapping_retirement() -> bool {
     // binding only, so no device can access the fixture RAM.
     let device = DeviceId::new(u16::MAX, 0, 0, 0);
     {
-        let mut bindings = controller.device_bindings.lock().expect("device bindings");
+        let mut bindings = controller
+            .device_bindings
+            .lock()
+            .unwrap_or_else(|_| panic!("device bindings"));
         assert!(!bindings.contains_key(&device));
         bindings.insert(
             device,
@@ -161,7 +164,7 @@ pub(crate) async fn masked_mapping_retirement() -> bool {
     let prior = controller
         .device_bindings
         .lock()
-        .expect("device bindings")
+        .unwrap_or_else(|_| panic!("device bindings"))
         .remove(&device);
     assert!(matches!(prior, Some(DeviceBinding::Attached(_))));
     drop(prior);
