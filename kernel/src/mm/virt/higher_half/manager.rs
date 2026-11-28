@@ -1317,17 +1317,28 @@ pub(crate) enum FaultPageError {
     Unmapped,
 }
 
+#[cfg(target_os = "none")]
+const PAGE_FAULT_LOCK_ATTEMPTS: usize = 65_536;
+
 /// Restores a NUMA hint or observes a leaf already restored by a peer.
 /// A synchronous fault may have interrupted the page-table lock owner.
+/// The bounded retry lets a peer finish a short update while preserving a
+/// terminal path if the lock is retained by the faulting context.
 #[cfg(target_os = "none")]
 pub(crate) fn try_restore_fault_page(
     virt: VirtAddr,
 ) -> Result<Option<crate::mm::types::FrameIndex>, FaultPageError> {
     use crate::sync::poison_lock::TryLockError;
-    let guard = PAGE_TABLE_MANAGER.try_lock().map_err(|cause| match cause {
-        TryLockError::WouldBlock => FaultPageError::Busy,
-        TryLockError::Poisoned(_) => FaultPageError::Unavailable,
-    })?;
+    let guard = (0..PAGE_FAULT_LOCK_ATTEMPTS)
+        .find_map(|_| match PAGE_TABLE_MANAGER.try_lock() {
+            Err(TryLockError::WouldBlock) => {
+                core::hint::spin_loop();
+                None
+            }
+            acquisition => Some(acquisition),
+        })
+        .ok_or(FaultPageError::Busy)?
+        .map_err(|_| FaultPageError::Unavailable)?;
     let manager = guard.as_ref().ok_or(FaultPageError::Unavailable)?;
     let walker = PageTableWalker::new(get_cr3(), &manager.mapper);
     // SAFETY: the guard retains exclusive software mutation authority.
