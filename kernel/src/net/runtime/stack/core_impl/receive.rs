@@ -376,85 +376,27 @@ impl NetworkStack {
                 mtu,
                 quoted_packet,
             } => {
-                // SECURITY: RFC 8201 / RFC 5927 に従い、ICMPv6 message が
-                // 自スタックの送信済み packet と active connection を引用していることを検証する。
-                let mut is_our_packet = false;
-                if let Some(config) = self
+                let local = self
                     .interface_config_or_runtime(ingress_if_id)
-                    .and_then(|cfg| cfg.ipv6)
-                    && config
-                        .addresses
-                        .assigned()
-                        .any(|address| address == quoted_src)
-                {
-                    is_our_packet = true;
-                }
-
-                if is_our_packet {
-                    // Further validation: check transport layer (ports/sequence numbers)
-                    if let Some((final_proto, transport_payload)) =
-                        crate::net::payload::ipv6_transport_payload(&quoted_packet)
-                    {
-                        match final_proto {
-                            IpProtocol::Tcp => {
-                                if let Some(header) = transport_payload.read_array::<8>(0) {
-                                    let src_port = u16::from_be_bytes([header[0], header[1]]);
-                                    let dst_port = u16::from_be_bytes([header[2], header[3]]);
-                                    let seq_num = u32::from_be_bytes([
-                                        header[4], header[5], header[6], header[7],
-                                    ]);
-
-                                    use crate::net::l4::tcp::EndpointAddr as TcpEndpointAddr;
-                                    let local_addr =
-                                        TcpEndpointAddr::new_v6(quoted_src.octets(), src_port);
-                                    let remote_addr =
-                                        TcpEndpointAddr::new_v6(dst.octets(), dst_port);
-
-                                    if !tcp_table_in(runtime).validate_icmp_sequence(
-                                        ingress_if_id,
-                                        local_addr,
-                                        remote_addr,
-                                        seq_num,
-                                    ) {
-                                        log::warn!(
-                                            "[NET] ICMPv6: PMTU error for {} rejected due to invalid TCP seq",
-                                            dst
-                                        );
-                                        return;
-                                    }
-                                }
-                            }
-                            IpProtocol::Udp => {
-                                if let Some(header) = transport_payload.read_array::<4>(0) {
-                                    let src_port = u16::from_be_bytes([header[0], header[1]]);
-                                    let has_udp_port =
-                                        crate::net::l4::socket::has_udp_port_in(runtime, src_port);
-                                    if !has_udp_port {
-                                        log::warn!(
-                                            "[NET] ICMPv6: PMTU error for {} rejected (no UDP socket on port {})",
-                                            dst,
-                                            src_port
-                                        );
-                                        return;
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    log::info!("ICMPv6: Packet Too Big for {}, MTU={}", dst, mtu);
-                    // Update IPv6 Path MTU cache (RFC 8201)
-                    let current_time = self.current_time();
-                    if let Some(state) = self.interfaces.get_mut(&ingress_if_id) {
-                        state.ipv6_pmtu_cache.update(dst, mtu, current_time);
-                    }
-                } else {
-                    log::warn!(
-                        "ICMPv6: Packet Too Big for {} rejected (quoted src {} is not local)",
+                    .and_then(|config| config.ipv6)
+                    .is_some_and(|config| {
+                        config.addresses.assigned().any(|addr| addr == quoted_src)
+                    });
+                if !local
+                    || !matches_ipv6_pmtu_quote(
+                        runtime,
+                        ingress_if_id,
+                        quoted_src,
                         dst,
-                        quoted_src
-                    );
+                        mtu,
+                        &quoted_packet,
+                    )
+                {
+                    return;
+                }
+                let now = self.current_time();
+                if let Some(state) = self.interfaces.get_mut(&ingress_if_id) {
+                    state.ipv6_pmtu_cache.update(dst, mtu, now);
                 }
             }
 
@@ -841,5 +783,103 @@ impl NetworkStack {
         }
 
         self.send_pending_igmp_reports();
+    }
+}
+
+/// PTB quotes can end before the original datagram ends, but must include
+/// enough of a supported transport to associate the report with local traffic.
+fn matches_ipv6_pmtu_quote(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+    src: Ipv6Address,
+    dst: Ipv6Address,
+    mtu: u32,
+    packet: &PacketPayload,
+) -> bool {
+    use crate::net::l4::EndpointAddr;
+
+    let view = PacketPayloadView::new(packet);
+    let Some([version, _, _, _, len_hi, len_lo]) = view.read_array::<6>(0) else {
+        return false;
+    };
+    let original_len = u32::from(u16::from_be_bytes([len_hi, len_lo])) + 40;
+    if version >> 4 != 6 || mtu < 1280 || mtu >= original_len {
+        return false;
+    }
+    let Some((protocol, transport)) = crate::net::payload::ipv6_transport_payload(packet) else {
+        return false;
+    };
+    // Do not interpret bytes past the end of the original IP payload as transport.
+    let offset = view.total_len() - transport.total_len();
+    if offset + 8 > original_len as usize {
+        return false;
+    }
+    let Some([sh, sl, dh, dl, a, b, c, d]) = transport.read_array::<8>(0) else {
+        return false;
+    };
+    let local_port = u16::from_be_bytes([sh, sl]);
+    let remote_port = u16::from_be_bytes([dh, dl]);
+    match protocol {
+        IpProtocol::Tcp => tcp_table_in(runtime).validate_icmp_sequence(
+            if_id,
+            EndpointAddr::new_v6(src.octets(), local_port),
+            EndpointAddr::new_v6(dst.octets(), remote_port),
+            u32::from_be_bytes([a, b, c, d]),
+        ),
+        IpProtocol::Udp => {
+            let udp_len = usize::from(u16::from_be_bytes([a, b]));
+            udp_len >= 8
+                && offset + udp_len == original_len as usize
+                && [c, d] != [0, 0]
+                && remote_port != 0
+                && crate::net::l4::socket::find_udp_by_port_in(runtime, local_port, if_id).is_some()
+        }
+        _ => false,
+    }
+}
+
+#[cfg(all(test, any(feature = "std", target_os = "linux")))]
+mod tests {
+    use super::*;
+    use crate::net::l4::test_support::packet_fixture_with_data;
+    use crate::net::l4::udp::UdpEndpoint;
+    use crate::net::types::InterfaceScope;
+
+    #[test]
+    fn ipv6_pmtu_requires_transport_evidence_on_the_ingress_interface() {
+        let runtime = crate::net::runtime::create_runtime().expect("isolated runtime");
+        let if_id = NetIfId(1);
+        let local = Ipv6Address::from_eui64(&[2, 0, 0, 0, 0, 1]);
+        let remote = Ipv6Address::from_eui64(&[2, 0, 0, 0, 0, 2]);
+        let _endpoint = UdpEndpoint::bind_in(runtime, InterfaceScope::Pinned(if_id), 12345, None)
+            .expect("UDP endpoint");
+
+        let mut quote = [0u8; 48];
+        quote[0] = 0x60;
+        quote[4..6].copy_from_slice(&1460u16.to_be_bytes());
+        quote[6] = u8::from(IpProtocol::Udp);
+        quote[8..24].copy_from_slice(local.as_bytes());
+        quote[24..40].copy_from_slice(remote.as_bytes());
+        quote[40..42].copy_from_slice(&12345u16.to_be_bytes());
+        quote[42..44].copy_from_slice(&53u16.to_be_bytes());
+        quote[44..46].copy_from_slice(&1460u16.to_be_bytes());
+        quote[46..48].copy_from_slice(&1u16.to_be_bytes());
+
+        let matches = |interface, mtu, bytes: &[u8]| {
+            let packet = PacketPayload::try_single(packet_fixture_with_data(bytes)).expect("quote");
+            matches_ipv6_pmtu_quote(runtime, interface, local, remote, mtu, &packet)
+        };
+        assert!(matches(if_id, 1280, &quote));
+        assert!(!matches(NetIfId(2), 1280, &quote));
+        assert!(!matches(if_id, 1279, &quote));
+        assert!(!matches(if_id, 1500, &quote));
+        assert!(!matches(if_id, 1280, &quote[..44]));
+        quote[6] = u8::from(IpProtocol::Tcp);
+        assert!(!matches(if_id, 1280, &quote[..47]));
+        assert!(!matches(if_id, 1280, &quote));
+        quote[6] = u8::from(IpProtocol::Icmpv6);
+        assert!(!matches(if_id, 1280, &quote));
+        quote[6] = 0; // Extension header with no complete transport in the quote.
+        assert!(!matches(if_id, 1280, &quote[..41]));
     }
 }
