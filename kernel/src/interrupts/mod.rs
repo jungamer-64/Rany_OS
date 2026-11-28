@@ -291,6 +291,12 @@ pub fn init() {
 
     // 3. IDT のロード
     IDT.call_once(build_idt).load();
+    #[cfg(target_os = "none")]
+    {
+        let apic = crate::drivers::apic::local_apic()
+            .expect("the bootstrap local APIC must be ready before NMI admission");
+        crate::panic_handler::admit_current_cpu(apic);
+    }
 }
 
 /// 割り込みを有効化
@@ -300,7 +306,7 @@ pub fn init() {
 pub fn enable_interrupts() {
     load_idt_for_current_cpu().unwrap_or_else(|error| panic!("cannot enable interrupts: {error}"));
     #[cfg(target_os = "none")]
-    crate::panic_handler::admit_current_cpu();
+    crate::panic_handler::stop_if_fatal_requested();
     x86_64::instructions::interrupts::enable();
 }
 

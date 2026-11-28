@@ -1,7 +1,7 @@
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use crate::cpu::{CpuId, CurrentCpu, MAX_POSSIBLE_CPUS};
-use crate::drivers::apic::{self, ApicDestination};
+use crate::drivers::apic::{self, ApicDestination, LocalApic};
 
 const UNBOUND_OWNER: usize = MAX_POSSIBLE_CPUS;
 const NO_OWNER: usize = UNBOUND_OWNER + 1;
@@ -39,7 +39,16 @@ impl FatalOwner {
     pub(super) fn stop_peers(self) -> StopOutcome {
         let mut targeted = [false; MAX_POSSIBLE_CPUS];
         let mut delivery_errors = 0;
-        let sender = apic::local_apic().ok();
+        // A fault can occur in an AP before its local APIC mode is initialized.
+        // Only a published endpoint proves that this CPU can access that backend.
+        let sender = if ENDPOINTS
+            .get(self.index)
+            .is_some_and(|endpoint| endpoint.load(Ordering::Relaxed) >= APIC_ID_OFFSET)
+        {
+            apic::local_apic().ok()
+        } else {
+            None
+        };
         for (index, endpoint) in ENDPOINTS.iter().enumerate() {
             if index == self.index {
                 continue;
@@ -89,15 +98,13 @@ pub(super) struct StopOutcome {
     pub(super) delivery_errors: usize,
 }
 
-pub(crate) fn admit_current_cpu() {
-    let index = current_index();
-    let Some(endpoint) = ENDPOINTS.get(index) else {
-        return;
-    };
-    if endpoint.load(Ordering::Relaxed) == ABSENT
-        && let Ok(apic) = apic::local_apic()
-        && apic.is_enabled()
-    {
+/// Publishes the endpoint after the CPU has loaded its NMI gate and enabled its
+/// local APIC. This precedes admission to ordinary execution, even with IF clear.
+pub(crate) fn admit_current_cpu(apic: &LocalApic) {
+    let current = CurrentCpu::acquire().expect("NMI admission requires a bound CPU");
+    let index = index(current.id());
+    let endpoint = &ENDPOINTS[index];
+    if endpoint.load(Ordering::Relaxed) == ABSENT {
         endpoint.store(u64::from(apic.id()) + APIC_ID_OFFSET, Ordering::SeqCst);
     }
 

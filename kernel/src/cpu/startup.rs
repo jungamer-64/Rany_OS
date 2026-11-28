@@ -580,6 +580,8 @@ pub(crate) fn start_boot_cpus() -> CpuBootSummary {
     let mut failed = 0usize;
     for id in inventory.enabled.iter().copied() {
         let result = online_cpu(id);
+        #[cfg(target_os = "none")]
+        crate::panic_handler::stop_if_fatal_requested();
         if let Err(reason) = result {
             failed += 1;
             log::warn!("CPU {} startup rejected: {:?}", id, reason);
@@ -957,6 +959,8 @@ fn ap_entry(id: CpuId) -> ! {
         resource.publish(ApStartupSignal::ApicIdentityMismatch);
         fail_stop_ap();
     }
+    #[cfg(target_os = "none")]
+    crate::panic_handler::admit_current_cpu(local_apic);
     resource.publish(ApStartupSignal::LocalApicReady);
 
     crate::mm::sync::tlb::enter_lazy_mode();
