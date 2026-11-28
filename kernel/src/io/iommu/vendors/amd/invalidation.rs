@@ -13,11 +13,8 @@ use crate::io::iommu::types::{DeviceId, IommuError};
 use super::AmdIommuDriver;
 use super::cmd;
 
-#[cfg(not(test))]
 use super::fault::AMD_CMD_WAITERS;
-#[cfg(not(test))]
 use core::future::poll_fn;
-#[cfg(not(test))]
 use core::task::Poll;
 
 // ---------------------------------------------------------------------------
@@ -59,31 +56,33 @@ impl AmdCommandWaitToken {
     }
 
     pub(super) async fn wait_async(self) -> Result<(), IommuError> {
-        #[cfg(test)]
-        {
-            let _ = self;
-            return Ok(());
-        }
+        use core::future::Future;
 
-        #[cfg(not(test))]
-        {
-            let mut polls = 0u64;
-            let token = self;
-            poll_fn(|cx| {
-                if token.is_complete() {
-                    return Poll::Ready(Ok(()));
-                }
-                polls += 1;
-                if polls > AMD_CMD_WAIT_MAX_POLLS {
-                    return Poll::Ready(Err(IommuError::Timeout));
+        for _ in 0..100 {
+            let mut tick = core::pin::pin!(crate::drivers::time::sleep_ms(1));
+            let completed = poll_fn(|cx| {
+                if self.is_complete() {
+                    return Poll::Ready(Ok(true));
                 }
                 AMD_CMD_WAITERS.register(cx.waker());
-                if token.is_complete() {
-                    return Poll::Ready(Ok(()));
+                if self.is_complete() {
+                    return Poll::Ready(Ok(true));
                 }
-                Poll::Pending
+                match tick.as_mut().poll(cx) {
+                    Poll::Ready(Ok(())) => Poll::Ready(Ok(false)),
+                    Poll::Ready(Err(_)) => Poll::Ready(Err(IommuError::RuntimeUnavailable)),
+                    Poll::Pending => Poll::Pending,
+                }
             })
-            .await
+            .await?;
+            if completed {
+                return Ok(());
+            }
+        }
+        if self.is_complete() {
+            Ok(())
+        } else {
+            Err(IommuError::Timeout)
         }
     }
 }
@@ -125,8 +124,15 @@ impl AmdCommandState {
         cmd: cmd::AmdCommand,
         interrupt: bool,
     ) -> Result<AmdCommandWaitToken, IommuError> {
-        let next_seq = self.seq.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
         self.submit(cmd)?;
+        self.completion(interrupt)
+    }
+
+    pub(super) fn completion(
+        &mut self,
+        interrupt: bool,
+    ) -> Result<AmdCommandWaitToken, IommuError> {
+        let next_seq = self.seq.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
         self.submit(cmd::AmdCommand::completion_wait(
             self.sync_phys,
             next_seq,
@@ -139,17 +145,7 @@ impl AmdCommandState {
     }
 
     pub(super) fn submit_and_wait(&mut self, cmd: cmd::AmdCommand) -> Result<(), IommuError> {
-        #[cfg(test)]
-        {
-            self.submit(cmd)?;
-            return Ok(());
-        }
-
-        #[cfg(not(test))]
-        {
-            let token = self.submit_and_wait_token(cmd, false)?;
-            token.wait_blocking()
-        }
+        self.submit_and_wait_token(cmd, false)?.wait_blocking()
     }
 }
 
@@ -176,7 +172,6 @@ impl AmdIommuDriver {
         let state = self
             .cmd_states
             .get(unit_idx)
-            .and_then(|state| state.as_ref())
             .ok_or(IommuError::NotSupported)?;
 
         let mut guard = match state.lock() {
@@ -194,7 +189,6 @@ impl AmdIommuDriver {
         let state = self
             .cmd_states
             .get(unit_idx)
-            .and_then(|state| state.as_ref())
             .ok_or(IommuError::NotSupported)?;
 
         let token = {
@@ -209,459 +203,160 @@ impl AmdIommuDriver {
         token.wait_async().await
     }
 
-    pub(super) fn invalidate_all_entries(&self) -> Result<(), IommuError> {
-        if self.units.is_empty() {
-            return Err(IommuError::NotSupported);
-        }
-        let mut tokens = Vec::new();
-        tokens
-            .try_reserve_exact(self.units.len())
-            .map_err(|_| IommuError::OutOfMemory)?;
-
-        for idx in 0..self.units.len() {
-            let res = self.with_cmd_state(idx, |state| {
-                let efr = state.buffer.registers.extended_features();
-                // AMD-Vi §2.4.8: without IASup this opcode is illegal, not a flush.
-                if efr & super::registers::EFR_IA_SUP == 0 {
-                    return Err(IommuError::NotSupported);
-                }
-                state.submit_and_wait_token(cmd::AmdCommand::invalidate_all(), false)
-            })?;
-            tokens.push(res);
-        }
-
-        for token in tokens {
-            token.wait_blocking()?;
-        }
-
-        Ok(())
-    }
-
-    pub(crate) fn invalidate_device_entry(&self, device: DeviceId) -> Result<(), IommuError> {
-        let unit_idx = self
-            .find_unit_index_for_device(device)
-            .ok_or(IommuError::DeviceNotFound)?;
-        let devid = device.requester_id();
-        self.with_cmd_state(unit_idx, |state| {
-            state.submit_and_wait(cmd::AmdCommand::invalidate_device_entry(devid))
+    pub(super) fn invalidate_requesters(
+        &self,
+        unit: usize,
+        requesters: &[u16],
+    ) -> Result<(), IommuError> {
+        self.with_cmd_state(unit, |state| {
+            for &requester in requesters {
+                state.submit(cmd::AmdCommand::invalidate_device_entry(requester))?;
+            }
+            state.completion(false)?.wait_blocking()
         })
     }
 
-    pub(crate) fn invalidate_device_entry_by_devid(
+    pub(super) fn invalidate_requester_interrupts(
         &self,
-        segment: u16,
-        devid: u16,
+        unit: usize,
+        requesters: &[u16],
     ) -> Result<(), IommuError> {
-        let device = Self::device_id_from_devid(segment, devid);
-        self.invalidate_device_entry(device)
-    }
-
-    pub(crate) fn invalidate_interrupt_table(
-        &self,
-        segment: u16,
-        device_id: u16,
-    ) -> Result<(), IommuError> {
-        let device = Self::device_id_from_devid(segment, device_id);
-        let unit_idx = self
-            .find_unit_index_for_device(device)
-            .ok_or(IommuError::DeviceNotFound)?;
-        self.with_cmd_state(unit_idx, |state| {
-            state.submit_and_wait(cmd::AmdCommand::invalidate_interrupt_table(device_id))
+        self.with_cmd_state(unit, |state| {
+            for &requester in requesters {
+                state.submit(cmd::AmdCommand::invalidate_interrupt_table(requester))?;
+            }
+            state.completion(false)?.wait_blocking()
         })
     }
 
-    fn device_id_from_devid(segment: u16, devid: u16) -> DeviceId {
-        let bus = (devid >> 8) as u8;
-        let devfn = (devid & 0xff) as u8;
-        let device = (devfn >> 3) & 0x1f;
-        let function = devfn & 0x07;
-        DeviceId::new(segment, bus, device, function)
-    }
-
-    pub(super) fn invalidate_iotlb_pages(
+    pub(super) fn invalidate_unit_domain(
         &self,
-        device: DeviceId,
-        iova: u64,
-        size: u64,
+        unit: usize,
+        domain: u16,
     ) -> Result<(), IommuError> {
-        let unit_idx = self
-            .find_unit_index_for_device(device)
-            .ok_or(IommuError::DeviceNotFound)?;
-        let devid = device.requester_id();
-
-        self.with_cmd_state(unit_idx, |state| {
-            state.submit_and_wait(cmd::AmdCommand::invalidate_iotlb_pages(
-                devid, 0, iova, size, None,
+        self.with_cmd_state(unit, |state| {
+            state.submit_and_wait(cmd::AmdCommand::invalidate_iommu_pages(
+                domain,
+                0,
+                u64::MAX,
+                None,
             ))
         })
     }
 
-    pub(super) async fn invalidate_iotlb_pages_async(
-        &self,
-        device: DeviceId,
-        iova: u64,
-        size: u64,
-    ) -> Result<(), IommuError> {
-        let unit_idx = self
-            .find_unit_index_for_device(device)
-            .ok_or(IommuError::DeviceNotFound)?;
-        let devid = device.requester_id();
-        self.submit_cmd_async(
-            unit_idx,
-            cmd::AmdCommand::invalidate_iotlb_pages(devid, 0, iova, size, None),
-        )
-        .await
-    }
-
-    pub(super) async fn invalidate_domain_pages_async(
+    fn invalidate_domain_pages(
         &self,
         domain_id: u16,
         iova: u64,
         size: u64,
     ) -> Result<(), IommuError> {
-        let mut has_state = false;
-        let mut futures = Vec::new();
-
-        for idx in 0..self.cmd_states.len() {
-            if self.cmd_states[idx].is_none() {
-                continue;
-            }
-            has_state = true;
-
-            let cmd = cmd::AmdCommand::invalidate_iommu_pages(domain_id, iova, size, None);
-            futures.push(self.submit_cmd_async(idx, cmd));
+        if self.cmd_states.is_empty() {
+            return Err(IommuError::NotPresent);
         }
-
-        if !has_state {
-            return Err(IommuError::NotSupported);
-        }
-
-        // Wait for all units to complete
-        let mut last_err = None;
-        for f in futures {
-            if let Err(e) = f.await {
-                last_err = Some(e);
-            }
-        }
-
-        if let Some(err) = last_err {
-            Err(err)
-        } else {
-            Ok(())
-        }
-    }
-
-    pub(super) fn invalidate_domain_pages(
-        &self,
-        domain_id: u16,
-        iova: u64,
-        size: u64,
-    ) -> Result<(), IommuError> {
-        let mut has_state = false;
-        let mut tokens = Vec::new();
-
-        // 1. Submit invalidation commands to all units
-        for idx in 0..self.cmd_states.len() {
-            if self.cmd_states[idx].is_none() {
-                continue;
-            }
-            has_state = true;
-
-            let res = self.with_cmd_state(idx, |state| {
+        let mut completions = Vec::new();
+        completions
+            .try_reserve_exact(self.cmd_states.len())
+            .map_err(|_| IommuError::MetadataAllocation)?;
+        for unit in 0..self.cmd_states.len() {
+            let token = self.with_cmd_state(unit, |state| {
                 state.submit_and_wait_token(
                     cmd::AmdCommand::invalidate_iommu_pages(domain_id, iova, size, None),
                     false,
                 )
             })?;
-            tokens.push(res);
+            completions.push(token);
         }
-
-        if !has_state {
-            return Err(IommuError::NotSupported);
-        }
-
-        // 2. Wait for all commands to complete
-        for token in tokens {
+        for token in completions {
             token.wait_blocking()?;
         }
-
         Ok(())
     }
 
-    // ========================================================================
-    // Flush Operations (for emergency isolation)
-    // ========================================================================
+    async fn invalidate_domain_pages_async(
+        &self,
+        domain_id: u16,
+        iova: u64,
+        size: u64,
+    ) -> Result<(), IommuError> {
+        if self.cmd_states.is_empty() {
+            return Err(IommuError::NotPresent);
+        }
+        for unit in 0..self.cmd_states.len() {
+            self.submit_cmd_async(
+                unit,
+                cmd::AmdCommand::invalidate_iommu_pages(domain_id, iova, size, None),
+            )
+            .await?;
+        }
+        Ok(())
+    }
 
-    /// Invalidate IOTLB entries for a specific domain.
+    pub(super) fn invalidate_domain_all(&self, domain_id: u16) -> Result<(), IommuError> {
+        self.invalidate_domain_pages(domain_id, 0, u64::MAX)
+    }
+
     pub(crate) fn invalidate_iotlb(
         &self,
         domain_id: u16,
         iova: Option<u64>,
-        any_ats: bool,
+        _any_ats: bool,
     ) -> Result<(), IommuError> {
-        // AMD-Vi uses INVALIDATE_IOMMU_PAGES command
-        // For emergency isolation, we invalidate all pages in the domain
-        self.invalidate_domain_all(domain_id)?;
-        if any_ats {
-            self.invalidate_domain_device_tlbs(domain_id, iova, None)?;
+        match iova {
+            Some(iova) => self.invalidate_domain_pages(domain_id, iova, 4096),
+            None => self.invalidate_domain_all(domain_id),
         }
-        // This domain's success cannot release another domain's retired IOVAs.
-        Ok(())
     }
 
-    /// Invalidate all IOTLB entries globally.
-    ///
-    /// # Errors
-    /// Propagates command or device-TLB failures. Success requires completion
-    /// from each participating unit and device.
     pub(crate) fn invalidate_iotlb_global(&self) -> Result<(), IommuError> {
-        self.invalidate_all_entries()?;
-        self.invalidate_global_device_tlbs()
-    }
-
-    /// Invalidate context cache globally.
-    pub(crate) fn invalidate_context_global(&self) -> Result<(), IommuError> {
-        // AMD-Vi uses device table entries; invalidation is done via
-        // INVALIDATE_DEVTAB_ENTRY command
-        // For global invalidation, we flush all known devices
-        // Context/device-table invalidation is not IOTLB retirement authority.
-        self.invalidate_all_device_entries()
-    }
-
-    /// Invalidate all pages in a domain.
-    pub(super) fn invalidate_domain_all(&self, domain_id: u16) -> Result<(), IommuError> {
-        let mut last_err = None;
-        let mut tokens = Vec::new();
-
-        // Submit invalidation commands to all units
-        for (idx, _unit) in self.units.iter().enumerate() {
-            if let Some(cmd_state) = self.cmd_states.get(idx).and_then(|s| s.as_ref()) {
-                match cmd_state.lock() {
-                    Ok(mut state) => {
-                        let command = cmd::AmdCommand::invalidate_iommu_pages(
-                            domain_id,
-                            0,        // address
-                            u64::MAX, // size = all pages
-                            None,     // pasid
-                        );
-                        match state.submit_and_wait_token(command, false) {
-                            Ok(token) => tokens.push(token),
-                            Err(err) => last_err = Some(err),
-                        }
-                    }
-                    Err(_) => {
-                        log::error!(
-                            "[IOMMU][AMD-Vi] cmd_state lock poisoned during domain {} invalidation",
-                            domain_id
-                        );
-                        last_err = Some(IommuError::Poisoned);
-                    }
+        if self.units.is_empty() {
+            return Err(IommuError::NotPresent);
+        }
+        for (idx, unit) in self.units.iter().enumerate() {
+            if unit.registers.extended_features() & super::registers::EFR_IA_SUP != 0 {
+                self.with_cmd_state(idx, |state| {
+                    state.submit_and_wait(cmd::AmdCommand::invalidate_all())
+                })?;
+            } else {
+                // Cold start admits no firmware context. Every DID that can
+                // still be cached belongs to the registry until retirement.
+                let domains = self.domains.lock().map_err(|_| IommuError::Poisoned)?;
+                for &domain in domains.keys() {
+                    self.invalidate_unit_domain(idx, domain)?;
                 }
             }
         }
-
-        // Wait for all commands to complete
-        for token in tokens {
-            if let Err(err) = token.wait_blocking() {
-                last_err = Some(err);
-            }
-        }
-
-        if let Some(err) = last_err {
-            return Err(err);
-        }
         Ok(())
     }
 
-    /// Invalidate Device-TLBs for all devices belonging to a specific domain.
-    pub(crate) fn invalidate_domain_device_tlbs(
-        &self,
-        domain_id: u16,
-        iova: Option<u64>,
-        size: Option<u64>,
-    ) -> Result<(), IommuError> {
-        let device_domains = self
-            .device_domains
+    pub(crate) fn invalidate_context_global(&self) -> Result<(), IommuError> {
+        let bindings = self
+            .device_bindings
             .lock()
             .map_err(|_| IommuError::Poisoned)?;
-        for (&device, &did) in device_domains.iter() {
-            if did == domain_id {
-                // For ATS-aware invalidation, we must send INVALIDATE_IOTLB_PAGES to the device
-                match (iova, size) {
-                    (Some(iova_val), Some(size_val)) => {
-                        self.invalidate_iotlb_pages(device, iova_val, size_val)?;
-                    }
-                    _ => {
-                        self.invalidate_iotlb_pages(device, 0, u64::MAX)?;
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Invalidate Device-TLBs for all attached devices (global).
-    pub(crate) fn invalidate_global_device_tlbs(&self) -> Result<(), IommuError> {
-        let devices: Vec<DeviceId> = {
-            let device_domains = self
-                .device_domains
-                .lock()
-                .map_err(|_| IommuError::Poisoned)?;
-            let mut devices = Vec::new();
-            devices
-                .try_reserve_exact(device_domains.len())
-                .map_err(|_| IommuError::OutOfMemory)?;
-            devices.extend(device_domains.keys().copied());
-            devices
-        };
-
-        for device in devices {
-            self.invalidate_iotlb_pages(device, 0, u64::MAX)?;
-        }
-        Ok(())
-    }
-
-    /// Invalidate Device-TLBs for a specific domain asynchronously.
-    pub(super) async fn invalidate_domain_device_tlbs_async(
-        &self,
-        domain_id: u16,
-        iova: Option<u64>,
-        size: Option<u64>,
-    ) -> Result<(), IommuError> {
-        let mut futures = Vec::new();
-        {
-            let device_domains = self
-                .device_domains
-                .lock()
-                .map_err(|_| IommuError::Poisoned)?;
-            for (&device, &did) in device_domains.iter() {
-                if did == domain_id {
-                    let fut = match (iova, size) {
-                        (Some(iova_val), Some(size_val)) => {
-                            self.invalidate_iotlb_pages_async(device, iova_val, size_val)
-                        }
-                        _ => self.invalidate_iotlb_pages_async(device, 0, u64::MAX),
-                    };
-                    futures.push(fut);
-                }
-            }
-        }
-
-        let mut last_err = None;
-        for f in futures {
-            if let Err(e) = f.await {
-                last_err = Some(e);
-            }
-        }
-
-        if let Some(err) = last_err {
-            Err(err)
-        } else {
-            Ok(())
-        }
-    }
-
-    /// Invalidate all device table entries.
-    fn invalidate_all_device_entries(&self) -> Result<(), IommuError> {
-        let device_ids: Vec<u16> = match self.device_domains.lock() {
-            Ok(device_domains) => device_domains.keys().map(|d| d.bdf()).collect(),
-            Err(_) => return Err(IommuError::Poisoned),
-        };
-
-        let mut last_err = None;
-
-        for (idx, _unit) in self.units.iter().enumerate() {
-            if let Some(cmd_state) = self.cmd_states.get(idx).and_then(|s| s.as_ref()) {
-                match cmd_state.lock() {
-                    Ok(mut state) => {
-                        let sync_phys = state.sync_phys;
-                        for devid in &device_ids {
-                            let command = cmd::AmdCommand::invalidate_device_entry(*devid);
-                            if let Err(err) = state.submit(command) {
-                                last_err = Some(err);
-                                break;
-                            }
-                        }
-
-                        if last_err.is_none() {
-                            // Submit a completion wait and wait for it
-                            match state.submit_and_wait_token(
-                                cmd::AmdCommand::completion_wait(
-                                    sync_phys, 0, // Dummy
-                                    false,
-                                ),
-                                false,
-                            ) {
-                                Ok(token) => {
-                                    if let Err(err) = token.wait_blocking() {
-                                        last_err = Some(err);
-                                    }
-                                }
-                                Err(err) => {
-                                    last_err = Some(err);
-                                }
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        log::error!(
-                            "[IOMMU][AMD-Vi] cmd_state lock poisoned during all-device-entries invalidation"
-                        );
-                        last_err = Some(IommuError::Poisoned);
-                    }
-                }
-            }
-        }
-
-        if let Some(err) = last_err {
-            return Err(err);
+        for binding in bindings.values() {
+            let (unit, requesters) = binding.requesters();
+            self.invalidate_requesters(unit, requesters)?;
         }
         Ok(())
     }
 }
 
-// ---------------------------------------------------------------------------
-// IommuInvalidator implementation for AmdIommuDriver
-// ---------------------------------------------------------------------------
-
-use crate::io::iommu::common::domain::{
-    InvalidateFlags, InvalidateKind, InvalidateRequest, IommuInvalidator,
-};
+use crate::io::iommu::common::domain::{InvalidateKind, InvalidateRequest, IommuInvalidator};
 
 impl IommuInvalidator for AmdIommuDriver {
     fn process_invalidations(&self, requests: &[InvalidateRequest]) -> Result<(), IommuError> {
-        if requests.is_empty() {
-            return Ok(());
-        }
-
-        for req in requests {
-            // Check for ATS flush requirement across all kinds
-            let ats = req.flags.contains(InvalidateFlags::ATS_AWARE);
-
-            match req.kind {
+        // Every admitted AMD DTE has I=0: ATS and pretranslated transactions
+        // are rejected. COMPLETION_WAIT proves retirement of the IOMMU caches
+        // and DMA issued against the invalidated translations.
+        for request in requests {
+            match request.kind {
                 InvalidateKind::Pages { start_iova, bytes } => {
-                    // AMD-Vi invalidate_domain_pages iterates over all units
-                    self.invalidate_domain_pages(req.domain_id, start_iova, bytes)?;
-                    if ats {
-                        self.invalidate_domain_device_tlbs(
-                            req.domain_id,
-                            Some(start_iova),
-                            Some(bytes),
-                        )?;
-                    }
+                    self.invalidate_domain_pages(request.domain_id, start_iova, bytes)?;
                 }
-                InvalidateKind::Domain => {
-                    self.invalidate_domain_all(req.domain_id)?;
-                    if ats {
-                        self.invalidate_domain_device_tlbs(req.domain_id, None, None)?;
-                    }
-                }
-                InvalidateKind::Global => {
-                    self.invalidate_iotlb_global()?;
-                }
+                InvalidateKind::Domain => self.invalidate_domain_all(request.domain_id)?,
+                InvalidateKind::Global => self.invalidate_iotlb_global()?,
             }
         }
-
         Ok(())
     }
 
@@ -670,34 +365,17 @@ impl IommuInvalidator for AmdIommuDriver {
         request: InvalidateRequest,
     ) -> impl core::future::Future<Output = Result<(), IommuError>> + Send {
         async move {
-            let ats = request.flags.contains(InvalidateFlags::ATS_AWARE);
             match request.kind {
                 InvalidateKind::Pages { start_iova, bytes } => {
                     self.invalidate_domain_pages_async(request.domain_id, start_iova, bytes)
-                        .await?;
-                    if ats {
-                        self.invalidate_domain_device_tlbs_async(
-                            request.domain_id,
-                            Some(start_iova),
-                            Some(bytes),
-                        )
-                        .await?;
-                    }
+                        .await
                 }
                 InvalidateKind::Domain => {
                     self.invalidate_domain_pages_async(request.domain_id, 0, u64::MAX)
-                        .await?;
-                    if ats {
-                        self.invalidate_domain_device_tlbs_async(request.domain_id, None, None)
-                            .await?;
-                    }
+                        .await
                 }
-                InvalidateKind::Global => {
-                    // Fall back to sync path for now as global is rare
-                    self.invalidate_iotlb_global()?;
-                }
+                InvalidateKind::Global => self.invalidate_iotlb_global(),
             }
-            Ok(())
         }
     }
 }

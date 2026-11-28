@@ -47,11 +47,11 @@ use crate::io::iommu::runtime::registry::{get_iommu_driver, init_driver};
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 
 use self::device_table::AmdDeviceTable;
+use self::domain::AmdDeviceBinding;
 use self::domain::align_down;
 use self::domain::align_up;
 use self::event_log::AmdEventLog;
 use self::invalidation::AmdCommandState;
-use self::irt::{AmdUnitIrt, IRT_DEFAULT_SIZE_LOG2};
 use self::registers::*;
 
 // ---------------------------------------------------------------------------
@@ -195,10 +195,12 @@ impl AmdIvmdRange {
 pub struct AmdIommuDriver {
     pub(super) units: Vec<AmdIommuUnit>,
     pub(super) ivmd_ranges: Vec<AmdIvmdRange>,
-    pub(super) cmd_states: Vec<Option<PoisonLock<AmdCommandState>>>,
+    pub(super) cmd_states: Vec<PoisonLock<AmdCommandState>>,
     pub(super) event_logs: Vec<Option<AmdEventLog>>,
     pub(super) device_tables: HashMap<u16, AmdDeviceTable>,
     pub(super) domains: PoisonLock<HashMap<u16, AmdDomainInfo>>,
+    device_bindings: PoisonLock<HashMap<DeviceId, AmdDeviceBinding>>,
+    requester_aliases: HashMap<DeviceId, DeviceId>,
     pub(super) next_domain_id: AtomicU64,
     pub(super) page_table_pool: Arc<PageTablePool>,
     pub command_queue: Option<CommandQueue>,
@@ -206,6 +208,7 @@ pub struct AmdIommuDriver {
     pub(super) enabled: AtomicBool,
     pub(super) security_notifier: crate::sync::InitOnce<Arc<dyn SecurityNotifier>>,
     pub(super) max_addr_bits: u8,
+    interrupt_mode: irt::InterruptMode,
 }
 
 #[derive(Clone, Debug)]
@@ -221,10 +224,11 @@ impl AmdIommuDriver {
     pub(crate) fn new(
         units: Vec<AmdIommuUnit>,
         ivmd_ranges: Vec<AmdIvmdRange>,
-        cmd_states: Vec<Option<PoisonLock<AmdCommandState>>>,
+        cmd_states: Vec<PoisonLock<AmdCommandState>>,
         event_logs: Vec<Option<AmdEventLog>>,
         device_tables: HashMap<u16, AmdDeviceTable>,
     ) -> Result<Self, IommuError> {
+        let requester_aliases = domain::requester_aliases(&units)?;
         let page_table_pool = PageTablePool::new(crate::mm::numa::topology::num_nodes().max(1), 32);
         let max_addr_bits = units
             .iter()
@@ -297,20 +301,17 @@ impl AmdIommuDriver {
             },
         );
 
-        let mut interrupt_remap_tables = Vec::with_capacity(units.len());
-        for unit in &units {
-            match AmdUnitIrt::new(IRT_DEFAULT_SIZE_LOG2) {
-                Ok(irt) => interrupt_remap_tables.push(Some(PoisonLock::new(irt))),
-                Err(err) => {
-                    log::warn!(
-                        "AMD-Vi interrupt remap table allocation failed for unit @ {:#x}: {:?}",
-                        unit.base_addr,
-                        err
-                    );
-                    interrupt_remap_tables.push(None);
-                }
-            }
-        }
+        let x2apic = crate::drivers::apic::local_apic()
+            .is_ok_and(|apic| apic.mode() == crate::drivers::apic::ApicMode::X2Apic);
+        let interrupt_mode = if x2apic
+            && units
+                .iter()
+                .all(|unit| unit.registers.extended_features() & EFR_XT_SUP != 0)
+        {
+            irt::InterruptMode::X2Apic
+        } else {
+            irt::InterruptMode::Basic
+        };
 
         Ok(Self {
             units,
@@ -319,6 +320,8 @@ impl AmdIommuDriver {
             event_logs,
             device_tables,
             domains: PoisonLock::new(domain_map),
+            device_bindings: PoisonLock::new(HashMap::new()),
+            requester_aliases,
             next_domain_id: AtomicU64::new(1),
             page_table_pool,
             command_queue: Some(CommandQueue::new(None)?),
@@ -326,13 +329,14 @@ impl AmdIommuDriver {
             enabled: AtomicBool::new(false),
             security_notifier: crate::sync::InitOnce::new(),
             max_addr_bits,
+            interrupt_mode,
         })
     }
 
     pub(crate) fn register_driver(
         units: Vec<AmdIommuUnit>,
         ivmd_ranges: Vec<AmdIvmdRange>,
-        cmd_states: Vec<Option<PoisonLock<AmdCommandState>>>,
+        cmd_states: Vec<PoisonLock<AmdCommandState>>,
         event_logs: Vec<Option<AmdEventLog>>,
         device_tables: HashMap<u16, AmdDeviceTable>,
     ) -> Result<(), IommuError> {
@@ -394,77 +398,53 @@ impl AmdIommuDriver {
         self.enabled.load(Ordering::Acquire)
     }
 
-    /// Configure event log and IRT control bits for a single unit.
-    fn configure_event_and_irt(&self, idx: usize, unit: &AmdIommuUnit, control: &mut u64) {
-        if self
-            .event_logs
-            .get(idx)
-            .and_then(|log| log.as_ref())
-            .is_some()
-        {
-            if let Err(err) = self.program_event_log_interrupt(unit) {
-                log::warn!(
-                    "AMD-Vi event log interrupt init failed for unit @ {:#x}: {:?}",
-                    unit.base_addr,
-                    err
-                );
-                *control &= !CONTROL_EVT_INT_EN;
-            } else {
-                *control |= CONTROL_EVT_INT_EN;
-            }
-            *control |= CONTROL_EVT_LOG_EN;
-        } else {
-            *control &= !CONTROL_EVT_LOG_EN;
-            *control &= !CONTROL_EVT_INT_EN;
-        }
-        // Program IRT if available for this unit
-        if let Some(Some(irt_lock)) = self.interrupt_remap_tables.get(idx) {
-            match irt_lock.lock() {
-                Ok(irt) => {
-                    let base_reg = irt.table.base_register_value(irt.size_log2);
-                    unit.registers.program_interrupt_table(base_reg);
-                    *control |= CONTROL_INT_MAP_EN;
-                }
-                Err(_) => {
-                    log::warn!(
-                        "AMD-Vi IRT lock poisoned for unit @ {:#x}, skipping IR enable",
-                        unit.base_addr
-                    );
-                    *control &= !CONTROL_INT_MAP_EN;
-                }
-            }
-        } else {
-            *control &= !CONTROL_INT_MAP_EN;
-        }
-    }
-
+    /// Program only a stopped unit. Boot retains the registered driver and
+    /// its backing through command completion and any startup failure.
     pub(crate) fn enable(&self) -> Result<(), IommuError> {
-        for (idx, unit) in self.units.iter().enumerate() {
-            let table = self
-                .device_tables
-                .get(&unit.segment)
-                .ok_or(IommuError::NotPresent)?;
-            table.program(unit)?;
-
-            let mut control = CONTROL_IOMMU_EN;
-            if self
-                .cmd_states
-                .get(idx)
-                .and_then(|state| state.as_ref())
-                .is_some()
+        if self.is_enabled() {
+            return Ok(());
+        }
+        for unit in &self.units {
+            if unit.registers.control()
+                & (CONTROL_IOMMU_EN | CONTROL_CMDBUF_EN | CONTROL_EVT_LOG_EN)
+                != 0
             {
-                control |= CONTROL_CMDBUF_EN;
-            } else {
-                control &= !CONTROL_CMDBUF_EN;
+                return Err(IommuError::InUse);
             }
-            self.configure_event_and_irt(idx, unit, &mut control);
+        }
+        for (idx, unit) in self.units.iter().enumerate() {
+            let table = self.device_table_for_segment(unit.segment)?;
+            table.program(unit)?;
             const MANAGED: u64 = CONTROL_IOMMU_EN
                 | CONTROL_CMDBUF_EN
                 | CONTROL_EVT_LOG_EN
                 | CONTROL_EVT_INT_EN
-                | CONTROL_INT_MAP_EN;
-            unit.registers
-                .update_control(|previous| (previous & !MANAGED) | control);
+                | CONTROL_COM_WAIT_INT_EN
+                | CONTROL_GUEST_APIC_EN
+                | CONTROL_GUEST_APIC_MODE_MASK
+                | CONTROL_XT_EN
+                | CONTROL_XT_INTERRUPT_EN;
+            self.with_cmd_state(idx, |state| {
+                // SAFETY: the unit is stopped, and the registered driver owns
+                // the command buffer and completion page through shutdown.
+                unsafe { state.buffer.program()? };
+                let mut control = CONTROL_IOMMU_EN | CONTROL_CMDBUF_EN;
+                if matches!(self.interrupt_mode, irt::InterruptMode::X2Apic) {
+                    control |= CONTROL_XT_EN | CONTROL_GUEST_APIC_EN;
+                }
+                if let Some(log) = &self.event_logs[idx] {
+                    log.program(unit)?;
+                    control |= CONTROL_EVT_LOG_EN;
+                    if self.program_event_log_interrupt(unit).is_ok() {
+                        control |= CONTROL_EVT_INT_EN | CONTROL_COM_WAIT_INT_EN;
+                    }
+                }
+                unit.registers
+                    .update_control(|previous| (previous & !MANAGED) | control);
+                // COMPLETION_WAIT is valid independently of IASup. A cold
+                // unit has no previous translation cache to invalidate.
+                state.completion(false)?.wait_blocking()
+            })?;
         }
         self.enabled.store(true, Ordering::Release);
         Ok(())
@@ -478,89 +458,10 @@ impl AmdIommuDriver {
                         | CONTROL_CMDBUF_EN
                         | CONTROL_EVT_LOG_EN
                         | CONTROL_EVT_INT_EN
-                        | CONTROL_INT_MAP_EN)
+                        | CONTROL_COM_WAIT_INT_EN)
             });
         }
         self.enabled.store(false, Ordering::Release);
-        Ok(())
-    }
-
-    pub(crate) fn map_interrupt(
-        &self,
-        segment: u16,
-        bus: u8,
-        device: u8,
-        function: u8,
-        vector: u8,
-        destination: crate::cpu::ApicId,
-        logical: bool,
-    ) -> Result<u16, IommuError> {
-        let devid = ((bus as u16) << 8) | ((device as u16) << 3) | (function as u16);
-        let unit_idx = self
-            .units
-            .iter()
-            .position(|unit| unit.segment == segment && unit.covers_devid(devid))
-            .ok_or(IommuError::NotPresent)?;
-
-        let irt_lock = self
-            .interrupt_remap_tables
-            .get(unit_idx)
-            .and_then(|slot| slot.as_ref())
-            .ok_or(IommuError::NotSupported)?;
-
-        let mut irt = irt_lock.lock().map_err(|_| IommuError::Poisoned)?;
-        let handle = irt.table.allocate()?;
-
-        let irte = irt::AmdIrte::fixed(vector, destination, logical, Some(devid));
-        if let Err(e) = irt.table.set_entry(handle, irte) {
-            let _ = irt.table.free(handle);
-            return Err(e);
-        }
-
-        // Security: Invalidate the hardware interrupt table cache to ensure the new mapping is used.
-        // Propagation of invalidation errors is critical for security and consistency.
-        if let Err(e) = self.invalidate_interrupt_table(segment, devid) {
-            // SECURITY: Rollback the allocation if invalidation fails to prevent leaking.
-            let _ = irt.table.free(handle);
-            return Err(e);
-        }
-
-        Ok(handle)
-    }
-
-    pub(crate) fn get_remap_msi_message(&self, handle: u16) -> (u64, u32) {
-        irt::encode_remap_msi(handle)
-    }
-
-    pub fn lookup_device_domain(&self, source_id: u16) -> Option<u16> {
-        let device_domains = self.device_domains.lock().ok()?;
-        // AMD doesn't have segment in source_id (it's 16-bit BDF).
-        // We assume segment 0 for this simple lookup, or we need more info.
-        // Actually, DeviceId includes segment.
-        for (device, domain_id) in device_domains.iter() {
-            if device.requester_id() == source_id {
-                return Some(*domain_id);
-            }
-        }
-        None
-    }
-
-    pub fn isolate_device(&self, device: DeviceId) -> Result<(), IommuError> {
-        let devid = device.requester_id();
-        let table = self
-            .device_tables
-            .get(&device.segment)
-            .ok_or(IommuError::DeviceNotFound)?;
-
-        // Disable device in the Device Table
-        table.clear_entry(devid)?;
-
-        // Security: Invalidate IOMMU caches.
-        // It is CRITICAL that these invalidations succeed during isolation to prevent
-        // a compromised or faulting device from continuing DMA using cached entries.
-        self.invalidate_domain_pages(0, 0, u64::MAX)?; // Global domain invalidation for safety
-        self.invalidate_iotlb_pages(device, 0, u64::MAX)?;
-
         Ok(())
     }
 }

@@ -17,55 +17,9 @@ use crate::mm::types::PAGE_SIZE_4K;
 use acpi_driver::ivrs::IvhdDeviceEntry;
 
 use super::AmdIvmdRange;
-use super::domain::{aliases_for_entries, flags_for_entries, reject_excluded_ranges};
+use super::domain::{flags_for_entries, reject_excluded_ranges};
 use super::map_ivmd_ranges;
 use super::registers::AMD_DEFAULT_MAX_ADDR_BITS;
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_alias_devids_for_device_dedup() {
-    let device = DeviceId::new(0, 1, 0, 0);
-    let devid = device.requester_id();
-    let entries = alloc::vec![
-        IvhdDeviceEntry::Select { devid, flags: 0 },
-        IvhdDeviceEntry::Alias {
-            devid,
-            alias: 0x0200,
-            flags: 0,
-        },
-        IvhdDeviceEntry::AliasRange {
-            start: devid,
-            end: devid + 3,
-            alias: 0x0300,
-            flags: 0,
-        },
-        IvhdDeviceEntry::Alias {
-            devid,
-            alias: 0x0200,
-            flags: 0,
-        },
-        IvhdDeviceEntry::Alias {
-            devid,
-            alias: devid,
-            flags: 0,
-        },
-    ];
-
-    let aliases = aliases_for_entries(&entries, device.requester_id());
-    assert_eq!(aliases, alloc::vec![0x0200, 0x0300]);
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_alias_devids_for_device_no_match() {
-    let entries = alloc::vec![IvhdDeviceEntry::Select {
-        devid: 0x0100,
-        flags: 0,
-    }];
-    let device = DeviceId::new(0, 2, 0, 0);
-    let aliases = aliases_for_entries(&entries, device.requester_id());
-    assert!(aliases.is_empty());
-}
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
@@ -379,11 +333,6 @@ fn test_wave5_irt_invalidation_cmd_format() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_wave5_get_remap_msi_message_format() {
-    let (addr, _data) = encode_remap_msi(5);
-    assert_eq!(addr & 0xFFF0_0000, 0xFEE0_0000);
-    assert_ne!(addr & 0x04, 0); // bit 2 = remapped format
-    assert_eq!((addr >> 2) & 0xFFFF, 5);
-
-    let (addr2, _) = encode_remap_msi(10);
-    assert_ne!(addr, addr2);
+    assert_eq!(encode_remap_msi(0), (0xfee0_0000, 0));
+    assert_eq!(encode_remap_msi(0x1ff), (0xfee0_0000, 0x1ff));
 }

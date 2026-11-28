@@ -45,7 +45,7 @@ impl AmdIommuDriver {
         }
         crate::io::iommu::runtime::security::validate_dma_region(phys_addr.as_u64(), size)?;
         self.reject_excluded_ivmd_range(*device, phys_addr.as_u64(), size)?;
-        let domain = self.domain_for_id(self.domain_id_for_device(*device)?)?;
+        let domain = self.attached_domain(*device)?;
         let mask = crate::io::iommu::api::get_device_dma_mask(device);
         let iova = self.allocate_iova(size, mask)?;
         let mapping = DeviceMappedRange::admitted(

@@ -494,9 +494,8 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
     }
 }
 
-#[cfg(feature = "qemu-test-export")]
 impl<T: Sized + Copy> HardwareTable<T> {
-    /// Release a hardware table only after its last translation user retires.
+    /// Release a hardware table only after its last translation or interrupt user retires.
     /// # Safety
     /// Every device/controller reference to this table has been removed, and
     /// required context, paging-structure, IOTLB and ATS invalidations completed

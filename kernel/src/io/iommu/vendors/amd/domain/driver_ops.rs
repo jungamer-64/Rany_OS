@@ -37,7 +37,7 @@ impl AmdIommuDriver {
         Ok(info.domain.clone())
     }
 
-    pub(super) fn device_table_for_segment(
+    pub(in crate::io::iommu::vendors::amd) fn device_table_for_segment(
         &self,
         segment: u16,
     ) -> Result<&AmdDeviceTable, IommuError> {
@@ -52,75 +52,16 @@ impl AmdIommuDriver {
         domain: &DomainState,
         ivhd_flags: u8,
     ) -> Result<AmdDeviceTableEntry, IommuError> {
-        let mut entry = AmdDeviceTableEntry::default();
-        entry.data[0] |= DTE_FLAG_V | DTE_FLAG_TV | DTE_FLAG_IR | DTE_FLAG_IW;
-
-        if domain.domain_type != IommuDomainType::Passthrough {
-            let root_phys = virt_ptr_to_phys(domain.page_table as *const u8)?;
-            if (root_phys & 0xfff) != 0 {
-                return Err(IommuError::InvalidAlignment);
+        let root = if domain.domain_type == IommuDomainType::Passthrough {
+            0
+        } else {
+            let address = virt_ptr_to_phys(domain.page_table as *const u8)?;
+            if address & !PM_ADDR_MASK != 0 {
+                return Err(IommuError::InvalidAddress);
             }
-            entry.data[0] |=
-                (root_phys & PM_ADDR_MASK) | (PAGE_MODE_4_LEVEL << DEV_ENTRY_MODE_SHIFT);
-        }
-
-        if ivhd_flags != 0 {
-            apply_ivhd_flags(&mut entry, ivhd_flags);
-        }
-
-        entry.data[1] |= domain_id as u64;
-        Ok(entry)
-    }
-
-    pub(crate) fn alias_devids_for_device(&self, device: DeviceId) -> Vec<u16> {
-        let aliases = Vec::new();
-        let devid = device.requester_id();
-        let unit = match self.find_unit_for_device(device) {
-            Some(unit) => unit,
-            None => return aliases,
+            address | (PAGE_MODE_4_LEVEL << DEV_ENTRY_MODE_SHIFT)
         };
-
-        aliases_for_entries(&unit.device_entries, devid)
-    }
-
-    pub(super) fn collect_alias_from_entry(
-        entry: &IvhdDeviceEntry,
-        devid: u16,
-        aliases: &mut Vec<u16>,
-    ) {
-        match entry {
-            IvhdDeviceEntry::Alias {
-                devid: entry_devid,
-                alias,
-                ..
-            } => {
-                if *entry_devid == devid && *alias != devid {
-                    aliases.push(*alias);
-                }
-            }
-            IvhdDeviceEntry::AliasRange {
-                start, end, alias, ..
-            } => {
-                if devid >= *start && devid <= *end && *alias != devid {
-                    aliases.push(*alias);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    pub(super) fn map_ivmd_ranges_for_device(
-        &self,
-        device: DeviceId,
-        domain_id: u16,
-    ) -> Result<(), IommuError> {
-        let ranges = self.ivmd_ranges_for_device(device);
-        if ranges.is_empty() {
-            return Ok(());
-        }
-
-        let domain = self.domain_for_id(domain_id)?;
-        map_ivmd_ranges(domain.as_ref(), &ranges)
+        Ok(AmdDeviceTableEntry::translated(domain_id, root, ivhd_flags))
     }
 
     pub(crate) fn reject_excluded_ivmd_range(
@@ -132,72 +73,49 @@ impl AmdIommuDriver {
         reject_excluded_ranges(&self.ivmd_ranges_for_device(device), phys_addr, size)
     }
 
-    /// DTEエントリを書き込み（デバイス本体+エイリアス）
-    pub(super) fn write_dte_with_aliases(
-        &self,
-        table: &AmdDeviceTable,
-        device: DeviceId,
-        aliases: &[u16],
-        entry: AmdDeviceTableEntry,
-    ) -> Result<(), IommuError> {
-        let devid = device.requester_id();
-        table.write_entry(devid, entry)?;
-        for alias in aliases {
-            table.write_entry(*alias, entry)?;
+    /// IVRS aliases identify the same requester. Bind devices sharing that
+    /// requester to the same DTE cohort, domain and interrupt-remapping table.
+    fn requester_route(&self, device: DeviceId) -> Result<(DeviceId, usize), IommuError> {
+        if device.device >= 32 || device.function >= 8 {
+            return Err(IommuError::InvalidAddress);
         }
-        Ok(())
+        let unit = self
+            .find_unit_index_for_device(device)
+            .ok_or(IommuError::DeviceNotFound)?;
+        let key = self
+            .requester_aliases
+            .get(&device)
+            .copied()
+            .unwrap_or(device);
+        Ok((key, unit))
     }
 
-    /// DTEエントリをクリア（デバイス本体+エイリアス）
-    pub(super) fn clear_dte_with_aliases(
-        &self,
-        table: &AmdDeviceTable,
-        device: DeviceId,
-        aliases: &[u16],
-    ) -> Result<(), IommuError> {
-        let devid = device.requester_id();
-        table.clear_entry(devid)?;
-        for alias in aliases {
-            table.clear_entry(*alias)?;
-        }
-        Ok(())
-    }
-
-    pub(super) fn write_device_entries_for_domain(
+    pub(in crate::io::iommu::vendors::amd) fn attached_domain(
         &self,
         device: DeviceId,
-        aliases: &[u16],
-        domain_id: Option<u16>,
-    ) -> Result<(), IommuError> {
-        let table = self.device_table_for_segment(device.segment)?;
-        match domain_id {
-            Some(domain_id) => {
-                let domain = self.domain_for_id(domain_id)?;
-                let flags = AmdIommuDriver::ivhd_flags_for_device(self, device);
-                let entry = self.build_dte_entry(domain_id, domain.as_ref(), flags)?;
-                self.write_dte_with_aliases(table, device, aliases, entry)
+    ) -> Result<Arc<DomainState>, IommuError> {
+        let key = self
+            .requester_aliases
+            .get(&device)
+            .copied()
+            .unwrap_or(device);
+        let bindings = self
+            .device_bindings
+            .lock()
+            .map_err(|_| IommuError::Poisoned)?;
+        match bindings.get(&key) {
+            Some(binding) if binding.requesters.contains(&device.requester_id()) => {
+                match &binding.state {
+                    BindingState::Attached(attachment) => Ok(Arc::clone(&attachment.domain)),
+                    _ => Err(IommuError::DomainNotFound),
+                }
             }
-            None => self.clear_dte_with_aliases(table, device, aliases),
+            _ => Err(IommuError::DomainNotFound),
         }
     }
 
     pub(crate) fn domain_id_for_device(&self, device: DeviceId) -> Result<u16, IommuError> {
-        let device_domains = self
-            .device_domains
-            .lock()
-            .map_err(|_| IommuError::Poisoned)?;
-        device_domains
-            .get(&device)
-            .copied()
-            .ok_or(IommuError::DomainNotFound)
-    }
-
-    /// Invalidate all entries, treating NotSupported as success.
-    pub(super) fn invalidate_ignoring_unsupported(&self) -> Result<(), IommuError> {
-        match self.invalidate_all_entries() {
-            Ok(()) | Err(IommuError::NotSupported) => Ok(()),
-            Err(err) => Err(err),
-        }
+        Ok(self.attached_domain(device)?.id())
     }
 
     pub(crate) fn populate_default_entries(&self) -> Result<(), IommuError> {
@@ -211,7 +129,6 @@ impl AmdIommuDriver {
             table.fill(entry)?;
         }
 
-        self.invalidate_ignoring_unsupported()?;
         Ok(())
     }
 
@@ -249,6 +166,9 @@ impl AmdIommuDriver {
     }
 
     pub(crate) fn destroy_domain(&self, domain_id: u16) -> Result<(), IommuError> {
+        if domain_id == 0 {
+            return Err(IommuError::InUse);
+        }
         let mut domains = self.domains.lock().map_err(|_| IommuError::Poisoned)?;
         let info = domains.get(&domain_id).ok_or(IommuError::DomainNotFound)?;
         // Attach retains its domain through DTE/device-registry publication.
@@ -256,17 +176,6 @@ impl AmdIommuDriver {
         if Arc::strong_count(&info.domain) != 1 || info.domain.active_dma_count() != 0 {
             return Err(IommuError::InUse);
         }
-        // SECURITY: Check if any devices are still attached to this domain
-        {
-            let device_domains = self
-                .device_domains
-                .lock()
-                .map_err(|_| IommuError::Poisoned)?;
-            if device_domains.values().any(|&did| did == domain_id) {
-                return Err(IommuError::AlreadyMapped);
-            }
-        }
-
         crate::io::iommu::common::domain::IommuInvalidator::invalidate(
             self,
             crate::io::iommu::common::domain::InvalidateRequest::domain(domain_id).with_ats(),
@@ -288,153 +197,280 @@ impl AmdIommuDriver {
         Ok(())
     }
 
-    /// Rollback device_domains and DTE entries on attach failure.
-    pub(super) fn rollback_device_attach(
-        &self,
-        device: DeviceId,
-        aliases: &[u16],
-        previous: Option<u16>,
-    ) {
-        let Ok(mut device_domains) = self.device_domains.lock().map_err(|_| IommuError::Poisoned)
-        else {
-            return;
-        };
-        match previous {
-            Some(prev_id) => {
-                device_domains.insert(device, prev_id);
-                let _ = self.write_device_entries_for_domain(device, aliases, Some(prev_id));
-            }
-            None => {
-                device_domains.remove(&device);
-                let _ = self.write_device_entries_for_domain(device, aliases, None);
-            }
-        }
-    }
-
-    /// Write DTE and invalidate entries; returns first error if any step fails.
-    pub(super) fn apply_device_entries_and_invalidate(
-        &self,
-        device: DeviceId,
-        aliases: &[u16],
-        domain_id: u16,
-    ) -> Result<(), IommuError> {
-        self.write_device_entries_for_domain(device, aliases, Some(domain_id))?;
-        self.invalidate_device_entry(device)?;
-        for alias in aliases {
-            self.invalidate_device_entry_by_devid(device.segment, *alias)?;
-        }
-        Ok(())
-    }
-
+    /// Retain the domain before writing any DTE. A publication that may have
+    /// reached hardware must finish or go through revocation before reuse.
     pub(crate) fn attach_device(&self, device: DeviceId, domain_id: u16) -> Result<(), IommuError> {
-        if self.find_unit_for_device(device).is_none() {
-            return Err(IommuError::DeviceNotFound);
-        }
-        let _domain = self.domain_for_id(domain_id)?;
-        let aliases = self.alias_devids_for_device(device);
+        let (key, unit) = self.requester_route(device)?;
+        let domain = self.domain_for_id(domain_id)?;
+        let flags = self.ivhd_flags_for_device(device);
+        let table = self.device_table_for_segment(device.segment)?;
+        let mut entry = self.build_dte_entry(domain_id, &domain, flags)?;
+        let mut bindings = self
+            .device_bindings
+            .lock()
+            .map_err(|_| IommuError::Poisoned)?;
 
-        self.map_ivmd_ranges_for_device(device, domain_id)?;
-
-        let existing = {
-            let device_domains = self
-                .device_domains
-                .lock()
-                .map_err(|_| IommuError::Poisoned)?;
-            device_domains.get(&device).copied()
-        };
-
-        if existing == Some(domain_id) {
-            return Ok(());
-        }
-
-        let previous = {
-            let mut device_domains = self
-                .device_domains
-                .lock()
-                .map_err(|_| IommuError::Poisoned)?;
-            device_domains.insert(device, domain_id)
-        };
-
-        if let Err(err) = self.apply_device_entries_and_invalidate(device, &aliases, domain_id) {
-            self.rollback_device_attach(device, &aliases, previous);
-            return Err(err);
+        let requester = device.requester_id();
+        if bindings.iter().any(|(other_key, binding)| {
+            other_key.segment == key.segment
+                && *other_key != key
+                && (binding.requesters.contains(&requester)
+                    || binding.requesters.contains(&key.requester_id()))
+        }) {
+            return Err(IommuError::AlreadyMapped);
         }
 
-        Ok(())
-    }
-
-    /// DTEクリアと無効化を実行し、失敗時にロールバック
-    pub(super) fn clear_and_invalidate_device(
-        &self,
-        device: DeviceId,
-        aliases: &[u16],
-        _previous_domain: u16,
-    ) -> Result<(), IommuError> {
-        self.write_device_entries_for_domain(device, aliases, None)?;
-        self.invalidate_device_entry(device)?;
-        for alias in aliases {
-            self.invalidate_device_entry_by_devid(device.segment, *alias)?;
-        }
-
-        // Security: Invalidate Device-TLB (ATS) to ensure no stale translations remain in the device.
-        // We invalidate the entire range (0 to u64::MAX) for safety.
-        let _ = self.invalidate_iotlb_pages(device, 0, u64::MAX);
-        for alias in aliases {
-            let alias_device = DeviceId::new(
-                device.segment,
-                ((*alias >> 8) & 0xFF) as u8,
-                ((*alias >> 3) & 0x1F) as u8,
-                (*alias & 0x07) as u8,
-            );
-            let _ = self.invalidate_iotlb_pages(alias_device, 0, u64::MAX);
-        }
-
-        Ok(())
-    }
-
-    /// デバイスデタッチ失敗時にデバイスドメインを復元
-    pub(super) fn rollback_device_detach(
-        &self,
-        device: DeviceId,
-        aliases: &[u16],
-        previous_domain: u16,
-    ) {
-        if let Ok(mut device_domains) = self.device_domains.lock() {
-            device_domains.insert(device, previous_domain);
-            if let Err(err) =
-                self.write_device_entries_for_domain(device, aliases, Some(previous_domain))
+        if let Some(binding) = bindings.get_mut(&key) {
+            if binding.unit != unit {
+                return Err(IommuError::FirmwareScope);
+            }
+            let attachment = match &binding.state {
+                BindingState::Attached(attachment) | BindingState::Publishing(attachment)
+                    if attachment.domain.id() == domain_id =>
+                {
+                    attachment
+                }
+                _ => return Err(IommuError::AlreadyMapped),
+            };
+            if matches!(binding.state, BindingState::Attached(_))
+                && binding.requesters.contains(&requester)
             {
-                log::error!(
-                    "[IOMMU][AMD-Vi] Critical: Failed to restore DTE during rollback for device {:?}: {:?}",
-                    device,
-                    err
-                );
+                return Ok(());
+            }
+            if let Some(irta) = attachment.interrupts.as_ref() {
+                entry.set_interrupt_table(irta);
+            }
+            map_ivmd_ranges(&domain, &self.ivmd_ranges_for_device(device))?;
+            if !binding.requesters.contains(&requester) {
+                binding
+                    .requesters
+                    .try_reserve(1)
+                    .map_err(|_| IommuError::MetadataAllocation)?;
+                // Each newly admitted requester may still cache the default DTE.
+                table.write_requesters(&[requester], entry)?;
+                binding.requesters.push(requester);
+            }
+        } else {
+            map_ivmd_ranges(&domain, &self.ivmd_ranges_for_device(device))?;
+            let mut requesters = Vec::new();
+            requesters
+                .try_reserve_exact(2)
+                .map_err(|_| IommuError::MetadataAllocation)?;
+            requesters.push(key.requester_id());
+            if requester != key.requester_id() {
+                requesters.push(requester);
+            }
+            bindings
+                .try_reserve(1)
+                .map_err(|_| IommuError::MetadataAllocation)?;
+            let binding = AmdDeviceBinding {
+                unit,
+                requesters,
+                state: BindingState::Publishing(Attachment {
+                    domain,
+                    interrupts: None,
+                }),
+            };
+            bindings.insert(key, binding);
+            let requesters = &bindings.get(&key).expect("new binding").requesters;
+            if let Err(error) = table.write_requesters(requesters, entry) {
+                bindings.remove(&key);
+                return Err(error);
             }
         }
+
+        let binding = bindings.get_mut(&key).expect("retained DTE binding");
+        // An alias admitted to an otherwise attached group is unavailable
+        // until its DTE publication is confirmed as well.
+        if matches!(binding.state, BindingState::Attached(_)) {
+            let BindingState::Attached(attachment) =
+                core::mem::replace(&mut binding.state, BindingState::Isolated)
+            else {
+                unreachable!("binding lock held");
+            };
+            binding.state = BindingState::Publishing(attachment);
+        }
+        self.invalidate_requesters(unit, &binding.requesters)?;
+        self.invalidate_unit_domain(unit, 0)?;
+        if domain_id != 0 {
+            self.invalidate_domain_all(domain_id)?;
+        }
+        let BindingState::Publishing(attachment) =
+            core::mem::replace(&mut binding.state, BindingState::Isolated)
+        else {
+            unreachable!("binding lock held");
+        };
+        binding.state = BindingState::Attached(attachment);
+        Ok(())
     }
 
     pub(crate) fn detach_device(&self, device: DeviceId) -> Result<(), IommuError> {
-        if self.find_unit_for_device(device).is_none() {
+        self.block_device(device, false)
+    }
+
+    pub fn isolate_device(&self, device: DeviceId) -> Result<(), IommuError> {
+        self.block_device(device, true)
+    }
+
+    fn block_device(&self, device: DeviceId, isolate: bool) -> Result<(), IommuError> {
+        let (key, unit) = self.requester_route(device)?;
+        let table = self.device_table_for_segment(device.segment)?;
+        let mut bindings = self
+            .device_bindings
+            .lock()
+            .map_err(|_| IommuError::Poisoned)?;
+        if !bindings.contains_key(&key) {
+            if !isolate {
+                return Err(IommuError::DeviceNotFound);
+            }
+            bindings
+                .try_reserve(1)
+                .map_err(|_| IommuError::MetadataAllocation)?;
+            let mut requesters = Vec::new();
+            requesters
+                .try_reserve_exact(2)
+                .map_err(|_| IommuError::MetadataAllocation)?;
+            requesters.push(key.requester_id());
+            if device != key {
+                requesters.push(device.requester_id());
+            }
+            bindings.insert(
+                key,
+                AmdDeviceBinding {
+                    unit,
+                    requesters,
+                    state: BindingState::Blocking {
+                        attachment: None,
+                        isolate,
+                    },
+                },
+            );
+        }
+        let binding = bindings.get_mut(&key).expect("retained DTE binding");
+        if binding.unit != unit {
+            return Err(IommuError::FirmwareScope);
+        }
+        binding.state = match core::mem::replace(&mut binding.state, BindingState::Isolated) {
+            BindingState::Publishing(attachment) | BindingState::Attached(attachment) => {
+                BindingState::Blocking {
+                    attachment: Some(attachment),
+                    isolate,
+                }
+            }
+            BindingState::Blocking {
+                attachment,
+                isolate: pending,
+            } => BindingState::Blocking {
+                attachment,
+                isolate: pending || isolate,
+            },
+            BindingState::Isolated => return Ok(()),
+        };
+        let BindingState::Blocking {
+            attachment,
+            isolate,
+        } = &binding.state
+        else {
+            unreachable!("blocking state retained");
+        };
+        let old_domain = attachment.as_ref().map_or(0, |owner| owner.domain.id());
+        let permanently_blocked = *isolate;
+        table.write_requesters(&binding.requesters, AmdDeviceTableEntry::BLOCKED)?;
+        self.invalidate_requesters(unit, &binding.requesters)?;
+        self.invalidate_unit_domain(unit, old_domain)?;
+        self.invalidate_requester_interrupts(unit, &binding.requesters)?;
+        if let BindingState::Blocking {
+            attachment: Some(attachment),
+            ..
+        } = core::mem::replace(&mut binding.state, BindingState::Isolated)
+            && let Some(table) = attachment.interrupts
+        {
+            // SAFETY: this requester cohort no longer refers to the table and
+            // both relevant IOMMU caches have acknowledged invalidation.
+            unsafe { table.retire() };
+        }
+        if !permanently_blocked {
+            bindings.remove(&key);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn map_interrupt(
+        &self,
+        segment: u16,
+        bus: u8,
+        device: u8,
+        function: u8,
+        vector: u8,
+        destination: crate::cpu::ApicId,
+        logical: bool,
+    ) -> Result<u16, IommuError> {
+        let device = DeviceId::new(segment, bus, device, function);
+        let (key, unit) = self.requester_route(device)?;
+        let mut bindings = self
+            .device_bindings
+            .lock()
+            .map_err(|_| IommuError::Poisoned)?;
+        let binding = bindings.get_mut(&key).ok_or(IommuError::DeviceNotFound)?;
+        if binding.unit != unit || !binding.requesters.contains(&device.requester_id()) {
             return Err(IommuError::DeviceNotFound);
         }
-        let aliases = self.alias_devids_for_device(device);
-
-        let previous = {
-            let mut device_domains = self
-                .device_domains
-                .lock()
-                .map_err(|_| IommuError::Poisoned)?;
-            device_domains.remove(&device)
+        let BindingState::Attached(attachment) = &mut binding.state else {
+            return Err(IommuError::InUse);
         };
-
-        let previous_domain = previous.ok_or(IommuError::DeviceNotFound)?;
-
-        if let Err(err) = self.clear_and_invalidate_device(device, &aliases, previous_domain) {
-            self.rollback_device_detach(device, &aliases, previous_domain);
-            return Err(err);
+        self.interrupt_mode.check_destination(destination)?;
+        if attachment.interrupts.is_none() {
+            attachment.interrupts =
+                Some(super::super::irt::InterruptTable::new(self.interrupt_mode)?);
         }
+        let interrupts = attachment
+            .interrupts
+            .as_mut()
+            .expect("owned interrupt table");
+        let table = self.device_table_for_segment(segment)?;
+        table.write_interrupt_routes(&binding.requesters, interrupts)?;
+        self.invalidate_requesters(unit, &binding.requesters)?;
+        let index = interrupts.install(vector, destination, logical)?;
+        self.invalidate_requester_interrupts(unit, &binding.requesters)?;
+        Ok(index)
+    }
 
+    pub(crate) fn retire_interrupt(
+        &self,
+        device: DeviceId,
+        index: u16,
+        vector: u8,
+    ) -> Result<(), IommuError> {
+        let (key, unit) = self.requester_route(device)?;
+        let mut bindings = self
+            .device_bindings
+            .lock()
+            .map_err(|_| IommuError::Poisoned)?;
+        let Some(binding) = bindings.get_mut(&key) else {
+            return Ok(());
+        };
+        let attachment = match &mut binding.state {
+            BindingState::Attached(attachment) | BindingState::Publishing(attachment) => attachment,
+            BindingState::Isolated => return Ok(()),
+            BindingState::Blocking { .. } => return Err(IommuError::InUse),
+        };
+        let Some(table) = &mut attachment.interrupts else {
+            return Ok(());
+        };
+        if table.mask(index, vector)? {
+            self.invalidate_requester_interrupts(unit, &binding.requesters)?;
+            table.release(index);
+        }
         Ok(())
+    }
+
+    pub(crate) fn get_remap_msi_message(&self, handle: u16) -> (u64, u32) {
+        super::super::irt::encode_remap_msi(handle)
+    }
+
+    pub fn lookup_device_domain(&self, source_id: u16) -> Option<u16> {
+        self.domain_id_for_device(DeviceId::from_bdf(source_id))
+            .ok()
     }
 
     pub(crate) fn set_domain_numa(
@@ -459,11 +495,7 @@ impl AmdIommuDriver {
 
     pub(crate) fn dump_diagnostics(&self) {
         let unit_count = self.units.len();
-        let cmd_ready = self
-            .cmd_states
-            .iter()
-            .filter(|state| state.is_some())
-            .count();
+        let cmd_ready = self.cmd_states.len();
         let evt_ready = self.event_logs.iter().filter(|log| log.is_some()).count();
 
         log::info!(
@@ -483,12 +515,12 @@ impl AmdIommuDriver {
             }
         }
 
-        match self.device_domains.lock() {
-            Ok(device_domains) => {
-                log::info!("[IOMMU][AMD-Vi] device_mappings={}", device_domains.len());
+        match self.device_bindings.lock() {
+            Ok(bindings) => {
+                log::info!("[IOMMU][AMD-Vi] device_mappings={}", bindings.len());
             }
             Err(_) => {
-                log::warn!("[IOMMU][AMD-Vi] device_domains lock poisoned");
+                log::warn!("[IOMMU][AMD-Vi] device_bindings lock poisoned");
             }
         }
 

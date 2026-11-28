@@ -85,6 +85,10 @@ impl AmdRegisters {
         self.extended_features.read()
     }
 
+    pub(super) fn control(&self) -> u64 {
+        self.control.lock().read()
+    }
+
     pub(super) fn update_control(&self, update: impl FnOnce(u64) -> u64) {
         let mut register = self.control.lock();
         let value = update(register.read());
@@ -165,6 +169,11 @@ pub(crate) const MMIO_STATUS_OFFSET: u64 = 0x2020;
 pub(crate) const CONTROL_IOMMU_EN: u64 = 1 << 0;
 pub(crate) const CONTROL_EVT_LOG_EN: u64 = 1 << 2;
 pub(crate) const CONTROL_EVT_INT_EN: u64 = 1 << 3;
+pub(super) const CONTROL_COM_WAIT_INT_EN: u64 = 1 << 4;
+pub(super) const CONTROL_GUEST_APIC_EN: u64 = 1 << 17;
+pub(super) const CONTROL_GUEST_APIC_MODE_MASK: u64 = 0b111 << 25;
+pub(super) const CONTROL_XT_EN: u64 = 1 << 50;
+pub(super) const CONTROL_XT_INTERRUPT_EN: u64 = 1 << 51;
 pub(crate) const CONTROL_CMDBUF_EN: u64 = 1 << 12;
 
 // Device table entry page mode fields
@@ -219,6 +228,7 @@ pub(crate) const AMD_DEFAULT_MAX_ADDR_BITS: u8 = 48; // Fallback when EFR is una
 
 // Extended Feature Register (EFR) — MMIO offset 0x30
 pub(crate) const MMIO_EXT_FEATURE_OFFSET: u64 = 0x0030;
+pub(super) const EFR_XT_SUP: u64 = 1 << 2;
 pub(crate) const EFR_IA_SUP: u64 = 1 << 6;
 pub(crate) const EFR_HATS_SHIFT: u32 = 10;
 pub(crate) const EFR_HATS_MASK: u64 = 0x03; // bits [11:10] — Host Address Translation Size

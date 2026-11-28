@@ -394,12 +394,23 @@ impl InterruptManager {
                     false,
                 ) {
                     Ok(handle) => config.ir_handle = Some(handle),
-                    Err(_) if u8::try_from(target_apic_id.as_u32()).is_ok() => {}
-                    Err(_) => {
-                        self.mark_vector_free(vector);
-                        return Err(InterruptError::DestinationRequiresInterruptRemapping(
-                            target_apic_id,
-                        ));
+                    Err(
+                        crate::io::iommu::types::IommuError::NotSupported
+                        | crate::io::iommu::types::IommuError::NotPresent
+                        | crate::io::iommu::types::IommuError::NotInitialized,
+                    ) => {
+                        if u8::try_from(target_apic_id.as_u32()).is_err() {
+                            self.mark_vector_free(vector);
+                            return Err(InterruptError::DestinationRequiresInterruptRemapping(
+                                target_apic_id,
+                            ));
+                        }
+                    }
+                    Err(error) => {
+                        // A remapping write may have reached hardware. Keep
+                        // this vector reserved on an unconfirmed outcome.
+                        log::error!("IOMMU failed to publish MSI vector {vector}: {error:?}");
+                        return Err(InterruptError::HardwareError);
                     }
                 }
 
@@ -547,6 +558,24 @@ impl InterruptManager {
     /// ベクタを解放
     pub fn free_vector(&self, vector: u8) {
         let _route_allocation = self.route_allocation_gate.lock();
+        let remapped = self.allocations.read().get(&vector).and_then(|allocation| {
+            let device = match allocation.source {
+                InterruptSourceType::Msi { device_bdf }
+                | InterruptSourceType::MsiX { device_bdf, .. } => device_bdf,
+                _ => return None,
+            };
+            allocation.config.ir_handle.map(|index| (device, index))
+        });
+        if let Some((device, index)) = remapped
+            && let Err(error) = crate::io::iommu::runtime::irq::retire_interrupt(
+                crate::io::iommu::types::DeviceId::from_bdf(device as u16),
+                index,
+                vector,
+            )
+        {
+            log::error!("IOMMU failed to retire MSI vector {vector}: {error:?}");
+            return;
+        }
         self.mark_vector_free(vector);
         self.allocations.write().remove(&vector);
 

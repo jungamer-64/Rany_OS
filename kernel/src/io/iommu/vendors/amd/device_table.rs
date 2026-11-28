@@ -5,7 +5,7 @@
 //! AMD-Vi Device Table Entry and Device Table management.
 
 use core::mem::size_of;
-use core::ptr::{self, NonNull};
+use core::ptr::NonNull;
 
 use x86_64::PhysAddr;
 
@@ -50,9 +50,34 @@ pub(super) fn apply_ivhd_flags(entry: &mut AmdDeviceTableEntry, flags: u8) {
 }
 
 #[repr(C, align(32))]
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub(crate) struct AmdDeviceTableEntry {
     pub(super) data: [u64; 4],
+}
+
+impl AmdDeviceTableEntry {
+    /// V=1 keeps DMA permission checks active even though Mode=0. With
+    /// IR=IW=0 all memory requests abort; IV=1, IntCtl=0 also blocks MSI.
+    pub(super) const BLOCKED: Self = Self {
+        data: [DTE_FLAG_V | DTE_FLAG_TV, 0, 1, 0],
+    };
+
+    pub(super) fn translated(domain_id: u16, root: u64, flags: u8) -> Self {
+        let mut entry = Self {
+            data: [
+                DTE_FLAG_V | DTE_FLAG_TV | DTE_FLAG_IR | DTE_FLAG_IW | root,
+                u64::from(domain_id),
+                0,
+                0,
+            ],
+        };
+        apply_ivhd_flags(&mut entry, flags);
+        entry
+    }
+
+    pub(super) fn set_interrupt_table(&mut self, table: &super::irt::InterruptTable) {
+        self.data[2] = (self.data[2] & !super::irt::DTE_ROUTING_MASK) | table.dte_route();
+    }
 }
 
 #[derive(Debug)]
@@ -95,8 +120,14 @@ impl AmdDeviceTable {
         let entry_ptr = NonNull::new(virt_base.as_u64() as *mut AmdDeviceTableEntry)
             .ok_or(IommuError::HardwareError)?;
 
-        unsafe {
-            ptr::write_bytes(virt_base.as_u64() as *mut u8, 0, size_bytes as usize);
+        let entry_count = (size_bytes / entry_bytes) as usize;
+        for index in 0..entry_count {
+            unsafe {
+                entry_ptr
+                    .as_ptr()
+                    .add(index)
+                    .write(AmdDeviceTableEntry::BLOCKED)
+            };
         }
 
         // Security: Register the device table as protected from DMA.
@@ -112,7 +143,7 @@ impl AmdDeviceTable {
             _backing: phys_base,
             virt_base: entry_ptr,
             size_bytes,
-            entry_count: (size_bytes / entry_bytes) as usize,
+            entry_count,
             lock: PoisonLock::new(()),
         })
     }
@@ -128,24 +159,62 @@ impl AmdDeviceTable {
         Ok(())
     }
 
-    pub(super) fn write_entry(
+    /// The caller serializes ownership changes for this requester cohort.
+    /// Validate every index before modifying any DTE.
+    pub(super) fn write_requesters(
         &self,
-        devid: u16,
+        requesters: &[u16],
         entry: AmdDeviceTableEntry,
     ) -> Result<(), IommuError> {
         let _guard = self.lock.lock().map_err(|_| IommuError::Poisoned)?;
-        let index = devid as usize;
-        if index >= self.entry_count {
+        if requesters
+            .iter()
+            .any(|&id| usize::from(id) >= self.entry_count)
+        {
             return Err(IommuError::DeviceNotFound);
         }
-        unsafe {
-            self.virt_base.as_ptr().add(index).write_volatile(entry);
+        for &id in requesters {
+            let words = unsafe { self.virt_base.as_ptr().add(usize::from(id)).cast::<u64>() };
+            // Disable memory access before modifying a live entry. Publish
+            // the new permissions last, after domain and interrupt fields.
+            unsafe {
+                words.write_volatile(AmdDeviceTableEntry::BLOCKED.data[0]);
+                for (index, value) in entry.data.iter().copied().enumerate().skip(1) {
+                    words.add(index).write_volatile(value);
+                }
+                core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+                words.write_volatile(entry.data[0]);
+            }
         }
         Ok(())
     }
 
-    pub(super) fn clear_entry(&self, devid: u16) -> Result<(), IommuError> {
-        self.write_entry(devid, AmdDeviceTableEntry::default())
+    pub(super) fn write_interrupt_routes(
+        &self,
+        requesters: &[u16],
+        table: &super::irt::InterruptTable,
+    ) -> Result<(), IommuError> {
+        let _guard = self.lock.lock().map_err(|_| IommuError::Poisoned)?;
+        if requesters
+            .iter()
+            .any(|&id| usize::from(id) >= self.entry_count)
+        {
+            return Err(IommuError::DeviceNotFound);
+        }
+        for &id in requesters {
+            // SAFETY: the device-table lock owns all writes to these entries.
+            unsafe {
+                let word = self
+                    .virt_base
+                    .as_ptr()
+                    .add(usize::from(id))
+                    .cast::<u64>()
+                    .add(2);
+                let previous = word.read_volatile() & !super::irt::DTE_ROUTING_MASK;
+                word.write_volatile(previous | table.dte_route());
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn fill(&self, entry: AmdDeviceTableEntry) -> Result<(), IommuError> {
@@ -156,5 +225,23 @@ impl AmdDeviceTable {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AmdDeviceTableEntry;
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn blocked_dte_keeps_permission_checks_and_aborts_fixed_interrupts() {
+        assert_eq!(AmdDeviceTableEntry::BLOCKED.data, [0x3, 0, 0x1, 0]);
+    }
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn translated_requester_disallows_ats_and_pretranslated_dma() {
+        let entry = AmdDeviceTableEntry::translated(0x734, 0x2800, 0);
+        assert_eq!(entry.data, [0x6000_0000_0000_2803, 0x734, 0, 0]);
     }
 }

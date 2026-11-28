@@ -69,7 +69,7 @@ pub(crate) async fn command_queue_worker() -> Result<(), IommuError> {
 // Initialization helpers
 // ---------------------------------------------------------------------------
 
-pub(super) fn init_command_state(unit: &AmdIommuUnit) -> Result<AmdCommandState, IommuError> {
+fn prepare_command_state(unit: &AmdIommuUnit) -> Result<AmdCommandState, IommuError> {
     let frame_count = cmd::CMD_BUFFER_BYTES / PAGE_SIZE_4K;
     let phys_base = alloc_contiguous_frames(frame_count).map_err(|_| IommuError::OutOfMemory)?;
     let virt_base = phys_to_virt(PhysAddr::new(phys_base.as_u64()));
@@ -100,11 +100,6 @@ pub(super) fn init_command_state(unit: &AmdIommuUnit) -> Result<AmdCommandState,
         )?
     };
 
-    unsafe {
-        buffer.program()?;
-        buffer.enable();
-    }
-
     // Security: Register command buffer and sync page as protected from DMA.
     // This prevents malicious devices from tampering with invalidation commands
     // or spoofing completion status.
@@ -120,79 +115,39 @@ pub(super) fn init_command_state(unit: &AmdIommuUnit) -> Result<AmdCommandState,
     );
 
     let sync_address = sync_phys.as_u64();
-    let mut state = AmdCommandState {
+    Ok(AmdCommandState {
         _backing: phys_base,
         _sync_backing: sync_phys,
         buffer,
         sync_ptr,
         sync_phys: sync_address,
         seq: AtomicU64::new(0),
-    };
-
-    if let Err(err) = state.submit_and_wait(cmd::AmdCommand::invalidate_all()) {
-        log::warn!(
-            "AMD-Vi command buffer invalidate_all failed for unit @ {:#x}: {:?}",
-            unit.base_addr,
-            err
-        );
-    }
-
-    Ok(state)
+    })
 }
 
-pub(super) fn init_command_states(
+fn prepare_command_states(
     units: &[AmdIommuUnit],
-) -> Vec<Option<PoisonLock<AmdCommandState>>> {
-    let mut states = Vec::with_capacity(units.len());
-    for unit in units {
-        match init_command_state(unit) {
-            Ok(state) => {
-                log::info!(
-                    "AMD-Vi command buffer enabled for unit @ {:#x}",
+) -> Result<Vec<PoisonLock<AmdCommandState>>, IommuError> {
+    units
+        .iter()
+        .map(|unit| prepare_command_state(unit).map(PoisonLock::new))
+        .collect()
+}
+
+fn prepare_event_logs(units: &[AmdIommuUnit]) -> Vec<Option<AmdEventLog>> {
+    units
+        .iter()
+        .map(|unit| match AmdEventLog::new() {
+            Ok(log) => Some(log),
+            Err(error) => {
+                log::warn!(
+                    "AMD-Vi event log unavailable for {:#x}: {error:?}",
                     unit.base_addr
                 );
-                states.push(Some(PoisonLock::new(state)));
+                None
             }
-            Err(err) => {
-                log::warn!(
-                    "AMD-Vi command buffer init failed for unit @ {:#x}: {:?}",
-                    unit.base_addr,
-                    err
-                );
-                states.push(None);
-            }
-        }
-    }
-    states
-}
-
-pub(super) fn init_event_logs(units: &[AmdIommuUnit]) -> Vec<Option<AmdEventLog>> {
-    let mut logs = Vec::with_capacity(units.len());
-    for unit in units {
-        match AmdEventLog::new() {
-            Ok(log) => {
-                if let Err(err) = log.program(unit) {
-                    log::warn!(
-                        "AMD-Vi event log program failed for unit @ {:#x}: {:?}",
-                        unit.base_addr,
-                        err
-                    );
-                    logs.push(None);
-                } else {
-                    logs.push(Some(log));
-                }
-            }
-            Err(err) => {
-                log::warn!(
-                    "AMD-Vi event log alloc failed for unit @ {:#x}: {:?}",
-                    unit.base_addr,
-                    err
-                );
-                logs.push(None);
-            }
-        }
-    }
-    logs
+        })
+        .collect()
 }
 
 pub(super) fn max_devid_for_entries(entries: &[IvhdDeviceEntry]) -> u16 {
@@ -313,18 +268,11 @@ pub fn init_iommu_from_ivrs(ivrs: &[u8], _config: IommuConfig) -> Result<(), Iom
 
     let ivmd_ranges = collect_ivmd_ranges(&ivrs_info);
 
-    let cmd_states = init_command_states(&units);
-    let cmd_ready = cmd_states.iter().filter(|buf| buf.is_some()).count();
-    let event_logs = init_event_logs(&units);
+    let cmd_states = prepare_command_states(&units)?;
+    let cmd_ready = cmd_states.len();
+    let event_logs = prepare_event_logs(&units);
     let evt_ready = event_logs.iter().filter(|log| log.is_some()).count();
-
     let device_tables = init_device_tables(&units)?;
-    for unit in &units {
-        let table = device_tables
-            .get(&unit.segment)
-            .ok_or(IommuError::NotPresent)?;
-        table.program(unit)?;
-    }
 
     let unit_count = units.len();
     let ivmd_count = ivmd_ranges.len();

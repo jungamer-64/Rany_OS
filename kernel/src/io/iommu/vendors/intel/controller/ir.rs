@@ -45,10 +45,6 @@ pub struct InterruptRemapEntry {
 }
 
 impl InterruptRemapEntry {
-    pub const fn new() -> Self {
-        Self { lo: 0, hi: 0 }
-    }
-
     pub fn fixed(
         vector: u8,
         destination: ApicId,
@@ -244,8 +240,11 @@ impl InterruptRemapper for IommuController {
         // Security: Invalidate IEC after allocating IRTE to ensure hardware sees the new entry.
         // Propagation of invalidation errors is critical for security and consistency.
         if let Err(e) = self.invalidate_iec(false, index) {
-            irt.set(index, InterruptRemapEntry::new());
-            irt.free(index);
+            // A timed-out publication may have reached the interrupt cache.
+            // Keep both this index and its vector reserved.
+            let mut disabled = entry;
+            disabled.lo &= !1;
+            irt.set(index, disabled);
             return Err(e);
         }
 
@@ -254,6 +253,31 @@ impl InterruptRemapper for IommuController {
 }
 
 impl IommuController {
+    pub(crate) fn retire_interrupt(
+        &self,
+        device: crate::io::iommu::types::DeviceId,
+        index: u16,
+        vector: u8,
+    ) -> Result<(), IommuError> {
+        let mut guard = self
+            .interrupt_remap_table
+            .lock()
+            .map_err(|_| IommuError::Poisoned)?;
+        let table = guard.as_mut().ok_or(IommuError::NotPresent)?;
+        let mut entry = *table
+            .table
+            .get(usize::from(index))
+            .ok_or(IommuError::InvalidAddress)?;
+        if entry.hi as u16 != device.requester_id() || (entry.lo >> 16) as u8 != vector {
+            return Err(IommuError::InvalidAddress);
+        }
+        entry.lo &= !1;
+        table.set(index, entry);
+        self.invalidate_iec(false, index)?;
+        table.free(index);
+        Ok(())
+    }
+
     pub(crate) fn supports_interrupt_remapping(&self) -> bool {
         self.ecap & crate::io::iommu::vendors::intel::registers::ecap_bits::ECAP_IR != 0
     }

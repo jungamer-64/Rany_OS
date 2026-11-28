@@ -36,12 +36,12 @@ const MMIO_CMD_PTR_MASK: u64 = 0x7fff0;
 const CMD_COMPL_WAIT: u8 = 0x01;
 const CMD_INV_DEV_ENTRY: u8 = 0x02;
 const CMD_INV_IOMMU_PAGES: u8 = 0x03;
-const CMD_INV_IOTLB_PAGES: u8 = 0x04;
 const CMD_INV_IRT: u8 = 0x05;
 const CMD_INV_ALL: u8 = 0x08;
 
 const CMD_COMPL_WAIT_STORE_MASK: u32 = 0x01;
 const CMD_COMPL_WAIT_INT_MASK: u32 = 0x02;
+const CMD_COMPL_WAIT_FLUSH_MASK: u32 = 0x04;
 const CMD_INV_IOMMU_PAGES_SIZE_MASK: u64 = 0x01;
 const CMD_INV_IOMMU_PAGES_PDE_MASK: u32 = 0x02;
 const CMD_INV_IOMMU_PAGES_GN_MASK: u32 = 0x04;
@@ -64,7 +64,9 @@ impl AmdCommand {
 
     pub fn completion_wait(store_phys: u64, data: u64, interrupt: bool) -> Self {
         let mut cmd = Self::zero();
-        cmd.data[0] = lower32(store_phys) | CMD_COMPL_WAIT_STORE_MASK;
+        // The shared monotonic completion counter requires strict order
+        // between completion stores, even for independent commands.
+        cmd.data[0] = lower32(store_phys) | CMD_COMPL_WAIT_STORE_MASK | CMD_COMPL_WAIT_FLUSH_MASK;
         cmd.data[1] = upper32(store_phys);
         cmd.data[2] = lower32(data);
         cmd.data[3] = upper32(data);
@@ -98,32 +100,6 @@ impl AmdCommand {
             cmd.data[2] |= CMD_INV_IOMMU_PAGES_GN_MASK;
         }
         cmd.set_type(CMD_INV_IOMMU_PAGES);
-        cmd
-    }
-
-    pub fn invalidate_iotlb_pages(
-        device_id: u16,
-        qdep: u8,
-        address: u64,
-        size: u64,
-        pasid: Option<u32>,
-    ) -> Self {
-        let inv_address = build_inv_address(address, size);
-        let mut cmd = Self::zero();
-        cmd.data[0] = device_id as u32 | ((qdep as u32) << 24);
-        // DW1 bits [27:0] are reserved when GN=0; do not write device_id here.
-        // set_type() will OR the command type into DW1[31:28].
-        cmd.data[2] = lower32(inv_address);
-        cmd.data[3] = upper32(inv_address);
-        if let Some(pasid) = pasid {
-            // AMD-Vi Spec §2.4.3 with GN=1:
-            //   DW0[23:16] = PASID[19:12] (8 bits)
-            //   DW1[27:16] = PASID[11:0] (12 bits)
-            cmd.data[0] |= ((pasid >> 12) & 0xFF) << 16;
-            cmd.data[1] |= (pasid & 0xFFF) << 16;
-            cmd.data[2] |= CMD_INV_IOMMU_PAGES_GN_MASK;
-        }
-        cmd.set_type(CMD_INV_IOTLB_PAGES);
         cmd
     }
 
@@ -215,11 +191,6 @@ impl AmdCommandBuffer {
         let base = (self.phys_base & !0xfff) | MMIO_CMD_SIZE_512;
         self.registers.program_command_buffer(base);
         Ok(())
-    }
-
-    pub unsafe fn enable(&self) {
-        self.registers
-            .update_control(|control| control | super::registers::CONTROL_CMDBUF_EN);
     }
 
     pub fn submit(&mut self, cmd: AmdCommand) -> Result<u32, IommuError> {

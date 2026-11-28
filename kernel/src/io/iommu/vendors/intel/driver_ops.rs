@@ -107,6 +107,24 @@ impl IntelIommuDriver {
         controller.allocate_irte(segment, bus, device, function, vector, destination, logical)
     }
 
+    pub(crate) fn retire_interrupt(
+        &self,
+        device: DeviceId,
+        index: u16,
+        vector: u8,
+    ) -> Result<(), IommuError> {
+        let registry = self.registry()?;
+        let controller = registry
+            .find_controller_index_for_device(
+                device.segment,
+                device.bus,
+                device.device,
+                device.function,
+            )
+            .ok_or(IommuError::DeviceNotFound)?;
+        registry.controllers[controller].retire_interrupt(device, index, vector)
+    }
+
     pub(crate) fn get_remap_msi_message(&self, handle: u16) -> (u64, u32) {
         crate::io::iommu::runtime::irq::encode_remappable_msi_message(handle)
     }

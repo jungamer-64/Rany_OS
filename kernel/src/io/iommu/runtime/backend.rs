@@ -84,6 +84,18 @@ impl IommuBackend {
         }
     }
 
+    pub(crate) fn retire_interrupt(
+        &self,
+        device: DeviceId,
+        index: u16,
+        vector: u8,
+    ) -> Result<(), IommuError> {
+        match self {
+            Self::Intel(driver) => driver.retire_interrupt(device, index, vector),
+            Self::Amd(driver) => driver.retire_interrupt(device, index, vector),
+        }
+    }
+
     pub fn get_remap_msi_message(&self, handle: u16) -> (u64, u32) {
         match self {
             Self::Intel(driver) => driver.get_remap_msi_message(handle),

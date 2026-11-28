@@ -13,7 +13,7 @@ use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 use crate::mm::types::PAGE_SIZE_4K;
 use acpi_driver::ivrs::IvhdDeviceEntry;
 
-use super::device_table::{AmdDeviceTable, AmdDeviceTableEntry, apply_ivhd_flags};
+use super::device_table::{AmdDeviceTable, AmdDeviceTableEntry};
 use super::registers::*;
 use super::{AmdDomainInfo, AmdIommuDriver, AmdIvmdRange};
 
@@ -22,6 +22,37 @@ use super::{AmdDomainInfo, AmdIommuDriver, AmdIvmdRange};
 // ---------------------------------------------------------------------------
 
 mod driver_ops;
+
+#[derive(Debug)]
+pub(super) struct AmdDeviceBinding {
+    unit: usize,
+    requesters: Vec<u16>,
+    state: BindingState,
+}
+
+#[derive(Debug)]
+enum BindingState {
+    Publishing(Attachment),
+    Attached(Attachment),
+    Blocking {
+        attachment: Option<Attachment>,
+        isolate: bool,
+    },
+    Isolated,
+}
+
+#[derive(Debug)]
+struct Attachment {
+    domain: Arc<DomainState>,
+    interrupts: Option<super::irt::InterruptTable>,
+}
+
+impl AmdDeviceBinding {
+    pub(super) fn requesters(&self) -> (usize, &[u16]) {
+        (self.unit, &self.requesters)
+    }
+}
+
 pub(super) fn align_down(value: u64, align: usize) -> u64 {
     crate::util::align_down_u64(value, align as u64)
 }
@@ -194,14 +225,51 @@ pub(super) fn flags_for_entries(entries: &[IvhdDeviceEntry], devid: u16) -> u8 {
     })
 }
 
-pub(super) fn aliases_for_entries(entries: &[IvhdDeviceEntry], devid: u16) -> Vec<u16> {
-    let mut aliases = Vec::new();
-    for entry in entries {
-        AmdIommuDriver::collect_alias_from_entry(entry, devid, &mut aliases);
+/// Derive the lookup from the immutable IVRS inventory once, before admitting DMA.
+pub(super) fn requester_aliases(
+    units: &[super::AmdIommuUnit],
+) -> Result<hashbrown::HashMap<DeviceId, DeviceId>, IommuError> {
+    let mut aliases = hashbrown::HashMap::new();
+    for unit in units {
+        add_requester_aliases(&mut aliases, unit.segment, &unit.device_entries)?;
     }
-    aliases.sort_unstable();
-    aliases.dedup();
-    aliases
+    Ok(aliases)
+}
+
+fn add_requester_aliases(
+    aliases: &mut hashbrown::HashMap<DeviceId, DeviceId>,
+    segment: u16,
+    entries: &[IvhdDeviceEntry],
+) -> Result<(), IommuError> {
+    for entry in entries {
+        let (start, end, alias) = match *entry {
+            IvhdDeviceEntry::Alias { devid, alias, .. } => (devid, devid, alias),
+            IvhdDeviceEntry::AliasRange {
+                start, end, alias, ..
+            } => (start, end, alias),
+            _ => continue,
+        };
+        if start > end {
+            return Err(IommuError::FirmwareScope);
+        }
+        aliases
+            .try_reserve(usize::from(end - start) + 1)
+            .map_err(|_| IommuError::MetadataAllocation)?;
+        let canonical = DeviceId::from_bus_devfn(segment, (alias >> 8) as u8, alias as u8);
+        for source in start..=end {
+            if source == alias {
+                continue;
+            }
+            let source = DeviceId::from_bus_devfn(segment, (source >> 8) as u8, source as u8);
+            if aliases
+                .insert(source, canonical)
+                .is_some_and(|old| old != canonical)
+            {
+                return Err(IommuError::FirmwareScope);
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn reject_excluded_ranges(
@@ -224,4 +292,36 @@ pub(super) fn reject_excluded_ranges(
         return Err(IommuError::InvalidAddress);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod alias_tests {
+    use super::*;
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn alias_cohorts_are_segment_local_and_reject_ambiguous_requesters() {
+        let mut aliases = hashbrown::HashMap::new();
+        let range = IvhdDeviceEntry::AliasRange {
+            start: 0x108,
+            end: 0x10f,
+            alias: 0x204,
+            flags: 0,
+        };
+        add_requester_aliases(&mut aliases, 1, &[range]).unwrap();
+        assert_eq!(aliases.len(), 8);
+        let source = DeviceId::from_bus_devfn(1, 1, 8);
+        assert_eq!(aliases[&source], DeviceId::from_bus_devfn(1, 2, 4));
+        assert!(!aliases.contains_key(&DeviceId::from_bus_devfn(0, 1, 8)));
+
+        let conflicting = IvhdDeviceEntry::Alias {
+            devid: 0x108,
+            alias: 0x208,
+            flags: 0,
+        };
+        assert_eq!(
+            add_requester_aliases(&mut aliases, 1, &[conflicting]),
+            Err(IommuError::FirmwareScope)
+        );
+    }
 }

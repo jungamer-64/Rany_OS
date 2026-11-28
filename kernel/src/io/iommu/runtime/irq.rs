@@ -8,7 +8,7 @@
 
 use super::registry::get_iommu_driver;
 use crate::cpu::ApicId;
-use crate::io::iommu::types::IommuError;
+use crate::io::iommu::types::{DeviceId, IommuError};
 
 // ============================================================================
 // MSI/MSI-X Constants (x86 Format)
@@ -47,23 +47,12 @@ pub fn map_interrupt(
     driver.map_interrupt(segment, bus, device, function, vector, destination, logical)
 }
 
-/// Generate MSI Address and Data for a Remapped Interrupt
-///
-/// # Arguments
-/// * `handle` - IRTE handle returned by `map_interrupt`
-///
-/// # Returns
-/// (Address, Data) tuple for MSI/MSI-X configuration
-///
-/// # Address Format (x86, Intel VT-d/AMD-Vi compatible)
-/// ```text
-/// Bits [31:20]: 0xFEE (LAPIC base)
-/// Bits [19:5]:  handle[14:0] - lower 15 bits of interrupt handle
-/// Bit  [4]:     Interrupt Format (1 = remappable)
-/// Bit  [3]:     Sub-handle Valid (0 for one IRTE per message)
-/// Bit  [2]:     handle[15]
-/// Bits [1:0]:   Reserved (0)
-/// ```
+pub(crate) fn retire_interrupt(device: DeviceId, index: u16, vector: u8) -> Result<(), IommuError> {
+    let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
+    driver.retire_interrupt(device, index, vector)
+}
+
+/// Generate the active backend's MSI address and data for an admitted IRTE.
 pub fn get_remap_msi_message(handle: u16) -> (u64, u32) {
     if let Some(driver) = get_iommu_driver() {
         return driver.get_remap_msi_message(handle);
