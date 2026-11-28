@@ -174,6 +174,14 @@ impl FragmentBuffer {
                 );
                 return false;
             }
+            // The last fragment fixes the datagram's end, including for
+            // fragments that arrived before it.
+            if self.segments.iter().any(|segment| {
+                usize::from(segment.offset) + segment.payload.total_len()
+                    > usize::from(fragment_end)
+            }) {
+                return false;
+            }
             self.total_len = Some(fragment_end);
         } else if let Some(total) = self.total_len
             && fragment_end > total
@@ -366,7 +374,7 @@ impl FragmentBuffer {
         for segment in segments {
             packet = packet.try_append(segment.payload).ok()?;
         }
-        Some(packet)
+        (packet.total_len() == header_len + total_len).then_some(packet)
     }
 }
 

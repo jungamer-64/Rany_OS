@@ -3,7 +3,7 @@
 // ============================================================================
 
 use crate::net::l4::tcp::retransmit::{
-    get_or_create_retransmit_queue, retransmit_queue_ack, retransmit_queue_push,
+    get_or_create_retransmit_queue, retransmit_queue_ack, retransmit_queue_admit,
     retransmit_queue_remove, retransmit_queue_transmit_ready,
 };
 use crate::net::l4::tcp::segment::TcpSegmentBuilder;
@@ -47,7 +47,12 @@ pub fn tcp_retransmit_queue_rejection_and_return_smoke() -> bool {
         .build_checked_packet(local, remote)
         .expect("retransmit packet");
     let backing = payload.segments()[0].data().as_ptr();
-    retransmit_queue_push(runtime, if_id, local, remote, 100, 1, payload);
+    assert_eq!(
+        retransmit_queue_admit(runtime, if_id, local, remote, 100, || Ok(Some((
+            1, payload
+        )))),
+        Ok(Some(1))
+    );
 
     // LOOP_PROOF: mode=event; reason=This fresh runtime has no consumer, so each accepted request occupies a bounded slot until rejection takes the explicit break.;
     loop {
@@ -108,7 +113,12 @@ pub fn tcp_retransmit_ack_before_completion_smoke() -> bool {
         .build_checked_packet(local, remote)
         .expect("ACK packet");
     let backing = payload.segments()[0].data().as_ptr();
-    retransmit_queue_push(runtime, if_id, local, remote, 200, 1, payload);
+    assert_eq!(
+        retransmit_queue_admit(runtime, if_id, local, remote, 200, || Ok(Some((
+            1, payload
+        )))),
+        Ok(Some(1))
+    );
     assert!(retransmit_queue_transmit_ready(
         runtime, if_id, local, remote, 200
     ));

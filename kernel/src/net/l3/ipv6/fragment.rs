@@ -281,6 +281,15 @@ impl Ipv6FragmentBuffer {
                 );
                 return Err(Ipv6ReassemblyError::Overlap);
             }
+            // A newly discovered end must also contain every fragment
+            // already stored, not merely the fragments received afterwards.
+            if self
+                .segments
+                .iter()
+                .any(|segment| segment.offset as usize + segment.payload.total_len() > end as usize)
+            {
+                return Err(Ipv6ReassemblyError::Overlap);
+            }
             self.total_len = Some(end);
         } else if let Some(total) = self.total_len
             && end > total
@@ -522,7 +531,7 @@ impl Ipv6FragmentBuffer {
             reassembled = reassembled.try_append(segment.payload).ok()?;
         }
 
-        Some(reassembled)
+        (reassembled.total_len() == unfrag_len + total).then_some(reassembled)
     }
 }
 

@@ -14,7 +14,7 @@ use kernel_api::resource::net::{PacketPayload, RetainedPayload};
 use super::segment::send_tcp_segment_payload_in;
 use super::tcb::TcpFlowKey;
 use super::timer_wheel::TimingWheel;
-use crate::net::l4::types::{EndpointAddr, conn_key_hash, seq_leq as seq_leq_fn};
+use crate::net::l4::types::{EndpointAddr, EndpointError, conn_key_hash, seq_leq as seq_leq_fn};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::device::TxBody;
 use crate::net::runtime::manager::NetIfId;
@@ -241,17 +241,37 @@ impl RetransmitQueue {
     ) -> RetransmitAttempt {
         // SACKされていない最古のセグメントを探す
         if let Some(seg) = self.unacked.iter_mut().find(|s| !s.is_sacked) {
-            if seg.retransmit_count >= self.max_retries {
+            // Persist is flow control, not a failed connection. A peer is
+            // allowed to keep its advertised receive window closed.
+            let persist = tcp_table_in(runtime)
+                .read(if_id, local, remote, |entry| {
+                    let tcb = super::tcb::TcpControlBlockSnapshot::from(entry);
+                    tcb.snd_wnd == 0
+                        && matches!(
+                            tcb.state,
+                            super::tcb::TcpConnectionState::Established
+                                | super::tcb::TcpConnectionState::CloseWait
+                                | super::tcb::TcpConnectionState::FinWait1
+                                | super::tcb::TcpConnectionState::LastAck
+                                | super::tcb::TcpConnectionState::Closing
+                        )
+                })
+                .unwrap_or(false);
+            if !persist && seg.retransmit_count >= self.max_retries {
                 // 最大再送回数超過
                 return RetransmitAttempt::MaxRetriesExceeded;
             }
 
-            seg.retransmit_count += 1;
+            if !persist {
+                seg.retransmit_count += 1;
+            }
             let seq = seg.seq;
             self.rto_calc.backoff();
 
             // RFC 6582: RTOタイムアウト発生時に輻輳制御状態を更新 (recover = snd_nxt, cwnd = 1 MSS)
-            tcp_table_in(runtime).record_retransmit_timeout(if_id, local, remote, current_tick);
+            if !persist {
+                tcp_table_in(runtime).record_retransmit_timeout(if_id, local, remote, current_tick);
+            }
 
             return if self.transmit_ready_inner(
                 runtime,
@@ -405,29 +425,36 @@ pub fn get_or_create_retransmit_queue(
     }
 }
 
-/// 再送キューにセグメント追加
-pub fn retransmit_queue_push(
+/// Reserve retransmit storage before the caller consumes its send buffer.
+/// The preparation callback runs only after admission can succeed.
+pub(crate) fn retransmit_queue_admit(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,
     local: EndpointAddr,
     remote: EndpointAddr,
     seq: u32,
-    seq_len: u32,
-    data: PacketPayload,
-) {
+    prepare: impl FnOnce() -> Result<Option<(u32, PacketPayload)>, EndpointError>,
+) -> Result<Option<u32>, EndpointError> {
     let key = TcpFlowKey::new(if_id, local, remote);
     let idx = retransmit_shard_index(key);
     let current_tick = tcp_table_in(runtime).current_tick.load(Ordering::Relaxed);
     let state = tcp_runtime_in(runtime).retransmit();
     let mut queues = state.queues[idx].lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(queue) = queues.get_mut(&key) {
-        let was_empty = queue.is_empty();
-        queue.push(seq, seq_len, data, current_tick);
-        if was_empty {
-            let deadline = current_tick + queue.get_rto();
-            schedule_retransmit_timer(runtime, key, deadline);
-        }
+    let queue = queues.get_mut(&key).ok_or(EndpointError::NotConnected)?;
+    queue
+        .unacked
+        .try_reserve(1)
+        .map_err(|_| EndpointError::ResourceExhausted)?;
+    let Some((seq_len, data)) = prepare()? else {
+        return Ok(None);
+    };
+    let was_empty = queue.is_empty();
+    queue.push(seq, seq_len, data, current_tick);
+    if was_empty {
+        let deadline = current_tick + queue.get_rto();
+        schedule_retransmit_timer(runtime, key, deadline);
     }
+    Ok(Some(seq_len))
 }
 
 pub fn retransmit_queue_transmit_ready(
@@ -544,6 +571,9 @@ pub fn check_retransmit_timeouts(runtime: NetRuntimeHandle) {
         if let Some(ref mut tw) = *tw_guard {
             tw.advance(current_tick)
         } else {
+            // Queue admission takes the shard before the timer wheel. Drop
+            // the wheel guard before scanning shards in the fallback path.
+            drop(tw_guard);
             let mut result = Vec::new();
             for i in 0..RETRANSMIT_SHARDS {
                 let queues = state.queues[i].lock().unwrap_or_else(|e| e.into_inner());
@@ -566,11 +596,12 @@ pub fn check_retransmit_timeouts(runtime: NetRuntimeHandle) {
         if let Some(queue) = queues.get_mut(&key) {
             if queue.check_timeout(current_tick).is_some() {
                 match queue.retransmit(runtime, key.if_id, key.local, key.remote, current_tick) {
-                    RetransmitAttempt::Sent => {
+                    RetransmitAttempt::Sent | RetransmitAttempt::NoReadySegment => {
+                        // A rejected command still leaves the segment owned
+                        // by the queue. Do not lose its only retry timer.
                         let deadline = current_tick + queue.get_rto();
                         schedule_retransmit_timer(runtime, key, deadline);
                     }
-                    RetransmitAttempt::NoReadySegment => {}
                     RetransmitAttempt::MaxRetriesExceeded => {
                         log::info!(
                             "TCP: Max retransmit exceeded for {:?} -> {:?}",

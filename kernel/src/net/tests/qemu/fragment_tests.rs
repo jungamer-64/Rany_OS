@@ -64,6 +64,20 @@ pub fn ipv4_fragment_count_limit_discards_datagram_smoke() -> bool {
     assert!(ipv4_fragment(&mut reassembler, [10, 0, 0, 2], 1, limit, 0).is_none());
     assert_eq!(reassembler.active_buffers(), 0);
     assert_eq!(reassembler.stats().dropped_invalid, 1);
+
+    // An earlier, non-overlapping fragment outside the subsequently
+    // declared datagram end invalidates the whole reassembly.
+    let src = [10, 0, 0, 2];
+    assert!(ipv4_fragment(&mut reassembler, src, 2, 3, 0).is_none());
+    assert!(ipv4_fragment(&mut reassembler, src, 2, 0, 0).is_none());
+    let last = ipv4_header(src, 2, 1, false);
+    assert!(
+        reassembler
+            .process_fragment(&last, payload(20), payload(8), 0)
+            .is_none()
+    );
+    assert_eq!(reassembler.active_buffers(), 0);
+    assert_eq!(reassembler.stats().dropped_invalid, 2);
     true
 }
 
@@ -155,6 +169,25 @@ pub fn ipv6_fragment_count_limit_discards_datagram_smoke() -> bool {
     assert!(matches!(
         ipv6_fragment(&mut reassembler, src, 1, limit, 0),
         Err(Ipv6ReassemblyError::ResourceLimit)
+    ));
+    assert_eq!(reassembler.active_buffers(), 0);
+    assert!(matches!(
+        ipv6_fragment(&mut reassembler, src, 2, 3, 0),
+        Ok(None)
+    ));
+    assert!(matches!(
+        ipv6_fragment(&mut reassembler, src, 2, 0, 0),
+        Ok(None)
+    ));
+    let last = Ipv6FragmentHeader {
+        next_header: UDP,
+        fragment_offset: 1,
+        more_fragments: false,
+        identification: 2,
+    };
+    assert!(matches!(
+        reassembler.process_fragment(src, ipv6_address(1), None, &last, payload(8), 0),
+        Err(Ipv6ReassemblyError::Overlap)
     ));
     assert_eq!(reassembler.active_buffers(), 0);
     true

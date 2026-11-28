@@ -121,7 +121,9 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 - 断片は IP ヘッダの情報で再構成への収容を判定する。ポート、TCP flags、ICMP type/code を含む受信ポリシーは再構成済みのデータグラムに適用し、RAW を含む endpoint への配送に先行する。
 - IPv6 は quoted packet、fragment reassembly、TX を含めて scatter-gather / packet-backed ownership で扱う。
 - TCP send の成功は send buffer admission の完了を意味する。admission 前の connection、budget、allocation、routing failure は payload owner を error で返し、receive の EOF は空 payload ではなく `EndOfStream` で表す。
+- send buffer admission はローカルの保持上限で判定し、相手の受信窓と congestion window は送信時に適用する。ゼロウィンドウ時にも保持済みデータから persist probe を送信し、窓が開いた ACK または周期処理で送信を再開する。受信窓の更新通知は相手の窓と独立して管理し、ACK の送信受理まで再試行する。
 - TCP の再送キューは segment を retained payload として ACK まで保持し、送信のたびに同じ backing の handle を渡す。キューに入った segment は sequence 空間を消費済みであり、送信が受理されなかった場合は再送タイマーが再試行する。ACK はキューの handle を直ちに解放し、device が読み取り中の backing は region が completion まで保持する。
+- segment の生成や再送キューの予約が失敗した場合、送信バッファに元のデータを順序どおり保持し、sequence 空間を消費しない。TCB テーブルを保持したまま socket のロックを取得しない。
 - socket の受信キュー（TCP、UDP、RAW）が保持する受信 payload は、segment 数を runtime 全体で 512 までとする。上限を超える payload はキューに入れない。port の RX pool は、IPv4 / IPv6 の再構成、TCP の out-of-order、socket 受信キューの各上限と、device へ投稿しておく予備を合わせた数の buffer を持ち、保持が受信を枯渇させないようにする。
 - TCP の challenge ACK と stateless RST の送信予約は kernel 全体の時間窓で制限する。共有実行資源への負荷を抑えるため、system uptime を基準に期間更新と予約を直列化し、packet の構築・送信拒否後も予約を消費済みとして扱う。
 - 各 TCB の out-of-order queue は最大 16 segment とし、runtime 全体では 512 permit を admission 前に予約する。overlap、eviction、prune、connection close の全経路が permit を返す。

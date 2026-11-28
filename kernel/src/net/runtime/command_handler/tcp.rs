@@ -56,86 +56,104 @@ impl RuntimeCommandHandler {
             .unwrap_or(0);
         // LOOP_PROOF: mode=bounded; reason=Each nonempty segment consumes remaining bytes from the entry snapshot, while a closed window or failed submission ends the batch.;
         while remaining != 0 {
-            let send_params = tcb_table
-                .read_by_socket_id(fd, |entry| TcpControlBlockSnapshot::from(entry))
-                .and_then(|tcb| {
-                    // Data may follow our receive side being closed by the
-                    // peer (CLOSE-WAIT) but never our own FIN.
-                    if !matches!(
-                        tcb.state,
-                        TcpConnectionState::Established | TcpConnectionState::CloseWait
-                    ) {
-                        return None;
-                    }
+            let send_result = socket.with_inner_mut(|inner| {
+                let Some((tcb, probe)) = tcb_table.read_by_socket_id(fd, |entry| {
+                    (
+                        TcpControlBlockSnapshot::from(entry),
+                        entry.zero_window_probe_due(tcb_table.get_current_tick()),
+                    )
+                }) else {
+                    return Ok(None);
+                };
+                // Data may follow our receive side being closed by the
+                // peer (CLOSE-WAIT) but never our own FIN.
+                if !matches!(
+                    tcb.state,
+                    TcpConnectionState::Established | TcpConnectionState::CloseWait
+                ) {
+                    return Ok(None);
+                }
 
-                    // One descriptor carries the generated L2/L3 header with
-                    // the TCP header moved into it; the rest carry payload.
-                    let max_payload_segments =
-                        crate::net::runtime::device::port_max_tx_segments_in(runtime, tcb.if_id)
-                            .map_or(1, |max| max.saturating_sub(1).max(1));
-                    let inner_result = socket.with_inner_mut(|inner| {
-                        let pending_len = inner.send_payload_bytes().min(remaining);
-                        if pending_len == 0 || tcb.should_delay_send(pending_len) {
-                            return None;
+                // One descriptor carries the generated L2/L3 header with
+                // the TCP header moved into it; the rest carry payload.
+                let max_payload_segments =
+                    crate::net::runtime::device::port_max_tx_segments_in(runtime, tcb.if_id)
+                        .map_or(1, |max| max.saturating_sub(1).max(1));
+                let pending_len = inner.send_payload_bytes().min(remaining);
+                if pending_len == 0 || (!probe && tcb.should_delay_send(pending_len)) {
+                    return Ok(None);
+                }
+                let effective_wnd = if probe {
+                    1
+                } else {
+                    tcb.effective_send_window()
+                };
+                let len = (pending_len as u32)
+                    .min(effective_wnd)
+                    .min(tcb.max_segment_payload) as usize;
+                if len == 0 {
+                    return Ok(None);
+                }
+                let seq = tcb.snd_nxt;
+                let mut builder = TcpSegmentBuilder::new(local.port(), remote.port())
+                    .seq(seq)
+                    .ack(tcb.rcv_nxt)
+                    .ack_flag()
+                    .psh()
+                    .window(tcb.advertised_recv_window());
+                if tcb.ts_enabled {
+                    builder = builder.nop().nop().timestamp(
+                        crate::net::l4::tcp::tcp_rx::generate_tcp_timestamp_in(runtime),
+                        tcb.ts_ecr,
+                    );
+                }
+                // Reserve queue storage before taking bytes, and restore
+                // the original window under this same socket guard if
+                // segment construction fails.
+                let admitted = crate::net::l4::tcp::retransmit::retransmit_queue_admit(
+                    runtime,
+                    tcb.if_id,
+                    local,
+                    remote,
+                    seq,
+                    || {
+                        let Some(payload) =
+                            inner.take_send_segment_window(len, max_payload_segments)
+                        else {
+                            return Ok(None);
+                        };
+                        let data_len = payload.total_len() as u32;
+                        match builder
+                            .payload_packet(payload)
+                            .build_checked_packet(local, remote)
+                        {
+                            Ok(segment) => Ok(Some((data_len, segment))),
+                            Err((error, payload)) => {
+                                inner.restore_send_segment_window(
+                                    payload.expect("failed data build retains its body"),
+                                );
+                                Err(error)
+                            }
                         }
-
-                        let effective_wnd = tcb.effective_send_window();
-                        if effective_wnd == 0 {
-                            return None;
-                        }
-
-                        let len = (pending_len as u32)
-                            .min(effective_wnd)
-                            .min(tcb.max_segment_payload)
-                            as usize;
-                        if len == 0 {
-                            return None;
-                        }
-
-                        let send_payload =
-                            inner.take_send_segment_window(len, max_payload_segments)?;
-                        Some((tcb, send_payload))
-                    });
-                    inner_result.flatten()
-                });
-
-            let Some((tcb, send_payload)) = send_params else {
-                break;
-            };
-
-            let if_id = tcb.if_id;
-            let seq = tcb.snd_nxt;
-            let data_len = send_payload.total_len() as u32;
-            remaining -= send_payload.total_len();
-            let mut builder = TcpSegmentBuilder::new(local.port(), remote.port())
-                .seq(seq)
-                .ack(tcb.rcv_nxt)
-                .ack_flag()
-                .psh()
-                .window(tcb.advertised_recv_window());
-            if tcb.ts_enabled {
-                builder = builder.nop().nop().timestamp(
-                    crate::net::l4::tcp::tcp_rx::generate_tcp_timestamp_in(runtime),
-                    tcb.ts_ecr,
-                );
-            }
-            let segment = builder
-                .payload_packet(send_payload)
-                .build_checked_packet(local, remote);
-            let segment = match segment {
-                Ok(segment) => segment,
-                Err(error) => return EventHandleResult::ProtocolError(error),
-            };
-            // The retransmit queue now owns the segment and its timer, so the
-            // sequence space is consumed even if this first attempt is not
-            // admitted; the timer retransmits it.
-            crate::net::l4::tcp::retransmit::retransmit_queue_push(
-                runtime, if_id, local, remote, seq, data_len, segment,
-            );
-            let _ = tcb_table.mark_payload_sent(if_id, local, remote, data_len);
-            let _ = socket.with_inner_mut(|inner| {
+                    },
+                )?;
+                let Some(data_len) = admitted else {
+                    return Ok(None);
+                };
+                // The retransmit queue owns these bytes now. The first
+                // transmission may fail without losing the segment.
+                if !tcb_table.mark_payload_sent(tcb.if_id, local, remote, data_len, probe) {
+                    return Err(EndpointError::NotConnected);
+                }
                 inner.send_waker.wake();
+                Ok(Some((tcb.if_id, seq, data_len, probe)))
             });
+            let (if_id, seq, data_len, probe) = match send_result {
+                Some(Ok(Some(sent))) => sent,
+                Some(Err(error)) => return EventHandleResult::ProtocolError(error),
+                _ => break,
+            };
+            remaining -= data_len as usize;
             if !crate::net::l4::tcp::retransmit::retransmit_queue_transmit_ready(
                 runtime, if_id, local, remote, seq,
             ) {
@@ -143,6 +161,9 @@ impl RuntimeCommandHandler {
                     "[TCP] segment {} awaits retransmission after rejection",
                     seq
                 );
+            }
+            if probe {
+                break;
             }
         }
 
@@ -159,55 +180,62 @@ impl RuntimeCommandHandler {
         local: EndpointAddr,
         remote: EndpointAddr,
     ) -> EventHandleResult {
-        let close_ready = socket
-            .with_inner(|inner| inner.is_tcp_closing_or_closed() && !inner.has_send_data())
-            .unwrap_or(false);
-        if !close_ready {
-            return EventHandleResult::Success;
-        }
-
         let tcb_table = tcp_table_in(runtime);
-        let Some(if_id) =
-            tcb_table.read_by_socket_id(socket.socket_id(), |tcb| tcb.route_interface())
-        else {
-            return EventHandleResult::Success;
+        let result = socket.with_inner_mut(|inner| {
+            if inner.tcp_state() != Some(TcpSocketState::Closing) || inner.has_send_data() {
+                return Ok(None);
+            }
+            let Some(tcb) = tcb_table.read_by_socket_id(socket.socket_id(), |entry| {
+                TcpControlBlockSnapshot::from(entry)
+            }) else {
+                return Ok(None);
+            };
+            if !matches!(
+                tcb.state,
+                TcpConnectionState::Established | TcpConnectionState::CloseWait
+            ) {
+                return Ok(None);
+            }
+            let mut builder = TcpSegmentBuilder::new(local.port(), remote.port())
+                .seq(tcb.snd_nxt)
+                .ack(tcb.rcv_nxt)
+                .ack_flag()
+                .fin()
+                .window(tcb.advertised_recv_window());
+            if tcb.ts_enabled {
+                builder = builder.nop().nop().timestamp(
+                    crate::net::l4::tcp::tcp_rx::generate_tcp_timestamp_in(runtime),
+                    tcb.ts_ecr,
+                );
+            }
+            // Do not consume FIN's sequence number or enter FIN-WAIT/LAST-ACK
+            // until the retransmit queue owns the FIN.
+            crate::net::l4::tcp::retransmit::retransmit_queue_admit(
+                runtime,
+                tcb.if_id,
+                local,
+                remote,
+                tcb.snd_nxt,
+                || {
+                    builder
+                        .build_checked_packet(local, remote)
+                        .map(|segment| Some((1, segment)))
+                        .map_err(|(error, _)| error)
+                },
+            )?;
+            let Some(fin) = tcb_table.begin_close(tcb.if_id, local, remote) else {
+                return Err(EndpointError::NotConnected);
+            };
+            Ok(Some((tcb.if_id, fin.seq)))
+        });
+        let (if_id, seq) = match result {
+            Some(Ok(Some(fin))) => fin,
+            Some(Err(error)) => return EventHandleResult::ProtocolError(error),
+            _ => return EventHandleResult::Success,
         };
-        let Some(fin) = tcb_table.begin_close(if_id, local, remote) else {
-            // Not ESTABLISHED / CLOSE-WAIT: the FIN was already sent.
-            return EventHandleResult::Success;
-        };
-
-        let mut builder = TcpSegmentBuilder::new(local.port(), remote.port())
-            .seq(fin.seq)
-            .ack(fin.ack)
-            .ack_flag()
-            .fin()
-            .window(fin.window);
-        if let Some(ts_ecr) = fin.timestamp_echo {
-            builder = builder.nop().nop().timestamp(
-                crate::net::l4::tcp::tcp_rx::generate_tcp_timestamp_in(runtime),
-                ts_ecr,
-            );
-        }
-        let fin_segment = match builder.build_checked_packet(local, remote) {
-            Ok(segment) => segment,
-            Err(error) => return EventHandleResult::ProtocolError(error),
-        };
-
-        // The FIN consumes one sequence number and is retransmitted like data
-        // until it is acknowledged.
-        crate::net::l4::tcp::retransmit::retransmit_queue_push(
-            runtime,
-            if_id,
-            local,
-            remote,
-            fin.seq,
-            1,
-            fin_segment,
-        );
         // The queued FIN is retransmitted by its timer if this attempt fails.
         if !crate::net::l4::tcp::retransmit::retransmit_queue_transmit_ready(
-            runtime, if_id, local, remote, fin.seq,
+            runtime, if_id, local, remote, seq,
         ) {
             log::debug!("TCP: FIN for {} -> {} awaits retransmission", local, remote);
         }
@@ -410,7 +438,7 @@ impl RuntimeCommandHandler {
 
         let syn_segment = match syn_segment {
             Ok(segment) => segment,
-            Err(e) => return EventHandleResult::ProtocolError(e),
+            Err((e, _)) => return EventHandleResult::ProtocolError(e),
         };
 
         if let Err(e) = self.send_tcp_segment(runtime, resolved_if, local_addr, remote, syn_segment)

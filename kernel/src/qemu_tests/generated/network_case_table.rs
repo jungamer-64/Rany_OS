@@ -101,6 +101,7 @@ pub(super) static NETWORK_RUNTIME_CASES: &[(&str, NetworkRuntimeCase)] = &[
     ("net_peripheral_tcp_segment_mixed_family_rejection_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_peripheral_tcp_segment_mixed_family_rejection_smoke)),
     ("net_peripheral_tcp_segment_with_data_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_peripheral_tcp_segment_with_data_smoke)),
     ("net_peripheral_tcp_segment_with_options_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_peripheral_tcp_segment_with_options_smoke)),
+    ("net_peripheral_tcp_zero_window_send_and_resume_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_peripheral_tcp_zero_window_send_and_resume_smoke)),
     ("net_runtime_interface_topology_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_runtime_interface_topology_smoke)),
     ("net_tls_wave8_aes_ctr_roundtrip_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_tls_wave8_aes_ctr_roundtrip_smoke)),
     ("net_tls_wave8_aes_gcm_256_roundtrip_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_tls_wave8_aes_gcm_256_roundtrip_smoke)),

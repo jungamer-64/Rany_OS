@@ -22,18 +22,6 @@ pub const MIN_ADVERTISE_WINDOW: u32 = 536; // 1 MSS minimum
 /// ゼロウィンドウプローブ間隔 (ミリ秒)
 pub const ZERO_WINDOW_PROBE_INTERVAL_MS: u64 = 500;
 
-/// フロー制御状態
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum FlowControlState {
-    /// 通常動作
-    #[default]
-    Normal,
-    /// ゼロウィンドウ状態（受信側バッファフル）
-    ZeroWindow,
-    /// ゼロウィンドウプローブ中
-    ZeroWindowProbe,
-}
-
 /// フロー制御コントローラ
 #[derive(Debug)]
 pub struct FlowController {
@@ -45,8 +33,6 @@ pub struct FlowController {
     advertised_window: u32,
     /// 相手の広告ウィンドウ（スケール後の実値）
     peer_window: u32,
-    /// フロー制御状態
-    state: FlowControlState,
     /// ゼロウィンドウプローブカウンタ
     probe_count: u8,
     /// 最後のプローブ時刻（tick）
@@ -69,7 +55,6 @@ impl FlowController {
             buffer_used: 0,
             advertised_window: size,
             peer_window: 65535, // 初期値
-            state: FlowControlState::Normal,
             probe_count: 0,
             last_probe_tick: 0,
             window_update_needed: false,
@@ -97,9 +82,6 @@ impl FlowController {
         // 受信した分だけ広告ウィンドウを減らして、ウィンドウ右端を維持する (RFC 1122)
         self.advertised_window = self.advertised_window.saturating_sub(bytes);
 
-        if self.advertised_window == 0 {
-            self.state = FlowControlState::ZeroWindow;
-        }
         self.advertised_window
     }
 
@@ -126,8 +108,6 @@ impl FlowController {
         if can_update {
             self.advertised_window = available;
             self.window_update_needed = true;
-            self.state = FlowControlState::Normal;
-            self.probe_count = 0;
         }
 
         self.advertised_window
@@ -137,26 +117,25 @@ impl FlowController {
     pub fn update_peer_window(&mut self, window: u32) {
         let prev = self.peer_window;
         self.peer_window = window;
-
-        // ゼロウィンドウ検出
-        if window == 0 {
-            if self.state != FlowControlState::ZeroWindowProbe {
-                self.state = FlowControlState::ZeroWindowProbe;
-                self.probe_count = 0;
-            }
-        } else if prev == 0 && window > 0 {
-            // ゼロウィンドウから回復
-            self.state = FlowControlState::Normal;
+        if (prev == 0) != (window == 0) {
             self.probe_count = 0;
         }
+    }
+
+    pub(crate) fn window_update_needed(&self) -> bool {
+        self.window_update_needed
+    }
+
+    pub(crate) fn confirm_window_update(&mut self) {
+        self.window_update_needed = false;
     }
 
     /// ゼロウィンドウプローブが必要か確認
     ///
     /// - current_tick: 現在のtick
     /// Returns: プローブを送信すべきか
-    pub fn should_send_probe(&mut self, current_tick: u64) -> bool {
-        if self.state != FlowControlState::ZeroWindowProbe {
+    pub fn should_send_probe(&self, current_tick: u64) -> bool {
+        if self.peer_window != 0 {
             return false;
         }
 

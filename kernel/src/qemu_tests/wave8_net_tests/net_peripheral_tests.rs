@@ -261,6 +261,10 @@ pub fn net_peripheral_tcp_drop_without_close_resets_connection_smoke() -> bool {
     crate::net::qemu_tests::tcp_drop_without_close_resets_connection_smoke()
 }
 
+pub fn net_peripheral_tcp_zero_window_send_and_resume_smoke() -> bool {
+    crate::net::qemu_tests::tcp_zero_window_send_and_resume_smoke()
+}
+
 pub fn net_peripheral_snapshot_counter_deltas_and_events_smoke() -> bool {
     crate::net::qemu_tests::snapshot_counter_deltas_and_events_smoke()
 }

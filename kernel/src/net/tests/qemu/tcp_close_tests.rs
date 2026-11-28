@@ -4,7 +4,6 @@
 
 use crate::net::l4::socket::{Socket, TcpSocketState, lookup_socket_in};
 use crate::net::l4::tcp::TcpConnection;
-use crate::net::l4::tcp::retransmit::get_or_create_retransmit_queue;
 use crate::net::l4::tcp::segment::TcpSegmentBuilder;
 use crate::net::l4::tcp::tcb::{TcpConnectionState, TcpControlBlock, tcp_flags};
 use crate::net::l4::tcp::tcp_rx::process_tcp_segment_payload_on;
@@ -97,9 +96,6 @@ impl Fixture {
             ))
             .expect("connection TCB");
         assert!(table.mark_syn_sent(IF_ID, local, remote));
-        assert!(get_or_create_retransmit_queue(
-            runtime, IF_ID, local, remote
-        ));
         let fixture = Self {
             runtime,
             resources,
@@ -160,6 +156,29 @@ impl Fixture {
 
     fn tcb_state(&self) -> Option<TcpConnectionState> {
         tcp_table_in(self.runtime).read(IF_ID, self.local, self.remote, |tcb| tcb.state())
+    }
+
+    fn peer_window_ack(&self, ack: u32, window: u16) {
+        let segment = TcpSegmentBuilder::new(self.remote.port(), self.local.port())
+            .seq(PEER_ISN + 1)
+            .ack(ack)
+            .ack_flag()
+            .window(window)
+            .build_checked_packet(self.remote, self.local)
+            .expect("peer window ACK");
+        process_tcp_segment_payload_on(self.runtime, IF_ID, REMOTE_IP, LOCAL_IP, segment);
+    }
+
+    fn drive_data_ready(&self) {
+        let command = self
+            .resources
+            .command_queue
+            .recv()
+            .expect("pending send command");
+        assert!(
+            matches!(command, RuntimeCommand::Transport(TransportCommand::TcpDataReady { socket_id }) if socket_id == self.socket.socket_id())
+        );
+        let _ = crate::net::runtime::command_handler::drive_command_in(self.runtime, command);
     }
 
     fn socket_registered(&self) -> bool {
@@ -256,5 +275,53 @@ pub fn tcp_drop_without_close_resets_connection_smoke() -> bool {
     assert_eq!(sent[0].seq(), LOCAL_ISN + 1);
     assert_eq!(sent[0].flags(), tcp_flags::RST);
     assert!(!sent[0].retransmittable());
+    true
+}
+
+/// A full peer window does not prevent local admission. A persist probe and
+/// the reopening ACK drive all queued bytes without another application send.
+pub fn tcp_zero_window_send_and_resume_smoke() -> bool {
+    use core::future::Future;
+    use core::sync::atomic::Ordering;
+    use core::task::{Context, Poll, Waker};
+
+    let fixture = Fixture::established(58_102);
+    fixture.peer_window_ack(LOCAL_ISN + 1, 0);
+    let mut connection = TcpConnection::from_socket(fixture.socket);
+    let mut cx = Context::from_waker(Waker::noop());
+    {
+        let mut send = core::pin::pin!(connection.send_payload(data_payload(b"data")));
+        assert!(matches!(send.as_mut().poll(&mut cx), Poll::Ready(Ok(()))));
+    }
+    fixture.drive_data_ready();
+    assert!(fixture.take_segments().is_empty());
+
+    let table = tcp_table_in(fixture.runtime);
+    table.current_tick.store(500, Ordering::Relaxed);
+    table.tick(fixture.runtime);
+    fixture.drive_data_ready();
+    let probe = fixture.take_segments();
+    assert_eq!(probe.len(), 1);
+    assert_eq!(probe[0].seq(), LOCAL_ISN + 1);
+    assert_eq!(probe[0].data_len(), 1);
+    assert!(probe[0].retransmittable());
+    assert_eq!(
+        PacketPayloadView::new(probe[0].payload.payload()).read_array::<1>(20),
+        Some(*b"d")
+    );
+    drop(probe);
+
+    fixture.peer_window_ack(LOCAL_ISN + 2, 65535);
+    fixture.drive_data_ready();
+    let sent = fixture.take_segments();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].seq(), LOCAL_ISN + 2);
+    assert_eq!(sent[0].data_len(), 3);
+    assert!(sent[0].retransmittable());
+    assert_eq!(
+        PacketPayloadView::new(sent[0].payload.payload()).read_array::<3>(20),
+        Some(*b"ata")
+    );
+    drop(connection);
     true
 }

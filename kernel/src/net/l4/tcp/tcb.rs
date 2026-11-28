@@ -434,6 +434,7 @@ impl TcpConnectionData {
         let window_bytes = self.window_scale.scale_snd_window(segment.window);
         let is_dup = segment.ack == self.seq.snd_una
             && !segment.occupies_sequence_space
+            && window_bytes != 0
             && window_bytes == self.peer_window.bytes
             && self.seq.snd_nxt != self.seq.snd_una;
         let bytes_acked = if is_dup {
@@ -666,10 +667,6 @@ impl TcpControlBlock {
         }
     }
 
-    pub(crate) fn route_interface(&self) -> NetIfId {
-        self.if_id
-    }
-
     /// Establish from the ACK that returned a valid SYN cookie. The ACK
     /// acknowledges the cookie ISS, so `SEG.ACK` is ISS + 1 and `SEG.SEQ` is
     /// the peer's next sequence number.
@@ -735,10 +732,10 @@ impl TcpControlBlock {
         timeout_ms: u64,
     ) -> Option<DelayedAckDue> {
         let data = self.state.connection_data()?;
-        if data.delayed_ack_pending == 0 {
-            return None;
-        }
-        if now.saturating_sub(data.delayed_ack_timer) < timeout_ms {
+        if !data.flow_control.window_update_needed()
+            && (data.delayed_ack_pending == 0
+                || now.saturating_sub(data.delayed_ack_timer) < timeout_ms)
+        {
             return None;
         }
         Some(DelayedAckDue {
@@ -757,6 +754,16 @@ impl TcpControlBlock {
         self.state
             .connection_data()
             .map_or(0, TcpConnectionData::effective_send_window)
+    }
+
+    pub(crate) fn zero_window_probe_due(&self, current_tick: u64) -> bool {
+        matches!(
+            self.state.kind(),
+            TcpConnectionState::Established | TcpConnectionState::CloseWait
+        ) && self.state.connection_data().is_some_and(|data| {
+            data.seq.snd_nxt == data.seq.snd_una
+                && data.flow_control.should_send_probe(current_tick)
+        })
     }
 
     pub fn advertised_recv_window(&self) -> u16 {
@@ -1093,7 +1100,7 @@ impl TcbTable {
         let tick = self.current_tick.fetch_add(1, Ordering::Relaxed);
         if tick.is_multiple_of(100) {
             super::retransmit::check_retransmit_timeouts(runtime);
-            self.check_zero_window_probes(runtime, tick);
+            self.schedule_pending_sends(runtime, tick);
             for removed in self.scavenge_syn_received(tick) {
                 finish_connection_in(runtime, removed, TcpTermination::TimedOut);
             }
@@ -1147,63 +1154,60 @@ impl TcbTable {
         })
     }
 
-    fn check_zero_window_probes(&self, runtime: NetRuntimeHandle, current_tick: u64) {
-        use super::retransmit::retransmit_queue_push;
-        use super::segment::TcpSegmentBuilder;
+    /// Retry pending sends after transient allocation/command failures and
+    /// drive persist probes. Never acquire a socket lock under the TCB lock:
+    /// receive accounting takes those locks in the opposite order.
+    fn schedule_pending_sends(&self, runtime: NetRuntimeHandle, current_tick: u64) {
         use crate::net::l4::socket::lookup_socket_in;
-        let mut guard = self.storage.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(entries) = guard.as_mut() else {
-            return;
+        use crate::net::runtime::command::{
+            RuntimeCommand, TransportCommand, try_enqueue_command_in,
         };
-        for bucket_entry in entries.entries.iter_mut() {
-            let key = bucket_entry.key;
-            let entry = &mut bucket_entry.entry;
-            if !matches!(entry.state.kind(), TcpConnectionState::Established) {
-                continue;
-            }
-            let Some(data) = entry.state.connection_data_mut() else {
-                continue;
+        let candidates: Vec<_> = {
+            let guard = self.storage.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(storage) = guard.as_ref() else {
+                return;
             };
-            if data.seq.snd_nxt != data.seq.snd_una {
-                continue;
-            }
-            if !data.flow_control.should_send_probe(current_tick) {
-                continue;
-            }
-            if let Some(socket) = lookup_socket_in(runtime, entry.socket_id)
-                && let Some(probe_payload) = socket
-                    .with_inner_mut(|inner| inner.take_send_segment_window(1, 1))
-                    .flatten()
+            storage
+                .entries
+                .iter()
+                .filter_map(|bucket| {
+                    let entry = &bucket.entry;
+                    matches!(
+                        entry.state.kind(),
+                        TcpConnectionState::Established | TcpConnectionState::CloseWait
+                    )
+                    .then(|| {
+                        (
+                            entry.socket_id,
+                            entry.effective_send_window() > 0
+                                || entry.zero_window_probe_due(current_tick),
+                        )
+                    })
+                })
+                .collect()
+        };
+        for (socket_id, can_send) in candidates {
+            let pending = lookup_socket_in(runtime, socket_id)
+                .and_then(|socket| {
+                    socket.with_inner(|inner| {
+                        if inner.has_send_data() {
+                            can_send
+                        } else {
+                            inner.tcp_state()
+                                == Some(crate::net::l4::socket::TcpSocketState::Closing)
+                        }
+                    })
+                })
+                .unwrap_or(false);
+            if pending
+                && try_enqueue_command_in(
+                    runtime,
+                    RuntimeCommand::Transport(TransportCommand::TcpDataReady { socket_id }),
+                )
+                .is_err()
             {
-                let seq = data.seq.snd_nxt;
-                let mut builder = TcpSegmentBuilder::new(key.local.port(), key.remote.port())
-                    .seq(seq)
-                    .ack(data.seq.rcv_nxt)
-                    .ack_flag()
-                    .psh()
-                    .window(data.advertised_recv_window())
-                    .payload_packet(probe_payload);
-                if data.ts_enabled {
-                    let ts_val = (current_tick / 10) as u32;
-                    builder = builder.nop().nop().timestamp(ts_val, data.ts_ecr);
-                }
-                let Ok(segment) = builder.build_checked_packet(key.local, key.remote) else {
-                    continue;
-                };
-                // The queued probe consumes its sequence number; its timer
-                // retransmits it if this attempt is not admitted.
-                retransmit_queue_push(runtime, key.if_id, key.local, key.remote, seq, 1, segment);
-                data.seq.snd_nxt = data.seq.snd_nxt.wrapping_add(1);
-                data.flow_control.on_probe_sent(current_tick);
-                if !super::retransmit::retransmit_queue_transmit_ready(
-                    runtime, key.if_id, key.local, key.remote, seq,
-                ) {
-                    log::debug!(
-                        "[TCP] zero-window probe for {} -> {} awaits retransmission",
-                        key.local,
-                        key.remote
-                    );
-                }
+                // The next maintenance pass retries the still-owned data.
+                break;
             }
         }
     }
@@ -1471,6 +1475,24 @@ impl TcbTable {
                 data.delayed_ack_pending = 0;
             }
         })
+    }
+
+    /// An admitted ACK confirms only the window it actually advertised.
+    /// A concurrent application read may have opened it further meanwhile.
+    pub(in crate::net::l4::tcp) fn confirm_window_update(
+        &self,
+        if_id: NetIfId,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+        window: u16,
+    ) {
+        self.mutate_entry(if_id, local, remote, |entry| {
+            if let Some(data) = entry.state.connection_data_mut()
+                && data.advertised_recv_window() == window
+            {
+                data.flow_control.confirm_window_update();
+            }
+        });
     }
 
     pub(in crate::net::l4::tcp) fn record_timestamp_echo(
@@ -1763,9 +1785,13 @@ impl TcbTable {
         local: EndpointAddr,
         remote: EndpointAddr,
         bytes: u32,
+        probe: bool,
     ) -> bool {
         self.mutate_entry(if_id, local, remote, |entry| {
             entry.on_send(bytes);
+            if probe && let Some(data) = entry.state.connection_data_mut() {
+                data.flow_control.on_probe_sent(self.get_current_tick());
+            }
             if let Some(seq) = entry.state.sequence_mut() {
                 seq.snd_nxt = seq.snd_nxt.wrapping_add(bytes);
             }
@@ -1911,7 +1937,7 @@ impl TcbTable {
         false
     }
 
-    pub fn for_each_established<F>(&self, mut f: F)
+    pub fn for_each_connected<F>(&self, mut f: F)
     where
         F: FnMut(&TcpControlBlock),
     {
@@ -1919,7 +1945,7 @@ impl TcbTable {
         if let Some(storage) = guard.as_ref() {
             for bucket_entry in &storage.entries {
                 let entry = &bucket_entry.entry;
-                if entry.is_state(TcpConnectionState::Established) {
+                if entry.state.connection_data().is_some() {
                     f(entry);
                 }
             }
@@ -2206,6 +2232,55 @@ pub mod tests {
                 TcpControlBlockSnapshot::from(entry)
             })
             .expect("tcb snapshot")
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn local_window_reopening_does_not_cancel_peer_persist() {
+        let table = TcbTable::new();
+        let (local, remote) = established_passive(&table, TcpHandshakeOptions::default(), 0);
+        let socket_id = SocketId::from_raw(20);
+        assert!(table.record_data_received_by_socket_id(socket_id, 65536));
+        assert!(table.record_data_consumed_by_socket_id(socket_id, 65536));
+        let due = table
+            .read(TEST_IF, local, remote, |entry| {
+                assert!(entry.zero_window_probe_due(1000));
+                entry.delayed_ack_due(1000, 200)
+            })
+            .flatten()
+            .expect("window update needs an ACK without pending receive ACKs");
+        assert_eq!(due.window, u16::MAX);
+        table.confirm_window_update(TEST_IF, local, remote, 0);
+        assert!(
+            table
+                .read(TEST_IF, local, remote, |entry| entry
+                    .delayed_ack_due(1000, 200)
+                    .is_some())
+                .unwrap()
+        );
+        table.confirm_window_update(TEST_IF, local, remote, due.window);
+        assert!(
+            table
+                .read(TEST_IF, local, remote, |entry| {
+                    entry.delayed_ack_due(1000, 200).is_none() && entry.zero_window_probe_due(1000)
+                })
+                .unwrap()
+        );
+        table
+            .record_ack_and_close_progress(
+                TEST_IF,
+                local,
+                remote,
+                ack_segment(8001, 5001, 4000),
+                1001,
+            )
+            .unwrap();
+        assert!(
+            !table
+                .read(TEST_IF, local, remote, |entry| entry
+                    .zero_window_probe_due(2000))
+                .unwrap()
+        );
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

@@ -213,6 +213,9 @@ impl TcpSendBuffer {
         if payload_len > available {
             return Err((EndpointError::BufferFull, payload));
         }
+        if self.chunks.try_reserve(1).is_err() {
+            return Err((EndpointError::ResourceExhausted, payload));
+        }
         self.len = self.len.saturating_add(payload_len);
         self.chunks.push_back(QueuedPayload::new(payload));
         Ok(())
@@ -236,6 +239,9 @@ impl TcpSendBuffer {
         if max_len == 0 || max_segments == 0 || self.len == 0 {
             return None;
         }
+        // A split or a failed segment build may have to put an extra entry
+        // in front of a partially consumed payload. Reserve before consuming.
+        self.chunks.try_reserve(1).ok()?;
         self.trim_empty();
         let mut remaining = self.len.min(max_len);
         let mut window: Option<PacketPayload> = None;
@@ -287,6 +293,11 @@ impl TcpSendBuffer {
         let window = window?;
         self.len = self.len.saturating_sub(window.total_len());
         Some(window)
+    }
+
+    fn restore_front(&mut self, payload: PacketPayload) {
+        self.len += payload.total_len();
+        self.chunks.push_front(QueuedPayload::new(payload));
     }
 }
 
@@ -675,6 +686,15 @@ impl SocketState {
         tcp.send_buffer.take_segment_window(max_len, max_segments)
     }
 
+    /// Restore a window rejected during segment preparation. The caller
+    /// must still own the same socket guard that took the window.
+    pub(crate) fn restore_send_segment_window(&mut self, payload: PacketPayload) {
+        self.tcp_mut()
+            .expect("send window belongs to a TCP socket")
+            .send_buffer
+            .restore_front(payload);
+    }
+
     #[cfg(feature = "qemu-test-export")]
     #[inline]
     pub fn push_recv_payload(
@@ -713,6 +733,30 @@ impl SocketState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn rejected_send_window_is_restored_in_order() {
+        use crate::net::l4::test_support::packet_fixture_with_data;
+        use crate::net::payload::PacketPayloadView;
+
+        let mut socket = SocketState::new_tcp(TcpSocketState::Connected);
+        for data in [b"abc", b"def"] {
+            socket
+                .send_payload(PacketPayload::try_single(packet_fixture_with_data(data)).unwrap())
+                .unwrap();
+        }
+        let prefix = socket.take_send_segment_window(4, 2).unwrap();
+        assert_eq!(socket.send_payload_bytes(), 2);
+        socket.restore_send_segment_window(prefix);
+        assert_eq!(socket.send_payload_bytes(), 6);
+        let restored = socket.take_send_segment_window(6, 3).unwrap();
+        assert_eq!(
+            PacketPayloadView::new(&restored).read_array::<6>(0),
+            Some(*b"abcdef")
+        );
+        assert!(!socket.has_send_data());
+    }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]

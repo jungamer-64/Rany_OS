@@ -50,22 +50,11 @@ pub(crate) fn tcp_error_from_endpoint(error: EndpointError) -> TcpError {
         EndpointError::Timeout => TcpError::Timeout,
         EndpointError::Timer(cause) => TcpError::Timer(cause),
         EndpointError::AddressInUse | EndpointError::PortInUse => TcpError::AddressInUse,
-        EndpointError::BufferFull => TcpError::BufferFull,
+        EndpointError::BufferFull | EndpointError::ResourceExhausted => TcpError::BufferFull,
         EndpointError::NetworkUnreachable => TcpError::NetworkUnreachable,
         EndpointError::PermissionDenied => TcpError::PermissionDenied,
         _ => TcpError::InvalidState,
     }
-}
-
-fn socket_send_budget(
-    runtime: NetRuntimeHandle,
-    socket_id: SocketId,
-    queued_bytes: usize,
-) -> usize {
-    tcp_table_in(runtime)
-        .read_by_socket_id(socket_id, |tcb| tcb.effective_send_window() as usize)
-        .unwrap_or(0)
-        .saturating_sub(queued_bytes)
 }
 
 /// Hand a transport command to the runtime, running it in this context when
@@ -558,66 +547,61 @@ impl<'a> Future for SendPayloadFuture<'a> {
         let Some(payload) = this.payload.take() else {
             panic!("TCP send future polled after completion");
         };
-        let runtime = this.connection.runtime;
         let payload_len = payload.total_len();
         let mut owner = Some(payload);
 
-        let outcome =
-            this.connection
-                .socket
-                .with_inner_mut(|inner| {
-                    if let Some(err) = inner.last_error.take() {
-                        return SendOutcome::Ready(tcp_error_from_endpoint(err));
-                    }
+        let outcome = this
+            .connection
+            .socket
+            .with_inner_mut(|inner| {
+                if let Some(err) = inner.last_error.take() {
+                    return SendOutcome::Ready(tcp_error_from_endpoint(err));
+                }
 
-                    if inner.is_tcp_closing_or_closed() {
-                        return SendOutcome::Ready(TcpError::ConnectionClosed);
-                    }
+                if inner.is_tcp_closing_or_closed() {
+                    return SendOutcome::Ready(TcpError::ConnectionClosed);
+                }
 
-                    if !matches!(inner.tcp_state(), Some(TcpSocketState::Connected)) {
-                        return SendOutcome::Ready(TcpError::InvalidState);
-                    }
+                if !matches!(inner.tcp_state(), Some(TcpSocketState::Connected)) {
+                    return SendOutcome::Ready(TcpError::InvalidState);
+                }
 
-                    if payload_len > inner.send_buffer_limit {
-                        return SendOutcome::Ready(TcpError::BufferFull);
-                    }
+                if payload_len > inner.send_buffer_limit {
+                    return SendOutcome::Ready(TcpError::BufferFull);
+                }
 
-                    let queued_bytes = inner.send_payload_bytes();
-                    let available = inner.send_buffer_limit.saturating_sub(queued_bytes).min(
-                        socket_send_budget(
-                            runtime,
-                            this.connection.socket.socket_id(),
-                            queued_bytes,
-                        ),
-                    );
+                let queued_bytes = inner.send_payload_bytes();
+                // The send buffer admits application data independently
+                // of the peer/congestion window. The runtime applies the
+                // wire window when it prepares a segment.
+                let available = inner.send_buffer_limit.saturating_sub(queued_bytes);
 
-                    if available < payload_len {
-                        let has_queued_data = inner.has_send_data();
-                        inner.send_waker.register(cx.waker());
-                        return SendOutcome::Pending {
-                            payload: owner
-                                .take()
-                                .expect("pending TCP send preserves the payload owner"),
-                            has_queued_data,
-                        };
-                    }
+                if available < payload_len {
+                    let has_queued_data = inner.has_send_data();
+                    inner.send_waker.register(cx.waker());
+                    return SendOutcome::Pending {
+                        payload: owner
+                            .take()
+                            .expect("pending TCP send preserves the payload owner"),
+                        has_queued_data,
+                    };
+                }
 
-                    match inner
-                        .send_payload(owner.take().expect("admitted TCP send owns the payload"))
-                    {
-                        Ok(()) => {
-                            if let Some(tcp) = inner.tcp_mut() {
-                                tcp.stats.record_tx_enqueued(payload_len);
-                            }
-                            SendOutcome::Enqueued
+                match inner.send_payload(owner.take().expect("admitted TCP send owns the payload"))
+                {
+                    Ok(()) => {
+                        if let Some(tcp) = inner.tcp_mut() {
+                            tcp.stats.record_tx_enqueued(payload_len);
                         }
-                        Err((err, payload)) => {
-                            owner = Some(payload);
-                            SendOutcome::Ready(tcp_error_from_endpoint(err))
-                        }
+                        SendOutcome::Enqueued
                     }
-                })
-                .unwrap_or(SendOutcome::Ready(TcpError::InvalidState));
+                    Err((err, payload)) => {
+                        owner = Some(payload);
+                        SendOutcome::Ready(tcp_error_from_endpoint(err))
+                    }
+                }
+            })
+            .unwrap_or(SendOutcome::Ready(TcpError::InvalidState));
 
         match outcome {
             SendOutcome::Enqueued => {

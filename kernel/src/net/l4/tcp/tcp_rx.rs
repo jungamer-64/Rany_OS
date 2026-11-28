@@ -163,18 +163,15 @@ fn apply_acceptable_ack(
         );
         return;
     }
-    resume_closing_transmission(runtime, tcb.socket_id);
+    resume_pending_transmission(runtime, tcb.socket_id);
 }
 
-/// A closing socket no longer has an application writer to drive the send
-/// path, so window progress from an ACK resumes it until the queued data and
-/// the deferred FIN are out. A full command queue leaves the retry to the next
-/// ACK, which retransmission and zero-window probing keep producing.
-fn resume_closing_transmission(runtime: NetRuntimeHandle, socket_id: SocketId) {
+/// ACKs can open the send window even when the writer has returned. Resume
+/// queued data for both open and closing sockets; periodic maintenance
+/// retries if the command queue is temporarily full.
+fn resume_pending_transmission(runtime: NetRuntimeHandle, socket_id: SocketId) {
     let pending = lookup_socket_in(runtime, socket_id)
-        .and_then(|socket| {
-            socket.with_inner(|inner| inner.is_tcp_closing_or_closed() && inner.has_send_data())
-        })
+        .and_then(|socket| socket.with_inner(|inner| inner.has_send_data()))
         .unwrap_or(false);
     if pending
         && crate::net::runtime::command::try_enqueue_command_in(
@@ -185,7 +182,7 @@ fn resume_closing_transmission(runtime: NetRuntimeHandle, socket_id: SocketId) {
         )
         .is_err()
     {
-        log::debug!("[TCP] closing transmission resume deferred to the next ACK");
+        log::debug!("[TCP] pending transmission resume deferred to maintenance");
     }
 }
 
@@ -345,15 +342,17 @@ pub(super) fn send_control_segment(
     local: EndpointAddr,
     remote: EndpointAddr,
     builder: TcpSegmentBuilder,
-) {
+) -> bool {
     let Ok(segment) = builder.build_checked_packet(local, remote) else {
-        return;
+        return false;
     };
     if let Err((cause, _returned)) =
         send_tcp_segment_payload_in(runtime, if_id, local, remote, TxBody::Owned(segment))
     {
         log::debug!("[TCP] Control segment queue rejection: {:?}", cause);
+        return false;
     }
+    true
 }
 
 /// TCPチェックサム検証（IPv4疑似ヘッダ込み）
@@ -724,8 +723,7 @@ fn try_fast_path(
         .map(|pending| pending >= DELAYED_ACK_SEGMENTS)
         .unwrap_or(true);
 
-    if should_ack_now {
-        send_ack_for_fast_path(runtime, tcb, new_rcv_nxt);
+    if should_ack_now && send_ack_for_fast_path(runtime, tcb, new_rcv_nxt) {
         tcp_table_in(runtime).clear_delayed_ack(tcb.if_id, tcb.local, tcb.remote);
     }
 
@@ -797,12 +795,25 @@ pub fn process_tcp_segment_payload_on(
 /// TCPオプション(Timestamps等)が有効なら含めるが、
 /// SACKブロック等の複雑な処理は行わない。
 #[inline]
-fn send_ack_for_fast_path(runtime: NetRuntimeHandle, tcb: &TcpControlBlockSnapshot, rcv_nxt: u32) {
+fn send_ack_for_fast_path(
+    runtime: NetRuntimeHandle,
+    tcb: &TcpControlBlockSnapshot,
+    rcv_nxt: u32,
+) -> bool {
+    // Receive accounting or application consumption can change the window
+    // after the ingress snapshot was taken. Advertise the current value.
+    let table = tcp_table_in(runtime);
+    let Some(tcb) = table.read(tcb.if_id, tcb.local, tcb.remote, |entry| {
+        TcpControlBlockSnapshot::from(entry)
+    }) else {
+        return false;
+    };
+    let window = tcb.advertised_recv_window();
     let mut builder = TcpSegmentBuilder::new(tcb.local.port(), tcb.remote.port())
         .seq(tcb.snd_nxt)
         .ack(rcv_nxt)
         .ack_flag()
-        .window(tcb.advertised_recv_window());
+        .window(window);
 
     if tcb.ts_enabled {
         builder = builder
@@ -811,7 +822,12 @@ fn send_ack_for_fast_path(runtime: NetRuntimeHandle, tcb: &TcpControlBlockSnapsh
             .timestamp(generate_tcp_timestamp_in(runtime), tcb.ts_ecr);
     }
 
-    send_control_segment(runtime, tcb.if_id, tcb.local, tcb.remote, builder);
+    if send_control_segment(runtime, tcb.if_id, tcb.local, tcb.remote, builder) {
+        table.confirm_window_update(tcb.if_id, tcb.local, tcb.remote, window);
+        true
+    } else {
+        false
+    }
 }
 
 /// Delayed ACK タイマー処理
@@ -832,7 +848,7 @@ pub fn flush_delayed_acks_in(runtime: NetRuntimeHandle) {
         bool,
         u32,
     )> = alloc::vec::Vec::new();
-    tcp_table_in(runtime).for_each_established(|entry| {
+    tcp_table_in(runtime).for_each_connected(|entry| {
         if let Some(due) = entry.delayed_ack_due(now, DELAYED_ACK_TIMEOUT_MS) {
             pending.push((
                 due.if_id,
@@ -862,9 +878,10 @@ pub fn flush_delayed_acks_in(runtime: NetRuntimeHandle) {
                 .timestamp(generate_tcp_timestamp_in(runtime), ts_ecr);
         }
 
-        send_control_segment(runtime, if_id, local, remote, builder);
-
-        tcp_table_in(runtime).clear_delayed_ack(if_id, local, remote);
+        if send_control_segment(runtime, if_id, local, remote, builder) {
+            tcp_table_in(runtime).clear_delayed_ack(if_id, local, remote);
+            tcp_table_in(runtime).confirm_window_update(if_id, local, remote, window);
+        }
     }
 }
 
@@ -1259,8 +1276,7 @@ fn handle_data_received_with_delayed_ack(
             .unwrap_or(true)
     };
 
-    if should_ack_now {
-        send_ack_for_fast_path(runtime, &tcb, new_rcv_nxt);
+    if should_ack_now && send_ack_for_fast_path(runtime, &tcb, new_rcv_nxt) {
         tcp_table_in(runtime).clear_delayed_ack(tcb.if_id, tcb.local, tcb.remote);
     }
 }
@@ -1630,9 +1646,13 @@ fn complete_active_open(runtime: NetRuntimeHandle, tcb: &TcpControlBlockSnapshot
     let connected = lookup_socket_in(runtime, tcb.socket_id).is_some_and(|socket| {
         socket
             .with_inner_mut(|inner| {
-                if inner.tcp_state() != Some(TcpSocketState::Connecting)
-                    || inner.set_tcp_state(TcpSocketState::Connected).is_err()
-                {
+                if inner.tcp_state() != Some(TcpSocketState::Connecting) {
+                    return false;
+                }
+                // Publish the connected handle only after its retransmit
+                // queue exists, just as for a passive open.
+                get_or_create_retransmit_queue(runtime, tcb.if_id, tcb.local, tcb.remote);
+                if inner.set_tcp_state(TcpSocketState::Connected).is_err() {
                     return false;
                 }
                 inner.connect_waker.wake();

@@ -186,7 +186,15 @@ impl TcpSegmentBuilder {
         }
     }
 
-    pub fn build_packet(mut self) -> Result<PacketPayload, EndpointError> {
+    /// A failed construction returns the original body, if any.
+    pub fn build_packet(self) -> Result<PacketPayload, (EndpointError, Option<PacketPayload>)> {
+        self.build_packet_with(crate::net::payload::alloc_packet_with_headroom)
+    }
+
+    fn build_packet_with(
+        mut self,
+        allocate: impl FnOnce(usize, usize) -> Option<kernel_api::resource::net::PacketRef>,
+    ) -> Result<PacketPayload, (EndpointError, Option<PacketPayload>)> {
         self.pad_options();
         let options_len = self.options_len.min(self.options.len());
         let header_len = 20 + options_len;
@@ -220,13 +228,11 @@ impl TcpSegmentBuilder {
 
         match segment_payload {
             TcpSegmentPayload::Empty => {
-                let mut packet = crate::net::payload::alloc_packet_with_headroom(
-                    header_len,
-                    DEFAULT_PACKET_HEADROOM,
-                )
-                .ok_or(EndpointError::ResourceExhausted)?;
+                let mut packet = allocate(header_len, DEFAULT_PACKET_HEADROOM)
+                    .ok_or((EndpointError::ResourceExhausted, None))?;
                 write_header(packet.data_mut());
-                PacketPayload::try_single(packet).map_err(|_| EndpointError::ResourceExhausted)
+                PacketPayload::try_single(packet)
+                    .map_err(|_| (EndpointError::ResourceExhausted, None))
             }
             TcpSegmentPayload::Packet(mut payload) => {
                 if let Ok(header) = payload.try_prepend_in_place(
@@ -235,44 +241,44 @@ impl TcpSegmentBuilder {
                     write_header(header);
                     Ok(payload)
                 } else {
-                    let mut header_packet = crate::net::payload::alloc_packet_with_headroom(
-                        header_len,
-                        DEFAULT_PACKET_HEADROOM,
-                    )
-                    .ok_or(EndpointError::ResourceExhausted)?;
+                    let Some(mut header_packet) = allocate(header_len, DEFAULT_PACKET_HEADROOM)
+                    else {
+                        return Err((EndpointError::ResourceExhausted, Some(payload)));
+                    };
                     write_header(header_packet.data_mut());
-                    payload
-                        .try_prepend(header_packet)
-                        .map_err(|_| EndpointError::ResourceExhausted)
+                    payload.try_prepend(header_packet).map_err(|error| {
+                        let (_, payload) = error.into_owner();
+                        (EndpointError::ResourceExhausted, Some(payload))
+                    })
                 }
             }
         }
     }
 
     pub fn build_checked_packet(
-        self,
+        mut self,
         local: EndpointAddr,
         remote: EndpointAddr,
-    ) -> Result<PacketPayload, EndpointError> {
+    ) -> Result<PacketPayload, (EndpointError, Option<PacketPayload>)> {
+        if endpoint_ipv4_pair(local, remote).is_none() && !endpoint_is_native_v6_pair(local, remote)
+        {
+            let body = match core::mem::replace(&mut self.data, TcpSegmentPayload::Empty) {
+                TcpSegmentPayload::Empty => None,
+                TcpSegmentPayload::Packet(payload) => Some(payload),
+            };
+            return Err((EndpointError::InvalidArgument, body));
+        }
         let mut payload = self.build_packet()?;
         if let Some((src_v4, dst_v4)) = endpoint_ipv4_pair(local, remote) {
             Self::calculate_checksum(&mut payload, src_v4, dst_v4);
             return Ok(payload);
         }
-        if endpoint_is_native_v6_pair(local, remote) {
-            Self::calculate_checksum_v6(
-                &mut payload,
-                crate::net::l3::ipv6::Ipv6Address::new(local.as_ipv6()),
-                crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6()),
-            );
-            return Ok(payload);
-        }
-        log::warn!(
-            "[NET][endpoint] mixed TCP address family rejected: {} -> {}",
-            local,
-            remote
+        Self::calculate_checksum_v6(
+            &mut payload,
+            crate::net::l3::ipv6::Ipv6Address::new(local.as_ipv6()),
+            crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6()),
         );
-        Err(EndpointError::InvalidArgument)
+        Ok(payload)
     }
 
     pub fn calculate_checksum(payload: &mut PacketPayload, src_ip: [u8; 4], dst_ip: [u8; 4]) {
@@ -365,6 +371,33 @@ impl TcpSegmentBuilder {
         {
             data[16..18].copy_from_slice(&checksum.to_be_bytes());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::net::l4::test_support::packet_fixture_with_data;
+    use crate::net::payload::PacketPayloadView;
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn failed_header_allocation_returns_original_data() {
+        let packet = packet_fixture_with_data(b"send body");
+        let address = packet.data().as_ptr();
+        let payload = PacketPayload::try_single(packet).expect("test body");
+        let (cause, payload) = TcpSegmentBuilder::new(1, 2)
+            .payload_packet(payload)
+            .build_packet_with(|_, _| None)
+            .expect_err("no headroom and no header allocation");
+        assert_eq!(cause, EndpointError::ResourceExhausted);
+        let payload = payload.expect("body returned");
+        assert_eq!(payload.total_len(), 9);
+        assert_eq!(payload.segments()[0].data().as_ptr(), address);
+        assert_eq!(
+            PacketPayloadView::new(&payload).read_array::<9>(0),
+            Some(*b"send body")
+        );
     }
 }
 
